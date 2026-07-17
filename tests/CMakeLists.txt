@@ -4,7 +4,8 @@
 add_executable(looper_tests
   rt/SpscRingBufferTests.cpp
   engine/TempoMapTests.cpp
-  engine/TransportTests.cpp)
+  engine/TransportTests.cpp
+  engine/InterpolationTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE

@@ -4,9 +4,11 @@
 #include <cstdint>
 
 #include <juce_audio_devices/juce_audio_devices.h>
+#include <juce_audio_formats/juce_audio_formats.h>
 
 #include "rt/SpscRingBuffer.h"
 
+#include "engine/AudioFilePlayerNode.h"
 #include "engine/AudioGraph.h"
 #include "engine/EngineCommand.h"
 #include "engine/MasterBusNode.h"
@@ -35,6 +37,15 @@ public:
     /** Post a command to the audio thread. Non-blocking; drops if the queue is full. */
     void postCommand(const EngineCommand& command) noexcept { commandQueue_.push(command); }
 
+    /** Decode an audio file into RAM and hand it to the file-player node. Message thread. */
+    bool loadAudioFile(const juce::File& file);
+
+    /** Housekeeping to run periodically on the message thread (frees retired clips). */
+    void pump() noexcept;
+
+    juce::String loadedClipName() const           { return loadedClipName_; }
+    double       loadedClipSeconds() const noexcept { return loadedClipSeconds_; }
+
     // ---- lock-free UI readouts ----
     bool    isPlaying() const noexcept       { return transport_.playingForUI(); }
     int64_t playheadSamples() const noexcept { return transport_.playheadForUI(); }
@@ -55,14 +66,19 @@ private:
     void drainCommandQueue() noexcept;
 
     juce::AudioDeviceManager          deviceManager_;
+    juce::AudioFormatManager          formatManager_;
     rt::SpscRingBuffer<EngineCommand> commandQueue_ { 1024 };
 
-    AudioGraph      graph_;
-    OscillatorNode* oscillator_ = nullptr; // owned by graph_
-    MasterBusNode*  master_     = nullptr; // owned by graph_
-    Transport       transport_;
+    AudioGraph           graph_;
+    OscillatorNode*      oscillator_ = nullptr; // owned by graph_
+    AudioFilePlayerNode* filePlayer_ = nullptr; // owned by graph_
+    MasterBusNode*       master_     = nullptr; // owned by graph_
+    Transport            transport_;
 
     std::atomic<double> sampleRate_ { 0.0 };
+
+    juce::String loadedClipName_;
+    double       loadedClipSeconds_ = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)
 };

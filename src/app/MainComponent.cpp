@@ -23,9 +23,11 @@ MainComponent::MainComponent()
         post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
         updateLoopRegion();
     };
+    loadButton.onClick = [this] { chooseFile(); };
     addAndMakeVisible(playButton);
     addAndMakeVisible(stopButton);
     addAndMakeVisible(loopButton);
+    addAndMakeVisible(loadButton);
 
     // ---- test source ----
     sourceButton.onClick = [this] { post(Cmd::SetSourceEnabled, sourceButton.getToggleState() ? 1.0 : 0.0); };
@@ -70,12 +72,16 @@ MainComponent::MainComponent()
     positionLabel.setText("Bar 1  Beat 1   |   0.00 s   |   STOPPED", juce::dontSendNotification);
     addAndMakeVisible(positionLabel);
 
+    clipLabel.setText("No clip loaded", juce::dontSendNotification);
+    addAndMakeVisible(clipLabel);
+
+    addAndMakeVisible(meter_);
     addAndMakeVisible(deviceSelector);
 
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
 
-    setSize(600, 540);
+    setSize(600, 580);
     startTimerHz(30);
 }
 
@@ -88,6 +94,28 @@ MainComponent::~MainComponent()
 void MainComponent::post(engine::EngineCommand::Type type, double a, double b)
 {
     engine_.postCommand({ type, a, b });
+}
+
+void MainComponent::chooseFile()
+{
+    chooser_ = std::make_unique<juce::FileChooser>("Load an audio file", juce::File{},
+                                                   "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3");
+
+    const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+
+    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    {
+        const auto file = fc.getResult();
+        if (file == juce::File{})
+            return;
+
+        if (engine_.loadAudioFile(file))
+            clipLabel.setText(engine_.loadedClipName()
+                                  + juce::String::formatted("   (%.2f s)", engine_.loadedClipSeconds()),
+                              juce::dontSendNotification);
+        else
+            clipLabel.setText("Could not load: " + file.getFileName(), juce::dontSendNotification);
+    });
 }
 
 void MainComponent::updateLoopRegion()
@@ -103,6 +131,8 @@ void MainComponent::updateLoopRegion()
 
 void MainComponent::timerCallback()
 {
+    engine_.pump(); // free retired clips on the message thread
+
     const double sampleRate = engine_.sampleRate();
     uiTempoMap_.setSampleRate(sampleRate > 0.0 ? sampleRate : 48000.0);
 
@@ -115,14 +145,8 @@ void MainComponent::timerCallback()
                                                   engine_.isPlaying() ? "PLAYING" : "STOPPED"),
                           juce::dontSendNotification);
 
-    for (int ch = 0; ch < 2; ++ch)
-    {
-        const float peak = engine_.masterPeak(ch);
-        meterLevel_[ch] = juce::jmax(peak, meterLevel_[ch] * 0.85f); // fast attack, slow decay
-    }
-
-    if (! meterArea_.isEmpty())
-        repaint(meterArea_);
+    meter_.setLevel(0, engine_.masterPeak(0));
+    meter_.setLevel(1, engine_.masterPeak(1));
 }
 
 void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
@@ -144,29 +168,6 @@ void MainComponent::logAudioDeviceStatus()
 void MainComponent::paint(juce::Graphics& g)
 {
     g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
-
-    if (meterArea_.isEmpty())
-        return;
-
-    g.setColour(juce::Colours::black.withAlpha(0.35f));
-    g.fillRect(meterArea_);
-
-    const int gap  = 4;
-    const int barW = (meterArea_.getWidth() - gap) / 2;
-
-    for (int ch = 0; ch < 2; ++ch)
-    {
-        auto bar = juce::Rectangle<int>(meterArea_.getX() + ch * (barW + gap),
-                                        meterArea_.getY(), barW, meterArea_.getHeight());
-
-        const float db   = juce::Decibels::gainToDecibels(meterLevel_[ch], -60.0f);
-        const float norm = juce::jlimit(0.0f, 1.0f, (db + 60.0f) / 60.0f);
-
-        auto filled = bar.removeFromBottom(juce::roundToInt((float) bar.getHeight() * norm));
-        g.setColour(norm > 0.9f ? juce::Colours::red
-                                : (norm > 0.7f ? juce::Colours::yellow : juce::Colours::limegreen));
-        g.fillRect(filled);
-    }
 }
 
 void MainComponent::resized()
@@ -181,6 +182,12 @@ void MainComponent::resized()
     loopButton.setBounds(row1.removeFromLeft(70));
     row1.removeFromLeft(14);
     sourceButton.setBounds(row1);
+    area.removeFromTop(8);
+
+    auto row2 = area.removeFromTop(28);
+    loadButton.setBounds(row2.removeFromLeft(120));
+    row2.removeFromLeft(12);
+    clipLabel.setBounds(row2);
     area.removeFromTop(10);
 
     positionLabel.setBounds(area.removeFromTop(30));
@@ -197,7 +204,7 @@ void MainComponent::resized()
     sliderRow(masterSlider);
     area.removeFromTop(10);
 
-    meterArea_ = area.removeFromTop(56);
+    meter_.setBounds(area.removeFromTop(60));
     area.removeFromTop(10);
 
     deviceSelector.setBounds(area);
