@@ -67,3 +67,14 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# CPM downloaded-sources cache
+.cpm-cache/
+
+# macOS
+.DS_Store
+
+# IDE / editor
+.vscode/
+.idea/
+*.user
