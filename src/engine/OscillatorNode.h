@@ -27,7 +27,7 @@ public:
     void setFrequency(float hz) noexcept { if (hz > 0.0f) frequency_ = hz; }
     void setGainDb(float db) noexcept    { gainDb_ = db; }
 
-    void process(juce::AudioBuffer<float>& buffer, const ProcessContext& context) override
+    void process(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midi*/, const ProcessContext& context) override
     {
         const bool sounding = enabled_ && context.transport.playing;
         gain_.setTargetValue(sounding ? juce::Decibels::decibelsToGain(gainDb_) : 0.0f);

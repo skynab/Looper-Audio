@@ -53,7 +53,7 @@ public:
     }
 
     // ---- audio thread ----
-    void process(juce::AudioBuffer<float>& buffer, const ProcessContext& context) override
+    void process(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midi*/, const ProcessContext& context) override
     {
         ClipData* incoming = nullptr;
         while (inbox_.pop(incoming))

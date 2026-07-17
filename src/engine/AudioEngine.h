@@ -13,6 +13,7 @@
 #include "engine/EngineCommand.h"
 #include "engine/MasterBusNode.h"
 #include "engine/OscillatorNode.h"
+#include "engine/SynthInstrumentNode.h"
 #include "engine/Transport.h"
 
 namespace looper::engine
@@ -26,13 +27,17 @@ namespace looper::engine
     Deliberately not a juce::Component, so the whole engine can be driven and
     tested without any UI.
 */
-class AudioEngine final : public juce::AudioIODeviceCallback
+class AudioEngine final : public juce::AudioIODeviceCallback,
+                          public juce::MidiInputCallback
 {
 public:
     AudioEngine();
     ~AudioEngine() override;
 
     juce::AudioDeviceManager& deviceManager() noexcept { return deviceManager_; }
+
+    /** Shared with the on-screen keyboard so UI notes reach the synth. */
+    juce::MidiKeyboardState& keyboardState() noexcept { return keyboardState_; }
 
     /** Post a command to the audio thread. Non-blocking; drops if the queue is full. */
     void postCommand(const EngineCommand& command) noexcept { commandQueue_.push(command); }
@@ -62,14 +67,21 @@ public:
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
     void audioDeviceStopped() override;
 
+    // ---- juce::MidiInputCallback ----
+    void handleIncomingMidiMessage(juce::MidiInput* source, const juce::MidiMessage& message) override;
+
 private:
     void drainCommandQueue() noexcept;
 
     juce::AudioDeviceManager          deviceManager_;
     juce::AudioFormatManager          formatManager_;
+    juce::MidiMessageCollector        midiCollector_;
+    juce::MidiKeyboardState           keyboardState_;
+    juce::MidiBuffer                  incomingMidi_;
     rt::SpscRingBuffer<EngineCommand> commandQueue_ { 1024 };
 
     AudioGraph           graph_;
+    SynthInstrumentNode* synth_      = nullptr; // owned by graph_
     OscillatorNode*      oscillator_ = nullptr; // owned by graph_
     AudioFilePlayerNode* filePlayer_ = nullptr; // owned by graph_
     MasterBusNode*       master_     = nullptr; // owned by graph_

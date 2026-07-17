@@ -3,10 +3,10 @@
 A cross-platform **loop-centric, AI-assisted DAW** written in C++ — for arranging and
 generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
-> **Status: Phase 1 complete.** A headless audio engine — processing graph, sample-accurate
-> transport (play/stop/loop) + tempo map, a lock-free UI→audio command queue, transport-slaved
-> WAV/AIFF/FLAC/MP3 playback, and a master bus with metering. Next: Phase 2 (MIDI + a built-in
-> instrument). See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> **Status: Phase 2 (in progress).** Phase 1 is complete (engine, transport, WAV playback,
+> metering). A 16-voice polyphonic synth now plays live MIDI — from an on-screen keyboard or an
+> external MIDI input — routed through the graph. Next: note scheduling from a pattern + a mini
+> piano roll. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

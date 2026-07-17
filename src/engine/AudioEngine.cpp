@@ -11,6 +11,10 @@ AudioEngine::AudioEngine()
 {
     formatManager_.registerBasicFormats();
 
+    auto synth = std::make_unique<SynthInstrumentNode>();
+    synth_ = synth.get();
+    graph_.addSource(std::move(synth));
+
     auto oscillator = std::make_unique<OscillatorNode>();
     oscillator_ = oscillator.get();
     graph_.addSource(std::move(oscillator));
@@ -25,12 +29,28 @@ AudioEngine::AudioEngine()
 
     deviceManager_.initialiseWithDefaultDevices(0, 2);
     deviceManager_.addAudioCallback(this);
+
+    // Route every available MIDI input into the collector.
+    for (const auto& input : juce::MidiInput::getAvailableDevices())
+    {
+        deviceManager_.setMidiInputDeviceEnabled(input.identifier, true);
+        deviceManager_.addMidiInputDeviceCallback(input.identifier, this);
+    }
 }
 
 AudioEngine::~AudioEngine()
 {
+    for (const auto& input : juce::MidiInput::getAvailableDevices())
+        deviceManager_.removeMidiInputDeviceCallback(input.identifier, this);
+
     deviceManager_.removeAudioCallback(this);
     deviceManager_.closeAudioDevice();
+}
+
+void AudioEngine::handleIncomingMidiMessage(juce::MidiInput* /*source*/, const juce::MidiMessage& message)
+{
+    // Called on the MIDI thread; the collector timestamps and hands off to audio.
+    midiCollector_.addMessageToQueue(message);
 }
 
 bool AudioEngine::loadAudioFile(const juce::File& file)
@@ -99,12 +119,18 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputCh
 
     juce::AudioBuffer<float> output(outputChannelData, numOutputChannels, numSamples);
 
+    // Gather this block's MIDI: external inputs (via the collector) merged with
+    // the on-screen keyboard (via the shared keyboard state).
+    incomingMidi_.clear();
+    midiCollector_.removeNextBlockOfMessages(incomingMidi_, numSamples);
+    keyboardState_.processNextMidiBuffer(incomingMidi_, 0, numSamples, true);
+
     ProcessContext context;
     context.sampleRate = sampleRate_.load(std::memory_order_relaxed);
     context.numSamples = numSamples;
     context.transport  = transport_.snapshot();
 
-    graph_.process(output, context);
+    graph_.process(output, incomingMidi_, context);
 
     transport_.advance(numSamples);
 }
@@ -115,6 +141,8 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     const int    blockSize  = device->getCurrentBufferSizeSamples();
 
     sampleRate_.store(sampleRate, std::memory_order_relaxed);
+    midiCollector_.reset(sampleRate);
+    incomingMidi_.ensureSize(2048); // preallocate so the audio thread doesn't grow it
     transport_.prepare(sampleRate);
     graph_.prepare(sampleRate, blockSize);
 }

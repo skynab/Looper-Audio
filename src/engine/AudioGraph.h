@@ -30,15 +30,15 @@ public:
             master_->prepare(sampleRate, maxBlockSize);
     }
 
-    void process(juce::AudioBuffer<float>& buffer, const ProcessContext& context)
+    void process(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi, const ProcessContext& context)
     {
         buffer.clear();
 
         for (auto& s : sources_)
-            s->process(buffer, context);
+            s->process(buffer, midi, context);
 
         if (master_)
-            master_->process(buffer, context);
+            master_->process(buffer, midi, context);
     }
 
     void release()

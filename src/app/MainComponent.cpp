@@ -76,12 +76,13 @@ MainComponent::MainComponent()
     addAndMakeVisible(clipLabel);
 
     addAndMakeVisible(meter_);
+    addAndMakeVisible(keyboard_);
     addAndMakeVisible(deviceSelector);
 
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
 
-    setSize(600, 580);
+    setSize(640, 700);
     startTimerHz(30);
 }
 
@@ -205,6 +206,9 @@ void MainComponent::resized()
     area.removeFromTop(10);
 
     meter_.setBounds(area.removeFromTop(60));
+    area.removeFromTop(10);
+
+    keyboard_.setBounds(area.removeFromTop(80));
     area.removeFromTop(10);
 
     deviceSelector.setBounds(area);

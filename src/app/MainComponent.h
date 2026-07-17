@@ -52,6 +52,8 @@ private:
     juce::Label  clipLabel;
 
     juce::AudioDeviceSelectorComponent deviceSelector;
+    juce::MidiKeyboardComponent        keyboard_ { engine_.keyboardState(),
+                                                   juce::MidiKeyboardComponent::horizontalKeyboard };
     LevelMeter                         meter_;
     std::unique_ptr<juce::FileChooser> chooser_;
 
