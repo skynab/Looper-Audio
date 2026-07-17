@@ -14,10 +14,23 @@ public:
 
     void initialise(const juce::String&) override
     {
+        logger.reset(juce::FileLogger::createDefaultAppLogger(
+            "Looper-Audio", "Looper-Audio.log",
+            "Looper-Audio " + getApplicationVersion() + " starting up"));
+        juce::Logger::setCurrentLogger(logger.get());
+        juce::Logger::writeToLog("System: " + juce::SystemStats::getOperatingSystemName()
+            + " (" + juce::SystemStats::getDeviceDescription() + ")");
+
         mainWindow = std::make_unique<MainWindow>(getApplicationName());
     }
 
-    void shutdown() override { mainWindow = nullptr; }
+    void shutdown() override
+    {
+        mainWindow = nullptr;
+        juce::Logger::writeToLog("Looper-Audio shutting down");
+        juce::Logger::setCurrentLogger(nullptr);
+        logger = nullptr;
+    }
 
     void systemRequestedQuit() override { quit(); }
 
@@ -48,6 +61,7 @@ private:
     };
 
     std::unique_ptr<MainWindow> mainWindow;
+    std::unique_ptr<juce::FileLogger> logger;
 };
 
 } // namespace looper

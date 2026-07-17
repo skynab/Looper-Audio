@@ -14,7 +14,8 @@ namespace looper
     thread writes control values into atomics; the audio callback only ever reads
     them — it never touches JUCE component state directly.
 */
-class MainComponent final : public juce::AudioAppComponent
+class MainComponent final : public juce::AudioAppComponent,
+                            private juce::ChangeListener
 {
 public:
     MainComponent();
@@ -28,6 +29,10 @@ public:
     void resized() override;
 
 private:
+    // juce::ChangeListener — fires on the message thread when the audio device changes.
+    void changeListenerCallback(juce::ChangeBroadcaster*) override;
+    void logAudioDeviceStatus();
+
     juce::ToggleButton toneButton { "Play test tone" };
     juce::Slider       frequencySlider;
     juce::Slider       gainSlider;

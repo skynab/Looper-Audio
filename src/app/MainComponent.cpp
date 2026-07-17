@@ -46,12 +46,16 @@ MainComponent::MainComponent()
 
     setSize(560, 440);
 
+    // Log audio-device changes from the message thread.
+    deviceManager.addChangeListener(this);
+
     // Request 0 inputs, 2 outputs. Triggers device setup + prepareToPlay().
     setAudioChannels(0, 2);
 }
 
 MainComponent::~MainComponent()
 {
+    deviceManager.removeChangeListener(this);
     shutdownAudio();
 }
 
@@ -123,6 +127,23 @@ void MainComponent::resized()
     area.removeFromTop(12);
 
     deviceSelector.setBounds(area);
+}
+
+void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
+{
+    logAudioDeviceStatus();
+}
+
+void MainComponent::logAudioDeviceStatus()
+{
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+        juce::Logger::writeToLog("Audio device opened: " + device->getName()
+            + " | " + juce::String(device->getCurrentSampleRate(), 0) + " Hz"
+            + " | buffer " + juce::String(device->getCurrentBufferSizeSamples()) + " samples"
+            + " | out channels "
+            + juce::String(device->getActiveOutputChannels().countNumberOfSetBits()));
+    else
+        juce::Logger::writeToLog("Audio device: none open");
 }
 
 } // namespace looper
