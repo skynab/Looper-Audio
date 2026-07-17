@@ -1,149 +1,206 @@
 #include "MainComponent.h"
 
-#include <rt/RealtimeGuard.h>
-
 #include <cmath>
 
 namespace looper
 {
+using Cmd = engine::EngineCommand::Type;
+
 MainComponent::MainComponent()
-    : deviceSelector(deviceManager,
-                     0, 0,     // min/max audio input channels
-                     0, 2,     // min/max audio output channels
-                     false,    // show MIDI input selector
-                     false,    // show MIDI output selector
-                     false,    // treat channels as stereo pairs
-                     false)    // hide advanced options
+    : deviceSelector(engine_.deviceManager(),
+                     0, 0,   // min/max audio inputs
+                     0, 2,   // min/max audio outputs
+                     false,  // show MIDI inputs
+                     false,  // show MIDI outputs
+                     false,  // stereo pair channels
+                     false)  // hide advanced options
 {
-    addAndMakeVisible(toneButton);
-    toneButton.onClick = [this]
+    // ---- transport ----
+    playButton.onClick = [this] { post(Cmd::SetPlaying, 1.0); };
+    stopButton.onClick = [this] { post(Cmd::SetPlaying, 0.0); post(Cmd::Seek, 0.0); };
+    loopButton.onClick = [this]
     {
-        playing_.store(toneButton.getToggleState(), std::memory_order_relaxed);
+        post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
+        updateLoopRegion();
+    };
+    addAndMakeVisible(playButton);
+    addAndMakeVisible(stopButton);
+    addAndMakeVisible(loopButton);
+
+    // ---- test source ----
+    sourceButton.onClick = [this] { post(Cmd::SetSourceEnabled, sourceButton.getToggleState() ? 1.0 : 0.0); };
+    addAndMakeVisible(sourceButton);
+
+    // ---- sliders ----
+    tempoSlider.setRange(40.0, 240.0, 0.1);
+    tempoSlider.setValue(120.0, juce::dontSendNotification);
+    tempoSlider.setTextValueSuffix(" bpm");
+    tempoSlider.onValueChange = [this]
+    {
+        uiTempoMap_.setTempo(tempoSlider.getValue());
+        post(Cmd::SetTempo, tempoSlider.getValue());
+        updateLoopRegion();
     };
 
-    frequencySlider.setRange(50.0, 2000.0, 1.0);
-    frequencySlider.setSkewFactorFromMidPoint(440.0);
-    frequencySlider.setValue(440.0);
-    frequencySlider.setTextValueSuffix(" Hz");
-    frequencySlider.onValueChange = [this]
-    {
-        targetFrequency_.store((float) frequencySlider.getValue(), std::memory_order_relaxed);
-    };
-    addAndMakeVisible(frequencySlider);
-    frequencyLabel.attachToComponent(&frequencySlider, true);
+    freqSlider.setRange(50.0, 2000.0, 1.0);
+    freqSlider.setSkewFactorFromMidPoint(440.0);
+    freqSlider.setValue(440.0, juce::dontSendNotification);
+    freqSlider.setTextValueSuffix(" Hz");
+    freqSlider.onValueChange = [this] { post(Cmd::SetSourceFrequency, freqSlider.getValue()); };
 
     gainSlider.setRange(-60.0, 0.0, 0.1);
-    gainSlider.setValue(-12.0);
+    gainSlider.setValue(-12.0, juce::dontSendNotification);
     gainSlider.setTextValueSuffix(" dB");
-    gainSlider.onValueChange = [this]
-    {
-        targetGainDb_.store((float) gainSlider.getValue(), std::memory_order_relaxed);
-    };
-    addAndMakeVisible(gainSlider);
+    gainSlider.onValueChange = [this] { post(Cmd::SetSourceGainDb, gainSlider.getValue()); };
+
+    masterSlider.setRange(-60.0, 6.0, 0.1);
+    masterSlider.setValue(0.0, juce::dontSendNotification);
+    masterSlider.setTextValueSuffix(" dB");
+    masterSlider.onValueChange = [this] { post(Cmd::SetMasterGainDb, masterSlider.getValue()); };
+
+    for (auto* s : { &tempoSlider, &freqSlider, &gainSlider, &masterSlider })
+        addAndMakeVisible(s);
+
+    tempoLabel.attachToComponent(&tempoSlider, true);
+    freqLabel.attachToComponent(&freqSlider, true);
     gainLabel.attachToComponent(&gainSlider, true);
+    masterLabel.attachToComponent(&masterSlider, true);
+
+    positionLabel.setFont(juce::Font(juce::FontOptions(20.0f)));
+    positionLabel.setText("Bar 1  Beat 1   |   0.00 s   |   STOPPED", juce::dontSendNotification);
+    addAndMakeVisible(positionLabel);
 
     addAndMakeVisible(deviceSelector);
 
-    setSize(560, 440);
+    engine_.deviceManager().addChangeListener(this);
+    logAudioDeviceStatus();
 
-    // Log audio-device changes from the message thread.
-    deviceManager.addChangeListener(this);
-
-    // Request 0 inputs, 2 outputs. Triggers device setup + prepareToPlay().
-    setAudioChannels(0, 2);
+    setSize(600, 540);
+    startTimerHz(30);
 }
 
 MainComponent::~MainComponent()
 {
-    deviceManager.removeChangeListener(this);
-    shutdownAudio();
+    stopTimer();
+    engine_.deviceManager().removeChangeListener(this);
 }
 
-void MainComponent::prepareToPlay(int /*samplesPerBlockExpected*/, double sampleRate)
+void MainComponent::post(engine::EngineCommand::Type type, double a, double b)
 {
-    sampleRate_ = sampleRate;
-    phase_ = 0.0;
-    gain_.reset(sampleRate, 0.02); // 20 ms ramp to avoid clicks
+    engine_.postCommand({ type, a, b });
 }
 
-void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
+void MainComponent::updateLoopRegion()
 {
-    rt::markCurrentThreadAsAudioThread();
-
-    auto* buffer         = bufferToFill.buffer;
-    const auto startSample = bufferToFill.startSample;
-    const auto numSamples  = bufferToFill.numSamples;
-    const auto numChannels = buffer->getNumChannels();
-
-    const bool playing = playing_.load(std::memory_order_relaxed);
-    const float target = playing
-        ? juce::Decibels::decibelsToGain(targetGainDb_.load(std::memory_order_relaxed))
-        : 0.0f;
-    gain_.setTargetValue(target);
-
-    if (sampleRate_ <= 0.0)
-    {
-        bufferToFill.clearActiveBufferRegion();
+    const double sampleRate = engine_.sampleRate();
+    if (sampleRate <= 0.0)
         return;
-    }
 
-    const double frequency = (double) targetFrequency_.load(std::memory_order_relaxed);
-    const double increment = juce::MathConstants<double>::twoPi * frequency / sampleRate_;
-
-    for (int i = 0; i < numSamples; ++i)
-    {
-        const float value = std::sin((float) phase_) * gain_.getNextValue();
-
-        phase_ += increment;
-        if (phase_ >= juce::MathConstants<double>::twoPi)
-            phase_ -= juce::MathConstants<double>::twoPi;
-
-        for (int ch = 0; ch < numChannels; ++ch)
-            buffer->setSample(ch, startSample + i, value);
-    }
+    uiTempoMap_.setSampleRate(sampleRate);
+    const auto barSamples = (int64_t) std::llround(uiTempoMap_.quartersPerBar() * uiTempoMap_.samplesPerBeat());
+    post(Cmd::SetLoopRegion, 0.0, (double) (barSamples * 4)); // 4-bar loop
 }
 
-void MainComponent::releaseResources()
+void MainComponent::timerCallback()
 {
-    // Nothing streamed yet.
+    const double sampleRate = engine_.sampleRate();
+    uiTempoMap_.setSampleRate(sampleRate > 0.0 ? sampleRate : 48000.0);
+
+    const int64_t playhead = engine_.playheadSamples();
+    const auto    bb       = uiTempoMap_.barsBeatsFromSamples(playhead);
+    const double  seconds  = sampleRate > 0.0 ? (double) playhead / sampleRate : 0.0;
+
+    positionLabel.setText(juce::String::formatted("Bar %d  Beat %d   |   %.2f s   |   %s",
+                                                  bb.bar, bb.beat, seconds,
+                                                  engine_.isPlaying() ? "PLAYING" : "STOPPED"),
+                          juce::dontSendNotification);
+
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        const float peak = engine_.masterPeak(ch);
+        meterLevel_[ch] = juce::jmax(peak, meterLevel_[ch] * 0.85f); // fast attack, slow decay
+    }
+
+    if (! meterArea_.isEmpty())
+        repaint(meterArea_);
+}
+
+void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
+{
+    logAudioDeviceStatus();
+    updateLoopRegion();
+}
+
+void MainComponent::logAudioDeviceStatus()
+{
+    if (auto* device = engine_.deviceManager().getCurrentAudioDevice())
+        juce::Logger::writeToLog("Audio device: " + device->getName()
+            + " | " + juce::String(device->getCurrentSampleRate(), 0) + " Hz"
+            + " | buffer " + juce::String(device->getCurrentBufferSizeSamples()) + " samples");
+    else
+        juce::Logger::writeToLog("Audio device: none open");
 }
 
 void MainComponent::paint(juce::Graphics& g)
 {
     g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
+
+    if (meterArea_.isEmpty())
+        return;
+
+    g.setColour(juce::Colours::black.withAlpha(0.35f));
+    g.fillRect(meterArea_);
+
+    const int gap  = 4;
+    const int barW = (meterArea_.getWidth() - gap) / 2;
+
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        auto bar = juce::Rectangle<int>(meterArea_.getX() + ch * (barW + gap),
+                                        meterArea_.getY(), barW, meterArea_.getHeight());
+
+        const float db   = juce::Decibels::gainToDecibels(meterLevel_[ch], -60.0f);
+        const float norm = juce::jlimit(0.0f, 1.0f, (db + 60.0f) / 60.0f);
+
+        auto filled = bar.removeFromBottom(juce::roundToInt((float) bar.getHeight() * norm));
+        g.setColour(norm > 0.9f ? juce::Colours::red
+                                : (norm > 0.7f ? juce::Colours::yellow : juce::Colours::limegreen));
+        g.fillRect(filled);
+    }
 }
 
 void MainComponent::resized()
 {
     auto area = getLocalBounds().reduced(12);
 
-    toneButton.setBounds(area.removeFromTop(28));
-    area.removeFromTop(8);
+    auto row1 = area.removeFromTop(30);
+    playButton.setBounds(row1.removeFromLeft(80));
+    row1.removeFromLeft(6);
+    stopButton.setBounds(row1.removeFromLeft(80));
+    row1.removeFromLeft(14);
+    loopButton.setBounds(row1.removeFromLeft(70));
+    row1.removeFromLeft(14);
+    sourceButton.setBounds(row1);
+    area.removeFromTop(10);
 
-    frequencySlider.setBounds(area.removeFromTop(28).withTrimmedLeft(48));
-    area.removeFromTop(8);
+    positionLabel.setBounds(area.removeFromTop(30));
+    area.removeFromTop(10);
 
-    gainSlider.setBounds(area.removeFromTop(28).withTrimmedLeft(48));
-    area.removeFromTop(12);
+    auto sliderRow = [&](juce::Slider& s)
+    {
+        s.setBounds(area.removeFromTop(26).withTrimmedLeft(70));
+        area.removeFromTop(4);
+    };
+    sliderRow(tempoSlider);
+    sliderRow(freqSlider);
+    sliderRow(gainSlider);
+    sliderRow(masterSlider);
+    area.removeFromTop(10);
+
+    meterArea_ = area.removeFromTop(56);
+    area.removeFromTop(10);
 
     deviceSelector.setBounds(area);
-}
-
-void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
-{
-    logAudioDeviceStatus();
-}
-
-void MainComponent::logAudioDeviceStatus()
-{
-    if (auto* device = deviceManager.getCurrentAudioDevice())
-        juce::Logger::writeToLog("Audio device opened: " + device->getName()
-            + " | " + juce::String(device->getCurrentSampleRate(), 0) + " Hz"
-            + " | buffer " + juce::String(device->getCurrentBufferSizeSamples()) + " samples"
-            + " | out channels "
-            + juce::String(device->getActiveOutputChannels().countNumberOfSetBits()));
-    else
-        juce::Logger::writeToLog("Audio device: none open");
 }
 
 } // namespace looper

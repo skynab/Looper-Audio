@@ -2,53 +2,53 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-#include <atomic>
+#include "engine/AudioEngine.h"
+#include "engine/TempoMap.h"
 
 namespace looper
 {
 /**
-    Phase 0 "hello audio": an AudioAppComponent that generates a sine test tone.
-
-    Its only job is to prove the audio path works end to end on every platform.
-    Note the threading discipline that the rest of the engine will follow: the UI
-    thread writes control values into atomics; the audio callback only ever reads
-    them — it never touches JUCE component state directly.
+    Phase 1 UI. No longer an AudioAppComponent — it owns a headless AudioEngine
+    and interacts with it only through the engine's thread-safe surface: posting
+    commands, and reading published atomics (playhead, meters) on a timer.
 */
-class MainComponent final : public juce::AudioAppComponent,
+class MainComponent final : public juce::Component,
+                            private juce::Timer,
                             private juce::ChangeListener
 {
 public:
     MainComponent();
     ~MainComponent() override;
 
-    void prepareToPlay(int samplesPerBlockExpected, double sampleRate) override;
-    void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override;
-    void releaseResources() override;
-
     void paint(juce::Graphics&) override;
     void resized() override;
 
 private:
-    // juce::ChangeListener — fires on the message thread when the audio device changes.
+    void timerCallback() override;
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
     void logAudioDeviceStatus();
+    void updateLoopRegion();
+    void post(engine::EngineCommand::Type type, double a = 0.0, double b = 0.0);
 
-    juce::ToggleButton toneButton { "Play test tone" };
-    juce::Slider       frequencySlider;
-    juce::Slider       gainSlider;
-    juce::Label        frequencyLabel { {}, "Freq" };
-    juce::Label        gainLabel      { {}, "Gain" };
+    engine::AudioEngine engine_;
+
+    juce::TextButton   playButton   { "Play" };
+    juce::TextButton   stopButton   { "Stop" };
+    juce::ToggleButton loopButton   { "Loop" };
+    juce::ToggleButton sourceButton { "Test source (sine)" };
+
+    juce::Slider tempoSlider, freqSlider, gainSlider, masterSlider;
+    juce::Label  tempoLabel  { {}, "Tempo" };
+    juce::Label  freqLabel   { {}, "Freq" };
+    juce::Label  gainLabel   { {}, "Src gain" };
+    juce::Label  masterLabel { {}, "Master" };
+    juce::Label  positionLabel;
+
     juce::AudioDeviceSelectorComponent deviceSelector;
 
-    // Written by the UI thread, read by the audio thread.
-    std::atomic<bool>  playing_         { false };
-    std::atomic<float> targetGainDb_    { -12.0f };
-    std::atomic<float> targetFrequency_ { 440.0f };
-
-    // Audio-thread-only state.
-    double sampleRate_ = 0.0;
-    double phase_      = 0.0;
-    juce::LinearSmoothedValue<float> gain_ { 0.0f };
+    engine::TempoMap     uiTempoMap_;              // mirror for bars/beats display
+    float                meterLevel_[2] { 0.0f, 0.0f };
+    juce::Rectangle<int> meterArea_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

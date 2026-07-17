@@ -3,8 +3,9 @@
 A cross-platform **loop-centric, AI-assisted DAW** written in C++ — for arranging and
 generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
-> **Status: Phase 0 (scaffold).** The project currently builds a minimal JUCE app that plays a
-> test tone, plus a tested real-time primitives layer. See the full roadmap in
+> **Status: Phase 1 (in progress).** A headless audio engine — processing graph, sample-accurate
+> transport + tempo map, and a lock-free UI→audio command queue — drives a test-tone source through
+> a master bus with metering. Next up: WAV playback + disk streaming. See the full roadmap in
 > [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
@@ -78,8 +79,9 @@ pointing the build at any newer toolchain — in order of preference:
 
 ```
 src/rt/     Lock-free real-time primitives (no JUCE dependency)
-src/app/    Application shell + Phase 0 test-tone component
-tests/      Unit tests
+src/engine/ Headless audio engine: graph, transport, tempo map, nodes
+src/app/    Application shell + engine-driven UI
+tests/      Unit tests (rt + engine)
 docs/       PLAN.md — the multi-year architecture & roadmap
 cmake/      CPM bootstrap and build helpers
 ```

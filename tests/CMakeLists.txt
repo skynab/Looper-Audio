@@ -2,7 +2,9 @@
 # builds and runs fast — configure with -DLOOPER_BUILD_APP=OFF for a quick
 # test-only loop that doesn't pull JUCE.
 add_executable(looper_tests
-  rt/SpscRingBufferTests.cpp)
+  rt/SpscRingBufferTests.cpp
+  engine/TempoMapTests.cpp
+  engine/TransportTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE

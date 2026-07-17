@@ -10,7 +10,8 @@ juce_add_gui_app(LooperAudio
 
 target_sources(LooperAudio PRIVATE
   Main.cpp
-  MainComponent.cpp)
+  MainComponent.cpp
+  ${PROJECT_SOURCE_DIR}/src/engine/AudioEngine.cpp)
 
 # Trim JUCE features we don't need yet — this also removes system dependencies
 # (WebKit, libcurl) that would otherwise be required to build on Linux.
