@@ -9,7 +9,8 @@ add_executable(looper_tests
   engine/MidiNoteTests.cpp
   engine/SequencerMathTests.cpp
   model/HistoryTests.cpp
-  model/SongTests.cpp)
+  model/SongTests.cpp
+  model/SerializationTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE

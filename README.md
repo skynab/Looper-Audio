@@ -4,10 +4,9 @@ A cross-platform **loop-centric, AI-assisted DAW** written in C++ — for arrang
 generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
 > **Status: Phase 3 (in progress).** Phases 1–2 complete (engine, transport, WAV, 16-voice synth,
-> step-grid sequencer). Now a project document (`Song` → tracks → clips) under snapshot undo/redo
-> backs the app — pattern edits are undoable (Undo/Redo buttons, Cmd+Z / Cmd+Shift+Z). Next:
-> multi-track engine playback, an arrangement view, and save/load. See the full roadmap in
-> [`docs/PLAN.md`](docs/PLAN.md).
+> step-grid sequencer). A project document (`Song` → tracks → clips) under snapshot undo/redo backs
+> the app (Undo/Redo, Cmd+Z), with **save/load** to a `.looper` project file. Next: multi-track
+> engine playback and an arrangement view. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 
@@ -81,7 +80,7 @@ pointing the build at any newer toolchain — in order of preference:
 ```
 src/rt/     Lock-free real-time primitives (no JUCE dependency)
 src/engine/ Headless audio engine: graph, transport, tempo map, nodes, sequencer
-src/model/  Project document: Song, Track, Clip, undo history (no JUCE)
+src/model/  Project document: Song, Track, Clip, undo history, save/load (no JUCE)
 src/app/    Application shell + engine-driven UI
 tests/      Unit tests (rt + engine + model)
 docs/       PLAN.md — the multi-year architecture & roadmap

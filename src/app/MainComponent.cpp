@@ -1,5 +1,7 @@
 #include "MainComponent.h"
 
+#include "model/Serialization.h"
+
 #include <cmath>
 
 namespace looper
@@ -40,8 +42,11 @@ MainComponent::MainComponent()
     clearButton.onClick = [this] { pianoRoll_.clear(); };
     undoButton.onClick  = [this] { history_.undo(); refreshFromModel(); };
     redoButton.onClick  = [this] { history_.redo(); refreshFromModel(); };
+    saveButton.onClick  = [this] { saveProject(); };
+    openButton.onClick  = [this] { openProject(); };
 
-    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton, &undoButton, &redoButton })
+    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton,
+                     &undoButton, &redoButton, &saveButton, &openButton })
         addAndMakeVisible(b);
     addAndMakeVisible(loopButton);
 
@@ -172,6 +177,52 @@ void MainComponent::chooseFile()
     });
 }
 
+void MainComponent::saveProject()
+{
+    chooser_ = std::make_unique<juce::FileChooser>("Save project", juce::File{}, "*.looper");
+    const auto flags = juce::FileBrowserComponent::saveMode
+                     | juce::FileBrowserComponent::canSelectFiles
+                     | juce::FileBrowserComponent::warnAboutOverwriting;
+
+    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+        if (file == juce::File{})
+            return;
+
+        file = file.withFileExtension("looper");
+        const std::string text = model::serialize(history_.current());
+        file.replaceWithText(juce::String::fromUTF8(text.c_str()));
+    });
+}
+
+void MainComponent::openProject()
+{
+    chooser_ = std::make_unique<juce::FileChooser>("Open project", juce::File{}, "*.looper");
+    const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+
+    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    {
+        const auto file = fc.getResult();
+        if (file == juce::File{})
+            return;
+
+        model::Song song;
+        if (! model::deserialize(file.loadFileAsString().toStdString(), song))
+        {
+            clipLabel.setText("Could not open: " + file.getFileName(), juce::dontSendNotification);
+            return;
+        }
+
+        history_.reset(song);
+
+        tempoSlider.setValue(song.bpm, juce::dontSendNotification);
+        uiTempoMap_.setTempo(song.bpm);
+        post(Cmd::SetTempo, song.bpm);
+        refreshFromModel();
+    });
+}
+
 void MainComponent::updateLoopRegion()
 {
     const double sampleRate = engine_.sampleRate();
@@ -247,6 +298,10 @@ void MainComponent::resized()
     loadButton.setBounds(row2.removeFromLeft(110));
     row2.removeFromLeft(8);
     clearButton.setBounds(row2.removeFromLeft(100));
+    row2.removeFromLeft(16);
+    saveButton.setBounds(row2.removeFromLeft(80));
+    row2.removeFromLeft(8);
+    openButton.setBounds(row2.removeFromLeft(80));
     area.removeFromTop(8);
 
     positionLabel.setBounds(area.removeFromTop(28));
