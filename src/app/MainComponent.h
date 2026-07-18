@@ -9,6 +9,7 @@
 #include "model/History.h"
 #include "model/Song.h"
 
+#include "ArrangementView.h"
 #include "LevelMeter.h"
 #include "PianoRoll.h"
 
@@ -79,6 +80,8 @@ private:
                                                    juce::MidiKeyboardComponent::horizontalKeyboard };
     LevelMeter                         meter_;
     PianoRoll                          pianoRoll_;
+    ArrangementView                    arrangementView_;
+    juce::TabbedComponent              tabs_ { juce::TabbedButtonBar::TabsAtTop };
     std::unique_ptr<juce::FileChooser> chooser_;
 
     engine::TempoMap uiTempoMap_;

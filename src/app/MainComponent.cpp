@@ -88,7 +88,12 @@ MainComponent::MainComponent()
     addAndMakeVisible(clipLabel);
 
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
-    addAndMakeVisible(pianoRoll_);
+
+    const auto tabBg = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
+    tabs_.addTab("Arrange", tabBg, &arrangementView_, false);
+    tabs_.addTab("Edit", tabBg, &pianoRoll_, false);
+    tabs_.setCurrentTabIndex(1); // start on the note editor
+    addAndMakeVisible(tabs_);
 
     addAndMakeVisible(meter_);
     addAndMakeVisible(keyboard_);
@@ -99,6 +104,7 @@ MainComponent::MainComponent()
     syncEngineTracks();
     engine_.setArmedTrack(0);
     refreshPianoRollForSelected();
+    arrangementView_.setSong(history_.current());
 
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
@@ -166,6 +172,7 @@ void MainComponent::addTrack()
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
+    arrangementView_.setSong(history_.current());
 }
 
 void MainComponent::syncEngineTracks()
@@ -213,6 +220,7 @@ void MainComponent::refreshFromModel()
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
+    arrangementView_.setSong(history_.current());
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -373,6 +381,8 @@ void MainComponent::timerCallback()
 
     meter_.setLevel(0, engine_.masterPeak(0));
     meter_.setLevel(1, engine_.masterPeak(1));
+
+    arrangementView_.setPlayheadBeats(uiTempoMap_.ppqFromSamples(playhead));
 }
 
 void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
@@ -447,7 +457,7 @@ void MainComponent::resized()
     keyboard_.setBounds(area.removeFromBottom(64));
     area.removeFromBottom(10);
 
-    pianoRoll_.setBounds(area);
+    tabs_.setBounds(area);
 }
 
 } // namespace looper
