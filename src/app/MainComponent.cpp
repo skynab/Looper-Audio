@@ -4,6 +4,7 @@
 #include "model/Serialization.h"
 
 #include <cmath>
+#include <vector>
 
 namespace looper
 {
@@ -11,17 +12,12 @@ using Cmd = engine::EngineCommand::Type;
 
 MainComponent::MainComponent()
     : deviceSelector(engine_.deviceManager(),
-                     0, 0,   // min/max audio inputs
-                     0, 2,   // min/max audio outputs
-                     false,  // show MIDI inputs
-                     false,  // show MIDI outputs
-                     false,  // stereo pair channels
-                     false)  // hide advanced options
+                     0, 0, 0, 2, false, false, false, false)
 {
     // ---- document: one instrument track holding the piano-roll pattern ----
     {
         model::Song song;
-        const int trackId = model::addTrack(song, model::TrackType::Instrument, "Synth").id;
+        const int trackId = model::addTrack(song, model::TrackType::Instrument, "Synth 1").id;
         model::Clip clip;
         clip.type        = model::ClipType::Instrument;
         clip.pattern     = pianoRoll_.pattern();
@@ -29,7 +25,6 @@ MainComponent::MainComponent()
         model::addClip(song, trackId, clip);
         history_.reset(song);
     }
-    engine_.setPattern(currentPattern());
 
     // ---- transport ----
     playButton.onClick = [this] { post(Cmd::SetPlaying, 1.0); };
@@ -39,18 +34,30 @@ MainComponent::MainComponent()
         post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
         updateLoopRegion();
     };
-    loadButton.onClick  = [this] { chooseFile(); };
-    clearButton.onClick = [this] { pianoRoll_.clear(); };
-    undoButton.onClick  = [this] { history_.undo(); refreshFromModel(); };
-    redoButton.onClick  = [this] { history_.redo(); refreshFromModel(); };
-    saveButton.onClick   = [this] { saveProject(); };
-    openButton.onClick   = [this] { openProject(); };
-    bounceButton.onClick = [this] { bounceProject(); };
+    loadButton.onClick     = [this] { chooseFile(); };
+    clearButton.onClick    = [this] { pianoRoll_.clear(); };
+    undoButton.onClick     = [this] { history_.undo(); refreshFromModel(); };
+    redoButton.onClick     = [this] { history_.redo(); refreshFromModel(); };
+    saveButton.onClick     = [this] { saveProject(); };
+    openButton.onClick     = [this] { openProject(); };
+    bounceButton.onClick   = [this] { bounceProject(); };
+    addTrackButton.onClick = [this] { addTrack(); };
 
-    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton, &undoButton,
-                     &redoButton, &saveButton, &openButton, &bounceButton })
+    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton, &undoButton, &redoButton,
+                     &saveButton, &openButton, &bounceButton, &addTrackButton })
         addAndMakeVisible(b);
     addAndMakeVisible(loopButton);
+
+    trackSelector_.onChange = [this]
+    {
+        const int id = trackSelector_.getSelectedId();
+        if (id <= 0)
+            return;
+        selectedTrackIndex_ = id - 1;
+        engine_.setArmedTrack(selectedTrackIndex_);
+        refreshPianoRollForSelected();
+    };
+    addAndMakeVisible(trackSelector_);
 
     // ---- sliders ----
     tempoSlider.setRange(40.0, 240.0, 0.1);
@@ -80,7 +87,6 @@ MainComponent::MainComponent()
     clipLabel.setText("No clip loaded", juce::dontSendNotification);
     addAndMakeVisible(clipLabel);
 
-    // ---- piano roll ----
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
     addAndMakeVisible(pianoRoll_);
 
@@ -88,11 +94,17 @@ MainComponent::MainComponent()
     addAndMakeVisible(keyboard_);
     addAndMakeVisible(deviceSelector);
 
+    // Mirror the initial document into the engine + UI.
+    rebuildTrackSelector();
+    syncEngineTracks();
+    engine_.setArmedTrack(0);
+    refreshPianoRollForSelected();
+
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
 
     setWantsKeyboardFocus(true);
-    setSize(680, 820);
+    setSize(680, 840);
     startTimerHz(30);
 }
 
@@ -107,30 +119,100 @@ void MainComponent::post(engine::EngineCommand::Type type, double a, double b)
     engine_.postCommand({ type, a, b });
 }
 
+int MainComponent::trackCount() const
+{
+    return (int) history_.current().tracks.size();
+}
+
 const engine::Pattern& MainComponent::currentPattern() const
 {
     static const engine::Pattern empty;
     const auto& song = history_.current();
-    if (song.tracks.empty() || song.tracks[0].clips.empty())
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
         return empty;
-    return song.tracks[0].clips[0].pattern;
+    const auto& track = song.tracks[(size_t) selectedTrackIndex_];
+    return track.clips.empty() ? empty : track.clips[0].pattern;
 }
 
 void MainComponent::editPattern(const engine::Pattern& pattern)
 {
-    history_.edit("Edit notes", [&pattern](model::Song& s)
+    const int idx = selectedTrackIndex_;
+    history_.edit("Edit notes", [&pattern, idx](model::Song& s)
     {
-        if (! s.tracks.empty() && ! s.tracks[0].clips.empty())
-            s.tracks[0].clips[0].pattern = pattern;
+        if (idx >= 0 && idx < (int) s.tracks.size() && ! s.tracks[(size_t) idx].clips.empty())
+            s.tracks[(size_t) idx].clips[0].pattern = pattern;
     });
-    engine_.setPattern(pattern);
+    engine_.setTrackPattern(idx, pattern);
+}
+
+void MainComponent::addTrack()
+{
+    if (trackCount() >= engine_.maxTracks())
+        return;
+
+    history_.edit("Add track", [](model::Song& s)
+    {
+        const auto name = "Synth " + juce::String((int) s.tracks.size() + 1);
+        const int  id   = model::addTrack(s, model::TrackType::Instrument, name.toStdString()).id;
+        model::Clip clip;
+        clip.type                = model::ClipType::Instrument;
+        clip.lengthBeats         = 4.0;
+        clip.pattern.lengthBeats = 4.0;
+        model::addClip(s, id, clip);
+    });
+
+    selectedTrackIndex_ = trackCount() - 1;
+    rebuildTrackSelector();
+    syncEngineTracks();
+    engine_.setArmedTrack(selectedTrackIndex_);
+    refreshPianoRollForSelected();
+}
+
+void MainComponent::syncEngineTracks()
+{
+    const auto& song = history_.current();
+    const int   n    = juce::jmin((int) song.tracks.size(), engine_.maxTracks());
+
+    for (int i = 0; i < n; ++i)
+    {
+        const auto& track = song.tracks[(size_t) i];
+        engine_.setTrackPattern(i, track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
+        engine_.setTrackMuted(i, track.muted);
+    }
+    engine_.setActiveTrackCount(n);
+}
+
+void MainComponent::rebuildTrackSelector()
+{
+    trackSelector_.clear(juce::dontSendNotification);
+
+    const auto& song = history_.current();
+    for (int i = 0; i < (int) song.tracks.size(); ++i)
+    {
+        const auto& name = song.tracks[(size_t) i].name;
+        trackSelector_.addItem(name.empty() ? ("Track " + juce::String(i + 1)) : juce::String(name), i + 1);
+    }
+
+    if (selectedTrackIndex_ >= (int) song.tracks.size())
+        selectedTrackIndex_ = juce::jmax(0, (int) song.tracks.size() - 1);
+
+    trackSelector_.setSelectedId(selectedTrackIndex_ + 1, juce::dontSendNotification);
+}
+
+void MainComponent::refreshPianoRollForSelected()
+{
+    pianoRoll_.setPattern(currentPattern());
 }
 
 void MainComponent::refreshFromModel()
 {
-    const auto& p = currentPattern();
-    pianoRoll_.setPattern(p);
-    engine_.setPattern(p);
+    if (selectedTrackIndex_ >= trackCount())
+        selectedTrackIndex_ = juce::jmax(0, trackCount() - 1);
+
+    rebuildTrackSelector();
+    syncEngineTracks();
+    engine_.setArmedTrack(selectedTrackIndex_);
+    refreshPianoRollForSelected();
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -217,6 +299,7 @@ void MainComponent::openProject()
         }
 
         history_.reset(song);
+        selectedTrackIndex_ = 0;
 
         tempoSlider.setValue(song.bpm, juce::dontSendNotification);
         uiTempoMap_.setTempo(song.bpm);
@@ -240,11 +323,15 @@ void MainComponent::bounceProject()
 
         file = file.withFileExtension("wav");
 
-        // Offline render uses a fresh synth + sequencer, so it's safe to call
-        // while the live engine is playing.
+        std::vector<engine::Pattern> patterns;
+        for (const auto& track : history_.current().tracks)
+            patterns.push_back(track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
+        if (patterns.empty())
+            patterns.push_back({});
+
         const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 44100.0;
         const double bpm        = history_.current().bpm;
-        const auto   buffer     = engine::OfflineRenderer::render(currentPattern(), bpm, sampleRate, 8.0);
+        const auto   buffer     = engine::OfflineRenderer::render(patterns, bpm, sampleRate, 8.0);
 
         clipLabel.setText(engine::OfflineRenderer::writeWav(file, buffer, sampleRate)
                               ? "Bounced: " + file.getFileName()
@@ -266,10 +353,11 @@ void MainComponent::updateLoopRegion()
 
 void MainComponent::timerCallback()
 {
-    engine_.pump(); // free retired clips/patterns on the message thread
+    engine_.pump();
 
     undoButton.setEnabled(history_.canUndo());
     redoButton.setEnabled(history_.canRedo());
+    addTrackButton.setEnabled(trackCount() < engine_.maxTracks());
 
     const double sampleRate = engine_.sampleRate();
     uiTempoMap_.setSampleRate(sampleRate > 0.0 ? sampleRate : 48000.0);
@@ -347,6 +435,12 @@ void MainComponent::resized()
 
     meter_.setBounds(area.removeFromTop(44));
     area.removeFromTop(10);
+
+    auto trackRow = area.removeFromTop(28);
+    addTrackButton.setBounds(trackRow.removeFromLeft(100));
+    trackRow.removeFromLeft(10);
+    trackSelector_.setBounds(trackRow.removeFromLeft(220));
+    area.removeFromTop(8);
 
     deviceSelector.setBounds(area.removeFromBottom(130));
     area.removeFromBottom(8);

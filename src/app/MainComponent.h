@@ -16,8 +16,9 @@ namespace looper
 {
 /**
     Phase 3 UI. Owns the project document (a Song under an undo History) and a
-    headless AudioEngine. Pattern edits go through the history so undo/redo work;
-    the engine is kept in sync with the document's current pattern.
+    headless AudioEngine. The document may hold several instrument tracks; the
+    piano roll edits the selected one. All edits go through the history (undo/redo)
+    and are mirrored into the engine's fixed track pool.
 */
 class MainComponent final : public juce::Component,
                             private juce::Timer,
@@ -45,20 +46,28 @@ private:
     void                   saveProject();
     void                   openProject();
     void                   bounceProject();
+    void                   addTrack();
+    void                   syncEngineTracks();
+    void                   rebuildTrackSelector();
+    void                   refreshPianoRollForSelected();
+    int                    trackCount() const;
 
     engine::AudioEngine         engine_;
     model::History<model::Song> history_;
+    int                         selectedTrackIndex_ = 0;
 
-    juce::TextButton   playButton  { "Play" };
-    juce::TextButton   stopButton  { "Stop" };
-    juce::TextButton   loadButton  { "Load audio..." };
-    juce::TextButton   clearButton { "Clear notes" };
-    juce::TextButton   undoButton  { "Undo" };
-    juce::TextButton   redoButton  { "Redo" };
-    juce::TextButton   saveButton   { "Save..." };
-    juce::TextButton   openButton   { "Open..." };
-    juce::TextButton   bounceButton { "Bounce..." };
-    juce::ToggleButton loopButton   { "Loop" };
+    juce::TextButton   playButton     { "Play" };
+    juce::TextButton   stopButton     { "Stop" };
+    juce::TextButton   loadButton     { "Load audio..." };
+    juce::TextButton   clearButton    { "Clear notes" };
+    juce::TextButton   undoButton     { "Undo" };
+    juce::TextButton   redoButton     { "Redo" };
+    juce::TextButton   saveButton     { "Save..." };
+    juce::TextButton   openButton     { "Open..." };
+    juce::TextButton   bounceButton   { "Bounce..." };
+    juce::TextButton   addTrackButton { "Add Track" };
+    juce::ToggleButton loopButton     { "Loop" };
+    juce::ComboBox     trackSelector_;
 
     juce::Slider tempoSlider, masterSlider;
     juce::Label  tempoLabel  { {}, "Tempo" };

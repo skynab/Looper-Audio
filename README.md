@@ -3,11 +3,11 @@
 A cross-platform **loop-centric, AI-assisted DAW** written in C++ — for arranging and
 generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
-> **Status: Phases 1–2 complete; Phase 3 in progress.** Engine, transport, WAV playback, 16-voice
-> synth, step-grid sequencer, a project document (`Song` → tracks → clips) with undo/redo and
-> `.looper` save/load, and **offline bounce to WAV** — a headless render tool that doubles as a CI
-> smoke test of the audio path. Next: multi-track engine playback + arrangement view. See the full
-> roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> **Status: Phase 3 (multi-track).** Engine, transport, WAV, synth, step-grid sequencer; a project
+> document (`Song` → tracks → clips) with undo/redo and `.looper` save/load; offline bounce to WAV.
+> The engine now renders **multiple instrument tracks** from a fixed pool — add tracks and edit each
+> one's pattern — verified headlessly by a two-track bounce smoke test. Next: an arrangement view and
+> audio recording. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 
@@ -80,7 +80,7 @@ pointing the build at any newer toolchain — in order of preference:
 
 ```
 src/rt/     Lock-free real-time primitives (no JUCE dependency)
-src/engine/ Headless audio engine: graph, transport, tempo map, nodes, sequencer
+src/engine/ Headless audio engine: transport, tempo map, nodes, sequencer, instrument tracks
 src/model/  Project document: Song, Track, Clip, undo history, save/load (no JUCE)
 src/app/    Application shell + engine-driven UI
 tools/      Command-line tools (headless WAV bounce / audio smoke test)

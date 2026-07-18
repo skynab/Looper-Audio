@@ -14,15 +14,21 @@ int main(int argc, char** argv)
     const double sampleRate = 44100.0;
     const double seconds    = 4.0;
 
-    // C-E-G-C, one note per beat (the same demo the piano roll seeds).
-    Pattern pattern;
-    pattern.lengthBeats = 4.0;
-    const int root      = 60;
-    const int arp[]     = { 0, 4, 7, 12 };
+    // Track 1: C-E-G-C arpeggio, one note per beat (the piano-roll demo).
+    Pattern arp;
+    arp.lengthBeats = 4.0;
+    const int root     = 60;
+    const int arpNotes[] = { 0, 4, 7, 12 };
     for (int i = 0; i < 4; ++i)
-        pattern.notes.push_back({ (double) i, 0.5, root + arp[i], 0.8f });
+        arp.notes.push_back({ (double) i, 0.5, root + arpNotes[i], 0.8f });
 
-    const auto buffer = OfflineRenderer::render(pattern, bpm, sampleRate, seconds);
+    // Track 2: a simple root-note bass on beats 1 and 3, to exercise track summing.
+    Pattern bass;
+    bass.lengthBeats = 4.0;
+    bass.notes.push_back({ 0.0, 1.0, 36, 0.9f });
+    bass.notes.push_back({ 2.0, 1.0, 43, 0.9f });
+
+    const auto buffer = OfflineRenderer::render({ arp, bass }, bpm, sampleRate, seconds);
 
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");

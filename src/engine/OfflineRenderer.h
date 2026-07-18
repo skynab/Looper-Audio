@@ -3,26 +3,27 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <vector>
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/InstrumentTrack.h"
 #include "engine/Pattern.h"
 #include "engine/ProcessContext.h"
-#include "engine/Sequencer.h"
-#include "engine/SynthInstrumentNode.h"
 
 namespace looper::engine
 {
 /**
-    Renders a pattern to audio offline (no audio device), reusing the exact same
-    synth + sequencer the live engine uses. This is what the "Bounce" export and
-    the headless bounce tool are built on — and it's the first path that lets the
-    audio output be inspected without hardware.
+    Renders patterns to audio offline (no audio device), reusing the exact same
+    InstrumentTrack render path the live engine uses. This is what "Bounce" and
+    the headless bounce tool are built on — and the first way the audio output can
+    be inspected without hardware.
 */
 class OfflineRenderer
 {
 public:
-    static juce::AudioBuffer<float> render(const Pattern& pattern,
+    /** Renders one instrument track per pattern, summed. */
+    static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
                                            double bpm,
                                            double sampleRate,
                                            double numSeconds,
@@ -32,14 +33,17 @@ public:
         juce::AudioBuffer<float> output(2, std::max(1, totalSamples));
         output.clear();
 
-        SynthInstrumentNode synth;
-        synth.prepare(sampleRate, blockSize);
+        std::vector<std::unique_ptr<InstrumentTrack>> tracks;
+        for (const auto& pattern : patterns)
+        {
+            auto track = std::make_unique<InstrumentTrack>();
+            track->prepare(sampleRate, blockSize);
+            track->sequencer.submitPattern(new Pattern(pattern));
+            tracks.push_back(std::move(track));
+        }
 
-        Sequencer sequencer;
-        sequencer.submitPattern(new Pattern(pattern));
-
-        juce::MidiBuffer          midi;
-        juce::AudioBuffer<float>  block(2, blockSize);
+        juce::AudioBuffer<float> block(2, blockSize);
+        juce::MidiBuffer         noLiveMidi;
 
         int64_t playhead = 0;
         for (int pos = 0; pos < totalSamples; pos += blockSize)
@@ -47,7 +51,6 @@ public:
             const int n = std::min(blockSize, totalSamples - pos);
             block.setSize(2, n, false, false, true);
             block.clear();
-            midi.clear();
 
             ProcessContext ctx;
             ctx.sampleRate                = sampleRate;
@@ -56,8 +59,8 @@ public:
             ctx.transport.playheadSamples = playhead;
             ctx.transport.bpm             = bpm;
 
-            sequencer.renderBlock(midi, ctx);
-            synth.process(block, midi, ctx);
+            for (auto& track : tracks)
+                track->render(block, noLiveMidi, ctx, false);
 
             for (int ch = 0; ch < 2; ++ch)
                 output.copyFrom(ch, pos, block, ch, 0, n);
@@ -66,6 +69,13 @@ public:
         }
 
         return output;
+    }
+
+    /** Convenience overload for a single pattern. */
+    static juce::AudioBuffer<float> render(const Pattern& pattern, double bpm,
+                                           double sampleRate, double numSeconds, int blockSize = 512)
+    {
+        return render(std::vector<Pattern> { pattern }, bpm, sampleRate, numSeconds, blockSize);
     }
 
     /** Writes a buffer to a 24-bit WAV. Returns false on failure. */

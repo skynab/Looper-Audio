@@ -11,15 +11,12 @@ struct EngineCommand
 {
     enum class Type
     {
-        SetPlaying,        // a: 0/1
-        SetLooping,        // a: 0/1
-        Seek,              // a: sample position
-        SetTempo,          // a: bpm
-        SetLoopRegion,     // a: start sample, b: end sample
-        SetSourceEnabled,  // a: 0/1
-        SetSourceFrequency,// a: Hz
-        SetSourceGainDb,   // a: dB
-        SetMasterGainDb    // a: dB
+        SetPlaying,     // a: 0/1
+        SetLooping,     // a: 0/1
+        Seek,           // a: sample position
+        SetTempo,       // a: bpm
+        SetLoopRegion,  // a: start sample, b: end sample
+        SetMasterGainDb // a: dB
     };
 
     Type   type {};

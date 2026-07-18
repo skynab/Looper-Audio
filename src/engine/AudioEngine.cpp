@@ -2,6 +2,7 @@
 
 #include "rt/RealtimeGuard.h"
 
+#include <algorithm>
 #include <limits>
 #include <memory>
 
@@ -10,22 +11,6 @@ namespace looper::engine
 AudioEngine::AudioEngine()
 {
     formatManager_.registerBasicFormats();
-
-    auto synth = std::make_unique<SynthInstrumentNode>();
-    synth_ = synth.get();
-    graph_.addSource(std::move(synth));
-
-    auto oscillator = std::make_unique<OscillatorNode>();
-    oscillator_ = oscillator.get();
-    graph_.addSource(std::move(oscillator));
-
-    auto filePlayer = std::make_unique<AudioFilePlayerNode>();
-    filePlayer_ = filePlayer.get();
-    graph_.addSource(std::move(filePlayer));
-
-    auto master = std::make_unique<MasterBusNode>();
-    master_ = master.get();
-    graph_.setMaster(std::move(master));
 
     deviceManager_.initialiseWithDefaultDevices(0, 2);
     deviceManager_.addAudioCallback(this);
@@ -49,7 +34,6 @@ AudioEngine::~AudioEngine()
 
 void AudioEngine::handleIncomingMidiMessage(juce::MidiInput* /*source*/, const juce::MidiMessage& message)
 {
-    // Called on the MIDI thread; the collector timestamps and hands off to audio.
     midiCollector_.addMessageToQueue(message);
 }
 
@@ -76,22 +60,41 @@ bool AudioEngine::loadAudioFile(const juce::File& file)
     loadedClipName_    = file.getFileName();
     loadedClipSeconds_ = reader->sampleRate > 0.0 ? (double) length / reader->sampleRate : 0.0;
 
-    filePlayer_->collectRetiredClips();      // free any previous clip first
-    filePlayer_->submitClip(clip.release()); // hand ownership to the audio thread
+    filePlayer_.collectRetiredClips();
+    filePlayer_.submitClip(clip.release());
     return true;
 }
 
-void AudioEngine::setPattern(const Pattern& pattern)
+void AudioEngine::setActiveTrackCount(int count)
 {
-    sequencer_.submitPattern(new Pattern(pattern));
+    const int clamped = juce::jlimit(0, kMaxTracks, count);
+    for (int i = 0; i < kMaxTracks; ++i)
+        tracks_[(size_t) i].active.store(i < clamped, std::memory_order_relaxed);
+}
+
+void AudioEngine::setTrackPattern(int index, const Pattern& pattern)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].sequencer.submitPattern(new Pattern(pattern));
+}
+
+void AudioEngine::setTrackMuted(int index, bool muted)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].muted.store(muted, std::memory_order_relaxed);
+}
+
+void AudioEngine::setArmedTrack(int index)
+{
+    armedTrack_.store(juce::jlimit(0, kMaxTracks - 1, index), std::memory_order_relaxed);
 }
 
 void AudioEngine::pump() noexcept
 {
-    if (filePlayer_ != nullptr)
-        filePlayer_->collectRetiredClips();
+    for (auto& track : tracks_)
+        track.sequencer.collectRetired();
 
-    sequencer_.collectRetired();
+    filePlayer_.collectRetiredClips();
 }
 
 void AudioEngine::drainCommandQueue() noexcept
@@ -101,15 +104,12 @@ void AudioEngine::drainCommandQueue() noexcept
     {
         switch (command.type)
         {
-            case EngineCommand::Type::SetPlaying:         transport_.setPlaying(command.a != 0.0); break;
-            case EngineCommand::Type::SetLooping:         transport_.setLooping(command.a != 0.0); break;
-            case EngineCommand::Type::Seek:               transport_.seek((int64_t) command.a); break;
-            case EngineCommand::Type::SetTempo:           transport_.setTempo(command.a); break;
-            case EngineCommand::Type::SetLoopRegion:      transport_.setLoopRegion((int64_t) command.a, (int64_t) command.b); break;
-            case EngineCommand::Type::SetSourceEnabled:   oscillator_->setEnabled(command.a != 0.0); break;
-            case EngineCommand::Type::SetSourceFrequency: oscillator_->setFrequency((float) command.a); break;
-            case EngineCommand::Type::SetSourceGainDb:    oscillator_->setGainDb((float) command.a); break;
-            case EngineCommand::Type::SetMasterGainDb:    master_->setGainDb((float) command.a); break;
+            case EngineCommand::Type::SetPlaying:      transport_.setPlaying(command.a != 0.0); break;
+            case EngineCommand::Type::SetLooping:      transport_.setLooping(command.a != 0.0); break;
+            case EngineCommand::Type::Seek:            transport_.seek((int64_t) command.a); break;
+            case EngineCommand::Type::SetTempo:        transport_.setTempo(command.a); break;
+            case EngineCommand::Type::SetLoopRegion:   transport_.setLoopRegion((int64_t) command.a, (int64_t) command.b); break;
+            case EngineCommand::Type::SetMasterGainDb: master_.setGainDb((float) command.a); break;
         }
     }
 }
@@ -125,9 +125,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputCh
     drainCommandQueue();
 
     juce::AudioBuffer<float> output(outputChannelData, numOutputChannels, numSamples);
+    output.clear();
 
-    // Gather this block's MIDI: external inputs (via the collector) merged with
-    // the on-screen keyboard (via the shared keyboard state).
     incomingMidi_.clear();
     midiCollector_.removeNextBlockOfMessages(incomingMidi_, numSamples);
     keyboardState_.processNextMidiBuffer(incomingMidi_, 0, numSamples, true);
@@ -137,11 +136,16 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputCh
     context.numSamples = numSamples;
     context.transport  = transport_.snapshot();
 
-    // Sequenced notes are added to the same buffer, so the synth plays them
-    // alongside anything live.
-    sequencer_.renderBlock(incomingMidi_, context);
+    const int armed = armedTrack_.load(std::memory_order_relaxed);
+    for (int i = 0; i < kMaxTracks; ++i)
+    {
+        if (tracks_[(size_t) i].active.load(std::memory_order_relaxed))
+            tracks_[(size_t) i].render(output, incomingMidi_, context, i == armed);
+    }
 
-    graph_.process(output, incomingMidi_, context);
+    // The file player and master ignore the MIDI buffer.
+    filePlayer_.process(output, incomingMidi_, context);
+    master_.process(output, incomingMidi_, context);
 
     transport_.advance(numSamples);
 }
@@ -153,14 +157,19 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
 
     sampleRate_.store(sampleRate, std::memory_order_relaxed);
     midiCollector_.reset(sampleRate);
-    incomingMidi_.ensureSize(2048); // preallocate so the audio thread doesn't grow it
+    incomingMidi_.ensureSize(2048);
     transport_.prepare(sampleRate);
-    graph_.prepare(sampleRate, blockSize);
+
+    for (auto& track : tracks_)
+        track.prepare(sampleRate, blockSize);
+
+    filePlayer_.prepare(sampleRate, blockSize);
+    master_.prepare(sampleRate, blockSize);
 }
 
 void AudioEngine::audioDeviceStopped()
 {
-    graph_.release();
+    filePlayer_.release();
 }
 
 } // namespace looper::engine
