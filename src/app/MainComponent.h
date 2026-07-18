@@ -8,13 +8,14 @@
 #include "engine/TempoMap.h"
 
 #include "LevelMeter.h"
+#include "PianoRoll.h"
 
 namespace looper
 {
 /**
-    Phase 1 UI. Owns a headless AudioEngine and interacts with it only through the
-    engine's thread-safe surface: posting commands, loading files, reading
-    published atomics (playhead, meters) on a timer.
+    Phase 2 UI. Owns a headless AudioEngine and interacts with it only through the
+    engine's thread-safe surface: posting commands, loading files, submitting
+    patterns, and reading published atomics (playhead, meters) on a timer.
 */
 class MainComponent final : public juce::Component,
                             private juce::Timer,
@@ -37,24 +38,22 @@ private:
 
     engine::AudioEngine engine_;
 
-    juce::TextButton   playButton   { "Play" };
-    juce::TextButton   stopButton   { "Stop" };
-    juce::TextButton   loadButton   { "Load audio..." };
-    juce::ToggleButton loopButton   { "Loop" };
-    juce::ToggleButton sourceButton { "Test source (sine)" };
+    juce::TextButton   playButton  { "Play" };
+    juce::TextButton   stopButton  { "Stop" };
+    juce::TextButton   loadButton  { "Load audio..." };
+    juce::TextButton   clearButton { "Clear notes" };
+    juce::ToggleButton loopButton  { "Loop" };
 
-    juce::Slider tempoSlider, freqSlider, gainSlider, masterSlider;
+    juce::Slider tempoSlider, masterSlider;
     juce::Label  tempoLabel  { {}, "Tempo" };
-    juce::Label  freqLabel   { {}, "Freq" };
-    juce::Label  gainLabel   { {}, "Src gain" };
     juce::Label  masterLabel { {}, "Master" };
-    juce::Label  positionLabel;
-    juce::Label  clipLabel;
+    juce::Label  positionLabel, clipLabel;
 
     juce::AudioDeviceSelectorComponent deviceSelector;
     juce::MidiKeyboardComponent        keyboard_ { engine_.keyboardState(),
                                                    juce::MidiKeyboardComponent::horizontalKeyboard };
     LevelMeter                         meter_;
+    PianoRoll                          pianoRoll_;
     std::unique_ptr<juce::FileChooser> chooser_;
 
     engine::TempoMap uiTempoMap_; // mirror for bars/beats display

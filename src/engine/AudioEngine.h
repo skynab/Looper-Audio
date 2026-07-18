@@ -13,6 +13,8 @@
 #include "engine/EngineCommand.h"
 #include "engine/MasterBusNode.h"
 #include "engine/OscillatorNode.h"
+#include "engine/Pattern.h"
+#include "engine/Sequencer.h"
 #include "engine/SynthInstrumentNode.h"
 #include "engine/Transport.h"
 
@@ -44,6 +46,9 @@ public:
 
     /** Decode an audio file into RAM and hand it to the file-player node. Message thread. */
     bool loadAudioFile(const juce::File& file);
+
+    /** Replace the sequenced pattern (snapshotted and handed to the audio thread). Message thread. */
+    void setPattern(const Pattern& pattern);
 
     /** Housekeeping to run periodically on the message thread (frees retired clips). */
     void pump() noexcept;
@@ -86,6 +91,7 @@ private:
     AudioFilePlayerNode* filePlayer_ = nullptr; // owned by graph_
     MasterBusNode*       master_     = nullptr; // owned by graph_
     Transport            transport_;
+    Sequencer            sequencer_;
 
     std::atomic<double> sampleRate_ { 0.0 };
 

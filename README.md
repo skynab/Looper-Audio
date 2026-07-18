@@ -3,10 +3,11 @@
 A cross-platform **loop-centric, AI-assisted DAW** written in C++ — for arranging and
 generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
-> **Status: Phase 2 (in progress).** Phase 1 is complete (engine, transport, WAV playback,
-> metering). A 16-voice polyphonic synth now plays live MIDI — from an on-screen keyboard or an
-> external MIDI input — routed through the graph. Next: note scheduling from a pattern + a mini
-> piano roll. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> **Status: Phase 2 complete.** On top of Phase 1 (engine, transport, WAV playback, metering):
+> a 16-voice synth playing live MIDI (on-screen keyboard or external input) plus a step-grid
+> piano roll whose pattern a sample-accurate `Sequencer` drives into the synth, looping in time.
+> Next: Phase 3 (document model — tracks, clips, arrangement, undo/redo, save/load). See the full
+> roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

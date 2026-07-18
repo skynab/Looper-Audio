@@ -81,10 +81,17 @@ bool AudioEngine::loadAudioFile(const juce::File& file)
     return true;
 }
 
+void AudioEngine::setPattern(const Pattern& pattern)
+{
+    sequencer_.submitPattern(new Pattern(pattern));
+}
+
 void AudioEngine::pump() noexcept
 {
     if (filePlayer_ != nullptr)
         filePlayer_->collectRetiredClips();
+
+    sequencer_.collectRetired();
 }
 
 void AudioEngine::drainCommandQueue() noexcept
@@ -129,6 +136,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputCh
     context.sampleRate = sampleRate_.load(std::memory_order_relaxed);
     context.numSamples = numSamples;
     context.transport  = transport_.snapshot();
+
+    // Sequenced notes are added to the same buffer, so the synth plays them
+    // alongside anything live.
+    sequencer_.renderBlock(incomingMidi_, context);
 
     graph_.process(output, incomingMidi_, context);
 

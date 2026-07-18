@@ -6,7 +6,8 @@ add_executable(looper_tests
   engine/TempoMapTests.cpp
   engine/TransportTests.cpp
   engine/InterpolationTests.cpp
-  engine/MidiNoteTests.cpp)
+  engine/MidiNoteTests.cpp
+  engine/SequencerMathTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE

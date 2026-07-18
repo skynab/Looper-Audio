@@ -23,15 +23,12 @@ MainComponent::MainComponent()
         post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
         updateLoopRegion();
     };
-    loadButton.onClick = [this] { chooseFile(); };
-    addAndMakeVisible(playButton);
-    addAndMakeVisible(stopButton);
-    addAndMakeVisible(loopButton);
-    addAndMakeVisible(loadButton);
+    loadButton.onClick  = [this] { chooseFile(); };
+    clearButton.onClick = [this] { pianoRoll_.clear(); };
 
-    // ---- test source ----
-    sourceButton.onClick = [this] { post(Cmd::SetSourceEnabled, sourceButton.getToggleState() ? 1.0 : 0.0); };
-    addAndMakeVisible(sourceButton);
+    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton })
+        addAndMakeVisible(b);
+    addAndMakeVisible(loopButton);
 
     // ---- sliders ----
     tempoSlider.setRange(40.0, 240.0, 0.1);
@@ -44,28 +41,14 @@ MainComponent::MainComponent()
         updateLoopRegion();
     };
 
-    freqSlider.setRange(50.0, 2000.0, 1.0);
-    freqSlider.setSkewFactorFromMidPoint(440.0);
-    freqSlider.setValue(440.0, juce::dontSendNotification);
-    freqSlider.setTextValueSuffix(" Hz");
-    freqSlider.onValueChange = [this] { post(Cmd::SetSourceFrequency, freqSlider.getValue()); };
-
-    gainSlider.setRange(-60.0, 0.0, 0.1);
-    gainSlider.setValue(-12.0, juce::dontSendNotification);
-    gainSlider.setTextValueSuffix(" dB");
-    gainSlider.onValueChange = [this] { post(Cmd::SetSourceGainDb, gainSlider.getValue()); };
-
     masterSlider.setRange(-60.0, 6.0, 0.1);
     masterSlider.setValue(0.0, juce::dontSendNotification);
     masterSlider.setTextValueSuffix(" dB");
     masterSlider.onValueChange = [this] { post(Cmd::SetMasterGainDb, masterSlider.getValue()); };
 
-    for (auto* s : { &tempoSlider, &freqSlider, &gainSlider, &masterSlider })
-        addAndMakeVisible(s);
-
+    addAndMakeVisible(tempoSlider);
+    addAndMakeVisible(masterSlider);
     tempoLabel.attachToComponent(&tempoSlider, true);
-    freqLabel.attachToComponent(&freqSlider, true);
-    gainLabel.attachToComponent(&gainSlider, true);
     masterLabel.attachToComponent(&masterSlider, true);
 
     positionLabel.setFont(juce::Font(juce::FontOptions(20.0f)));
@@ -75,6 +58,11 @@ MainComponent::MainComponent()
     clipLabel.setText("No clip loaded", juce::dontSendNotification);
     addAndMakeVisible(clipLabel);
 
+    // ---- pattern / piano roll ----
+    pianoRoll_.onChange = [this](const engine::Pattern& p) { engine_.setPattern(p); };
+    addAndMakeVisible(pianoRoll_);
+    engine_.setPattern(pianoRoll_.pattern()); // seed the engine with the demo pattern
+
     addAndMakeVisible(meter_);
     addAndMakeVisible(keyboard_);
     addAndMakeVisible(deviceSelector);
@@ -82,7 +70,7 @@ MainComponent::MainComponent()
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
 
-    setSize(640, 700);
+    setSize(680, 780);
     startTimerHz(30);
 }
 
@@ -132,7 +120,7 @@ void MainComponent::updateLoopRegion()
 
 void MainComponent::timerCallback()
 {
-    engine_.pump(); // free retired clips on the message thread
+    engine_.pump(); // free retired clips/patterns on the message thread
 
     const double sampleRate = engine_.sampleRate();
     uiTempoMap_.setSampleRate(sampleRate > 0.0 ? sampleRate : 48000.0);
@@ -176,42 +164,37 @@ void MainComponent::resized()
     auto area = getLocalBounds().reduced(12);
 
     auto row1 = area.removeFromTop(30);
-    playButton.setBounds(row1.removeFromLeft(80));
+    playButton.setBounds(row1.removeFromLeft(70));
     row1.removeFromLeft(6);
-    stopButton.setBounds(row1.removeFromLeft(80));
-    row1.removeFromLeft(14);
-    loopButton.setBounds(row1.removeFromLeft(70));
-    row1.removeFromLeft(14);
-    sourceButton.setBounds(row1);
+    stopButton.setBounds(row1.removeFromLeft(70));
+    row1.removeFromLeft(12);
+    loopButton.setBounds(row1.removeFromLeft(60));
+    row1.removeFromLeft(12);
+    loadButton.setBounds(row1.removeFromLeft(110));
+    row1.removeFromLeft(8);
+    clearButton.setBounds(row1.removeFromLeft(100));
     area.removeFromTop(8);
 
-    auto row2 = area.removeFromTop(28);
-    loadButton.setBounds(row2.removeFromLeft(120));
-    row2.removeFromLeft(12);
-    clipLabel.setBounds(row2);
+    positionLabel.setBounds(area.removeFromTop(28));
+    clipLabel.setBounds(area.removeFromTop(22));
+    area.removeFromTop(6);
+
+    tempoSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
+    area.removeFromTop(4);
+    masterSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
+    area.removeFromTop(8);
+
+    meter_.setBounds(area.removeFromTop(44));
     area.removeFromTop(10);
 
-    positionLabel.setBounds(area.removeFromTop(30));
-    area.removeFromTop(10);
+    // Bottom-anchored: device selector, then the keyboard above it.
+    deviceSelector.setBounds(area.removeFromBottom(130));
+    area.removeFromBottom(8);
+    keyboard_.setBounds(area.removeFromBottom(64));
+    area.removeFromBottom(10);
 
-    auto sliderRow = [&](juce::Slider& s)
-    {
-        s.setBounds(area.removeFromTop(26).withTrimmedLeft(70));
-        area.removeFromTop(4);
-    };
-    sliderRow(tempoSlider);
-    sliderRow(freqSlider);
-    sliderRow(gainSlider);
-    sliderRow(masterSlider);
-    area.removeFromTop(10);
-
-    meter_.setBounds(area.removeFromTop(60));
-    area.removeFromTop(10);
-
-    keyboard_.setBounds(area.removeFromTop(80));
-    area.removeFromTop(10);
-
-    deviceSelector.setBounds(area);
+    // The piano roll takes the flexible middle.
+    pianoRoll_.setBounds(area);
 }
 
 } // namespace looper
