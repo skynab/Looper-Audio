@@ -6,6 +6,8 @@
 
 #include "engine/AudioEngine.h"
 #include "engine/TempoMap.h"
+#include "model/History.h"
+#include "model/Song.h"
 
 #include "LevelMeter.h"
 #include "PianoRoll.h"
@@ -13,9 +15,9 @@
 namespace looper
 {
 /**
-    Phase 2 UI. Owns a headless AudioEngine and interacts with it only through the
-    engine's thread-safe surface: posting commands, loading files, submitting
-    patterns, and reading published atomics (playhead, meters) on a timer.
+    Phase 3 UI. Owns the project document (a Song under an undo History) and a
+    headless AudioEngine. Pattern edits go through the history so undo/redo work;
+    the engine is kept in sync with the document's current pattern.
 */
 class MainComponent final : public juce::Component,
                             private juce::Timer,
@@ -27,6 +29,7 @@ public:
 
     void paint(juce::Graphics&) override;
     void resized() override;
+    bool keyPressed(const juce::KeyPress& key) override;
 
 private:
     void timerCallback() override;
@@ -36,12 +39,19 @@ private:
     void chooseFile();
     void post(engine::EngineCommand::Type type, double a = 0.0, double b = 0.0);
 
-    engine::AudioEngine engine_;
+    void                   editPattern(const engine::Pattern& pattern);
+    void                   refreshFromModel();
+    const engine::Pattern& currentPattern() const;
+
+    engine::AudioEngine         engine_;
+    model::History<model::Song> history_;
 
     juce::TextButton   playButton  { "Play" };
     juce::TextButton   stopButton  { "Stop" };
     juce::TextButton   loadButton  { "Load audio..." };
     juce::TextButton   clearButton { "Clear notes" };
+    juce::TextButton   undoButton  { "Undo" };
+    juce::TextButton   redoButton  { "Redo" };
     juce::ToggleButton loopButton  { "Loop" };
 
     juce::Slider tempoSlider, masterSlider;
@@ -56,7 +66,7 @@ private:
     PianoRoll                          pianoRoll_;
     std::unique_ptr<juce::FileChooser> chooser_;
 
-    engine::TempoMap uiTempoMap_; // mirror for bars/beats display
+    engine::TempoMap uiTempoMap_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

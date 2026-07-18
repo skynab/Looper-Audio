@@ -3,11 +3,11 @@
 A cross-platform **loop-centric, AI-assisted DAW** written in C++ — for arranging and
 generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
-> **Status: Phase 2 complete.** On top of Phase 1 (engine, transport, WAV playback, metering):
-> a 16-voice synth playing live MIDI (on-screen keyboard or external input) plus a step-grid
-> piano roll whose pattern a sample-accurate `Sequencer` drives into the synth, looping in time.
-> Next: Phase 3 (document model — tracks, clips, arrangement, undo/redo, save/load). See the full
-> roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> **Status: Phase 3 (in progress).** Phases 1–2 complete (engine, transport, WAV, 16-voice synth,
+> step-grid sequencer). Now a project document (`Song` → tracks → clips) under snapshot undo/redo
+> backs the app — pattern edits are undoable (Undo/Redo buttons, Cmd+Z / Cmd+Shift+Z). Next:
+> multi-track engine playback, an arrangement view, and save/load. See the full roadmap in
+> [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 
@@ -80,9 +80,10 @@ pointing the build at any newer toolchain — in order of preference:
 
 ```
 src/rt/     Lock-free real-time primitives (no JUCE dependency)
-src/engine/ Headless audio engine: graph, transport, tempo map, nodes
+src/engine/ Headless audio engine: graph, transport, tempo map, nodes, sequencer
+src/model/  Project document: Song, Track, Clip, undo history (no JUCE)
 src/app/    Application shell + engine-driven UI
-tests/      Unit tests (rt + engine)
+tests/      Unit tests (rt + engine + model)
 docs/       PLAN.md — the multi-year architecture & roadmap
 cmake/      CPM bootstrap and build helpers
 ```

@@ -7,7 +7,9 @@ add_executable(looper_tests
   engine/TransportTests.cpp
   engine/InterpolationTests.cpp
   engine/MidiNoteTests.cpp
-  engine/SequencerMathTests.cpp)
+  engine/SequencerMathTests.cpp
+  model/HistoryTests.cpp
+  model/SongTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE

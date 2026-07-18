@@ -25,6 +25,13 @@ public:
 
     const engine::Pattern& pattern() const noexcept { return pattern_; }
 
+    /** Replace the displayed pattern without firing onChange (used for undo/redo). */
+    void setPattern(const engine::Pattern& p)
+    {
+        pattern_ = p;
+        repaint();
+    }
+
     void clear()
     {
         pattern_.notes.clear();

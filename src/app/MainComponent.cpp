@@ -15,6 +15,19 @@ MainComponent::MainComponent()
                      false,  // stereo pair channels
                      false)  // hide advanced options
 {
+    // ---- document: one instrument track holding the piano-roll pattern ----
+    {
+        model::Song song;
+        const int trackId = model::addTrack(song, model::TrackType::Instrument, "Synth").id;
+        model::Clip clip;
+        clip.type        = model::ClipType::Instrument;
+        clip.pattern     = pianoRoll_.pattern();
+        clip.lengthBeats = clip.pattern.lengthBeats;
+        model::addClip(song, trackId, clip);
+        history_.reset(song);
+    }
+    engine_.setPattern(currentPattern());
+
     // ---- transport ----
     playButton.onClick = [this] { post(Cmd::SetPlaying, 1.0); };
     stopButton.onClick = [this] { post(Cmd::SetPlaying, 0.0); post(Cmd::Seek, 0.0); };
@@ -25,8 +38,10 @@ MainComponent::MainComponent()
     };
     loadButton.onClick  = [this] { chooseFile(); };
     clearButton.onClick = [this] { pianoRoll_.clear(); };
+    undoButton.onClick  = [this] { history_.undo(); refreshFromModel(); };
+    redoButton.onClick  = [this] { history_.redo(); refreshFromModel(); };
 
-    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton })
+    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton, &undoButton, &redoButton })
         addAndMakeVisible(b);
     addAndMakeVisible(loopButton);
 
@@ -58,10 +73,9 @@ MainComponent::MainComponent()
     clipLabel.setText("No clip loaded", juce::dontSendNotification);
     addAndMakeVisible(clipLabel);
 
-    // ---- pattern / piano roll ----
-    pianoRoll_.onChange = [this](const engine::Pattern& p) { engine_.setPattern(p); };
+    // ---- piano roll ----
+    pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
     addAndMakeVisible(pianoRoll_);
-    engine_.setPattern(pianoRoll_.pattern()); // seed the engine with the demo pattern
 
     addAndMakeVisible(meter_);
     addAndMakeVisible(keyboard_);
@@ -70,7 +84,8 @@ MainComponent::MainComponent()
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
 
-    setSize(680, 780);
+    setWantsKeyboardFocus(true);
+    setSize(680, 820);
     startTimerHz(30);
 }
 
@@ -83,6 +98,56 @@ MainComponent::~MainComponent()
 void MainComponent::post(engine::EngineCommand::Type type, double a, double b)
 {
     engine_.postCommand({ type, a, b });
+}
+
+const engine::Pattern& MainComponent::currentPattern() const
+{
+    static const engine::Pattern empty;
+    const auto& song = history_.current();
+    if (song.tracks.empty() || song.tracks[0].clips.empty())
+        return empty;
+    return song.tracks[0].clips[0].pattern;
+}
+
+void MainComponent::editPattern(const engine::Pattern& pattern)
+{
+    history_.edit("Edit notes", [&pattern](model::Song& s)
+    {
+        if (! s.tracks.empty() && ! s.tracks[0].clips.empty())
+            s.tracks[0].clips[0].pattern = pattern;
+    });
+    engine_.setPattern(pattern);
+}
+
+void MainComponent::refreshFromModel()
+{
+    const auto& p = currentPattern();
+    pianoRoll_.setPattern(p);
+    engine_.setPattern(p);
+}
+
+bool MainComponent::keyPressed(const juce::KeyPress& key)
+{
+    if (key.getModifiers().isCommandDown())
+    {
+        const int code = key.getKeyCode();
+        if (code == 'Z' || code == 'z')
+        {
+            if (key.getModifiers().isShiftDown())
+                history_.redo();
+            else
+                history_.undo();
+            refreshFromModel();
+            return true;
+        }
+        if (code == 'Y' || code == 'y')
+        {
+            history_.redo();
+            refreshFromModel();
+            return true;
+        }
+    }
+    return false;
 }
 
 void MainComponent::chooseFile()
@@ -121,6 +186,9 @@ void MainComponent::updateLoopRegion()
 void MainComponent::timerCallback()
 {
     engine_.pump(); // free retired clips/patterns on the message thread
+
+    undoButton.setEnabled(history_.canUndo());
+    redoButton.setEnabled(history_.canRedo());
 
     const double sampleRate = engine_.sampleRate();
     uiTempoMap_.setSampleRate(sampleRate > 0.0 ? sampleRate : 48000.0);
@@ -169,10 +237,16 @@ void MainComponent::resized()
     stopButton.setBounds(row1.removeFromLeft(70));
     row1.removeFromLeft(12);
     loopButton.setBounds(row1.removeFromLeft(60));
-    row1.removeFromLeft(12);
-    loadButton.setBounds(row1.removeFromLeft(110));
-    row1.removeFromLeft(8);
-    clearButton.setBounds(row1.removeFromLeft(100));
+    row1.removeFromLeft(18);
+    undoButton.setBounds(row1.removeFromLeft(70));
+    row1.removeFromLeft(6);
+    redoButton.setBounds(row1.removeFromLeft(70));
+    area.removeFromTop(8);
+
+    auto row2 = area.removeFromTop(28);
+    loadButton.setBounds(row2.removeFromLeft(110));
+    row2.removeFromLeft(8);
+    clearButton.setBounds(row2.removeFromLeft(100));
     area.removeFromTop(8);
 
     positionLabel.setBounds(area.removeFromTop(28));
@@ -187,13 +261,11 @@ void MainComponent::resized()
     meter_.setBounds(area.removeFromTop(44));
     area.removeFromTop(10);
 
-    // Bottom-anchored: device selector, then the keyboard above it.
     deviceSelector.setBounds(area.removeFromBottom(130));
     area.removeFromBottom(8);
     keyboard_.setBounds(area.removeFromBottom(64));
     area.removeFromBottom(10);
 
-    // The piano roll takes the flexible middle.
     pianoRoll_.setBounds(area);
 }
 
