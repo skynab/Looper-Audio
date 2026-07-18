@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 
+#include "engine/OfflineRenderer.h"
 #include "model/Serialization.h"
 
 #include <cmath>
@@ -42,11 +43,12 @@ MainComponent::MainComponent()
     clearButton.onClick = [this] { pianoRoll_.clear(); };
     undoButton.onClick  = [this] { history_.undo(); refreshFromModel(); };
     redoButton.onClick  = [this] { history_.redo(); refreshFromModel(); };
-    saveButton.onClick  = [this] { saveProject(); };
-    openButton.onClick  = [this] { openProject(); };
+    saveButton.onClick   = [this] { saveProject(); };
+    openButton.onClick   = [this] { openProject(); };
+    bounceButton.onClick = [this] { bounceProject(); };
 
-    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton,
-                     &undoButton, &redoButton, &saveButton, &openButton })
+    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton, &undoButton,
+                     &redoButton, &saveButton, &openButton, &bounceButton })
         addAndMakeVisible(b);
     addAndMakeVisible(loopButton);
 
@@ -223,6 +225,34 @@ void MainComponent::openProject()
     });
 }
 
+void MainComponent::bounceProject()
+{
+    chooser_ = std::make_unique<juce::FileChooser>("Bounce to WAV", juce::File{}, "*.wav");
+    const auto flags = juce::FileBrowserComponent::saveMode
+                     | juce::FileBrowserComponent::canSelectFiles
+                     | juce::FileBrowserComponent::warnAboutOverwriting;
+
+    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+        if (file == juce::File{})
+            return;
+
+        file = file.withFileExtension("wav");
+
+        // Offline render uses a fresh synth + sequencer, so it's safe to call
+        // while the live engine is playing.
+        const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 44100.0;
+        const double bpm        = history_.current().bpm;
+        const auto   buffer     = engine::OfflineRenderer::render(currentPattern(), bpm, sampleRate, 8.0);
+
+        clipLabel.setText(engine::OfflineRenderer::writeWav(file, buffer, sampleRate)
+                              ? "Bounced: " + file.getFileName()
+                              : juce::String("Bounce failed"),
+                          juce::dontSendNotification);
+    });
+}
+
 void MainComponent::updateLoopRegion()
 {
     const double sampleRate = engine_.sampleRate();
@@ -302,6 +332,8 @@ void MainComponent::resized()
     saveButton.setBounds(row2.removeFromLeft(80));
     row2.removeFromLeft(8);
     openButton.setBounds(row2.removeFromLeft(80));
+    row2.removeFromLeft(8);
+    bounceButton.setBounds(row2.removeFromLeft(90));
     area.removeFromTop(8);
 
     positionLabel.setBounds(area.removeFromTop(28));

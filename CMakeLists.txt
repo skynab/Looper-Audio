@@ -22,6 +22,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(LOOPER_BUILD_APP   "Build the Looper-Audio application (pulls JUCE)" ON)
 option(LOOPER_BUILD_TESTS "Build unit tests (pulls Catch2)"                 ON)
+option(LOOPER_BUILD_TOOLS "Build command-line tools (needs JUCE)"          ON)
+
+enable_testing()
 
 include(cmake/get_cpm.cmake)
 
@@ -38,11 +41,15 @@ if(LOOPER_BUILD_APP)
     GIT_TAG 8.0.14
     VERSION 8.0.14)
   add_subdirectory(src/app)
+
+  # Tools link JUCE, so they build only when the app (and thus JUCE) is enabled.
+  if(LOOPER_BUILD_TOOLS)
+    add_subdirectory(tools/bounce)
+  endif()
 endif()
 
 # ---- Tests -------------------------------------------------------------------
 if(LOOPER_BUILD_TESTS)
-  enable_testing()
   CPMAddPackage(
     NAME Catch2
     GITHUB_REPOSITORY catchorg/Catch2

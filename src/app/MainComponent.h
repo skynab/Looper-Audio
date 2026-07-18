@@ -44,6 +44,7 @@ private:
     const engine::Pattern& currentPattern() const;
     void                   saveProject();
     void                   openProject();
+    void                   bounceProject();
 
     engine::AudioEngine         engine_;
     model::History<model::Song> history_;
@@ -54,9 +55,10 @@ private:
     juce::TextButton   clearButton { "Clear notes" };
     juce::TextButton   undoButton  { "Undo" };
     juce::TextButton   redoButton  { "Redo" };
-    juce::TextButton   saveButton  { "Save..." };
-    juce::TextButton   openButton  { "Open..." };
-    juce::ToggleButton loopButton  { "Loop" };
+    juce::TextButton   saveButton   { "Save..." };
+    juce::TextButton   openButton   { "Open..." };
+    juce::TextButton   bounceButton { "Bounce..." };
+    juce::ToggleButton loopButton   { "Loop" };
 
     juce::Slider tempoSlider, masterSlider;
     juce::Label  tempoLabel  { {}, "Tempo" };
