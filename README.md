@@ -37,12 +37,15 @@ cmake -S . -B build
 # Build everything
 cmake --build build --parallel
 
-# Run the app
-./build/bin/LooperAudio            # macOS/Linux
-# .\build\bin\LooperAudio.exe      # Windows
+# Run the app — JUCE puts the GUI app under LooperAudio_artefacts/, not build/bin/
+# (build/bin/ only holds console tools like looper_tests and looper_bounce).
+open build/src/app/LooperAudio_artefacts/Release/Looper-Audio.app                     # macOS
+# ./build/src/app/LooperAudio_artefacts/Release/Looper-Audio.app/Contents/MacOS/Looper-Audio  # macOS, attached to terminal
+# ./build/src/app/LooperAudio_artefacts/Release/Looper-Audio                          # Linux
+# .\build\src\app\LooperAudio_artefacts\Release\Looper-Audio.exe                      # Windows
 ```
 
-On macOS the app is bundled — launch `build/LooperAudio_artefacts/<Config>/Looper-Audio.app`.
+(Replace `Release` with your build type if you configured a different one.)
 
 ## Tests
 
