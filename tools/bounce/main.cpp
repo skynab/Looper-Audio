@@ -4,6 +4,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "engine/DelayEffect.h"
+#include "engine/FilterEffect.h"
 #include "engine/OfflineRenderer.h"
 
 // Headless bounce: renders a demo arpeggio to a WAV so the synth + sequencer
@@ -61,6 +62,22 @@ int main(int argc, char** argv)
     const float rmsWet       = wet.getRMSLevel(0, 0, wet.getNumSamples());
     const bool  delayChanged = std::abs(rmsWet - rmsDry) > 1.0e-4f;
 
+    // Filter check: a low-pass well below the note content should reduce the level.
+    juce::AudioBuffer<float> filtered(buffer.getNumChannels(), buffer.getNumSamples());
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        filtered.copyFrom(ch, 0, buffer, ch, 0, buffer.getNumSamples());
+
+    FilterEffect filter;
+    filter.prepare(sampleRate, 512);
+    filter.setEnabled(true);
+    filter.setMode(0); // low-pass
+    filter.setCutoff(150.0f);
+    filter.setResonance(0.707f);
+    filter.process(filtered);
+
+    const float rmsFiltered      = filtered.getRMSLevel(0, 0, filtered.getNumSamples());
+    const bool  filterAttenuates = rmsFiltered < rmsDry;
+
     // The written file is the wet (delayed) mix.
     if (! OfflineRenderer::writeWav(out, wet, sampleRate))
     {
@@ -72,13 +89,15 @@ int main(int argc, char** argv)
               << "  frames=" << wet.getNumSamples()
               << "  rmsDry=" << rmsDry
               << "  rmsWet=" << rmsWet
+              << "  rmsFiltered=" << rmsFiltered
               << "  gainRatio(-6dB)=" << gainRatio
-              << "  delayChanged=" << (delayChanged ? 1 : 0) << "\n";
+              << "  delayChanged=" << (delayChanged ? 1 : 0)
+              << "  filterAtten=" << (filterAttenuates ? 1 : 0) << "\n";
 
-    // Non-silent output, a correct -6 dB gain ratio, and a delay that alters the
-    // signal together confirm the render + gain + effect paths.
+    // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
+    // signal, and a low-pass that attenuates together confirm the full path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
-                 && delayChanged;
+                 && delayChanged && filterAttenuates;
     return ok ? 0 : 2;
 }

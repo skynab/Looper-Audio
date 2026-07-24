@@ -11,6 +11,7 @@
 
 #include "engine/AudioFilePlayerNode.h"
 #include "engine/DelayEffect.h"
+#include "engine/FilterEffect.h"
 #include "engine/EngineCommand.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/MasterBusNode.h"
@@ -52,7 +53,12 @@ public:
     void setTrackGainDb(int index, float gainDb);
     void setArmedTrack(int index);
 
-    // Master delay (thread-safe atomics; safe to call from the message thread).
+    // Master effects (thread-safe atomics; safe to call from the message thread).
+    void setMasterFilterEnabled(bool enabled)  { masterFilter_.setEnabled(enabled); }
+    void setMasterFilterMode(int mode)         { masterFilter_.setMode(mode); }
+    void setMasterFilterCutoff(float hz)       { masterFilter_.setCutoff(hz); }
+    void setMasterFilterResonance(float q)     { masterFilter_.setResonance(q); }
+
     void setMasterDelayEnabled(bool enabled)   { masterDelay_.setEnabled(enabled); }
     void setMasterDelayTimeMs(float ms)        { masterDelay_.setTimeMs(ms); }
     void setMasterDelayFeedback(float amount)  { masterDelay_.setFeedback(amount); }
@@ -97,6 +103,7 @@ private:
     std::atomic<int>                        armedTrack_ { 0 };
 
     AudioFilePlayerNode filePlayer_;
+    FilterEffect        masterFilter_;
     DelayEffect         masterDelay_;
     MasterBusNode       master_;
     Transport           transport_;

@@ -151,6 +151,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputCh
 
     // The file player and master ignore the MIDI buffer.
     filePlayer_.process(output, incomingMidi_, context);
+    masterFilter_.process(output);
     masterDelay_.process(output);
     master_.process(output, incomingMidi_, context);
 
@@ -171,6 +172,7 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
         track.prepare(sampleRate, blockSize);
 
     filePlayer_.prepare(sampleRate, blockSize);
+    masterFilter_.prepare(sampleRate, blockSize);
     masterDelay_.prepare(sampleRate, blockSize);
     master_.prepare(sampleRate, blockSize);
 }

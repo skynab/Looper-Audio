@@ -13,4 +13,15 @@ struct DelaySettings
     bool operator==(const DelaySettings&) const = default;
 };
 
+/** Master filter settings. mode: 0 = low-pass, 1 = high-pass, 2 = band-pass. */
+struct FilterSettings
+{
+    bool  enabled   = false;
+    int   mode      = 0;
+    float cutoff    = 1000.0f; // Hz
+    float resonance = 0.707f;
+
+    bool operator==(const FilterSettings&) const = default;
+};
+
 } // namespace looper::model

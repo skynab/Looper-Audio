@@ -37,11 +37,14 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 2\n";
+    out << "LOOPER 3\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
     out << "NEXTID " << song.nextId << "\n";
+    out << "FILTER " << (song.filter.enabled ? 1 : 0) << " " << song.filter.mode << " "
+        << detail::num((double) song.filter.cutoff) << " "
+        << detail::num((double) song.filter.resonance) << "\n";
     out << "DELAY " << (song.delay.enabled ? 1 : 0) << " "
         << detail::num((double) song.delay.timeMs) << " "
         << detail::num((double) song.delay.feedback) << " "
@@ -101,6 +104,18 @@ inline bool deserialize(const std::string& text, Song& out)
     if (! readTagged("TSNUM", rest))  return false; song.timeSigNumerator = std::atoi(rest.c_str());
     if (! readTagged("TSDEN", rest))  return false; song.timeSigDenominator = std::atoi(rest.c_str());
     if (! readTagged("NEXTID", rest)) return false; song.nextId = std::atoi(rest.c_str());
+
+    if (! readTagged("FILTER", rest)) return false;
+    {
+        std::istringstream fs(rest);
+        int    enabled = 0, mode = 0;
+        double cutoff = 0.0, resonance = 0.0;
+        fs >> enabled >> mode >> cutoff >> resonance;
+        song.filter.enabled   = enabled != 0;
+        song.filter.mode      = mode;
+        song.filter.cutoff    = (float) cutoff;
+        song.filter.resonance = (float) resonance;
+    }
 
     if (! readTagged("DELAY", rest)) return false;
     {

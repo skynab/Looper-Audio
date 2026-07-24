@@ -53,6 +53,7 @@ private:
     void                   refreshPianoRollForSelected();
     void                   updateTrackControls();
     void                   updateDelayControls();
+    void                   updateFilterControls();
     void                   setSelectedTrackGain(float gainDb);
     void                   setSelectedTrackMuted(bool muted);
     int                    trackCount() const;
@@ -77,6 +78,9 @@ private:
     juce::Slider       trackGainSlider;
 
     juce::Slider       tempoSlider, masterSlider;
+    juce::ToggleButton filterButton { "Filter" };
+    juce::ComboBox     filterModeBox_;
+    juce::Slider       filterCutoffSlider, filterResoSlider;
     juce::ToggleButton delayButton { "Delay" };
     juce::Slider       delayTimeSlider, delayFbSlider, delayMixSlider;
     juce::Label        tempoLabel  { {}, "Tempo" };

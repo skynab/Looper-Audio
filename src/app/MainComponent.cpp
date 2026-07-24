@@ -90,6 +90,50 @@ MainComponent::MainComponent()
     tempoLabel.attachToComponent(&tempoSlider, true);
     masterLabel.attachToComponent(&masterSlider, true);
 
+    // ---- master filter (stored in the document) ----
+    filterButton.onClick = [this]
+    {
+        const bool on = filterButton.getToggleState();
+        history_.mutableCurrent().filter.enabled = on;
+        engine_.setMasterFilterEnabled(on);
+    };
+    addAndMakeVisible(filterButton);
+
+    filterModeBox_.addItem("Low-pass", 1);
+    filterModeBox_.addItem("High-pass", 2);
+    filterModeBox_.addItem("Band-pass", 3);
+    filterModeBox_.setSelectedId(1, juce::dontSendNotification);
+    filterModeBox_.onChange = [this]
+    {
+        const int mode = juce::jmax(0, filterModeBox_.getSelectedId() - 1);
+        history_.mutableCurrent().filter.mode = mode;
+        engine_.setMasterFilterMode(mode);
+    };
+    addAndMakeVisible(filterModeBox_);
+
+    filterCutoffSlider.setRange(20.0, 18000.0, 1.0);
+    filterCutoffSlider.setSkewFactorFromMidPoint(1000.0);
+    filterCutoffSlider.setValue(1000.0, juce::dontSendNotification);
+    filterCutoffSlider.setTextValueSuffix(" Hz");
+    filterCutoffSlider.onValueChange = [this]
+    {
+        const float hz = (float) filterCutoffSlider.getValue();
+        history_.mutableCurrent().filter.cutoff = hz;
+        engine_.setMasterFilterCutoff(hz);
+    };
+    addAndMakeVisible(filterCutoffSlider);
+
+    filterResoSlider.setRange(0.1, 5.0, 0.01);
+    filterResoSlider.setValue(0.707, juce::dontSendNotification);
+    filterResoSlider.setTextValueSuffix(" Q");
+    filterResoSlider.onValueChange = [this]
+    {
+        const float q = (float) filterResoSlider.getValue();
+        history_.mutableCurrent().filter.resonance = q;
+        engine_.setMasterFilterResonance(q);
+    };
+    addAndMakeVisible(filterResoSlider);
+
     // ---- master delay (stored in the document, so it saves + restores) ----
     delayButton.onClick = [this]
     {
@@ -159,12 +203,13 @@ MainComponent::MainComponent()
     arrangementView_.setSong(history_.current());
     updateTrackControls();
     updateDelayControls();
+    updateFilterControls();
 
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
 
     setWantsKeyboardFocus(true);
-    setSize(680, 872);
+    setSize(680, 904);
     startTimerHz(30);
 }
 
@@ -292,6 +337,20 @@ void MainComponent::updateDelayControls()
     engine_.setMasterDelayMix(d.mix);
 }
 
+void MainComponent::updateFilterControls()
+{
+    const auto& f = history_.current().filter;
+    filterButton.setToggleState(f.enabled, juce::dontSendNotification);
+    filterModeBox_.setSelectedId(f.mode + 1, juce::dontSendNotification);
+    filterCutoffSlider.setValue(f.cutoff, juce::dontSendNotification);
+    filterResoSlider.setValue(f.resonance, juce::dontSendNotification);
+
+    engine_.setMasterFilterEnabled(f.enabled);
+    engine_.setMasterFilterMode(f.mode);
+    engine_.setMasterFilterCutoff(f.cutoff);
+    engine_.setMasterFilterResonance(f.resonance);
+}
+
 void MainComponent::setSelectedTrackGain(float gainDb)
 {
     // Live tweak: update the current document in place (not a separate undo step).
@@ -323,6 +382,7 @@ void MainComponent::refreshFromModel()
     arrangementView_.setSong(history_.current());
     updateTrackControls();
     updateDelayControls();
+    updateFilterControls();
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -451,6 +511,17 @@ void MainComponent::bounceProject()
         const double bpm        = song.bpm;
         auto         buffer     = engine::OfflineRenderer::render(patterns, gains, bpm, sampleRate, 8.0);
 
+        if (song.filter.enabled)
+        {
+            engine::FilterEffect ff;
+            ff.prepare(sampleRate, 512);
+            ff.setEnabled(true);
+            ff.setMode(song.filter.mode);
+            ff.setCutoff(song.filter.cutoff);
+            ff.setResonance(song.filter.resonance);
+            ff.process(buffer);
+        }
+
         if (song.delay.enabled)
         {
             engine::DelayEffect fx;
@@ -562,6 +633,17 @@ void MainComponent::resized()
     tempoSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
     area.removeFromTop(4);
     masterSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
+    area.removeFromTop(6);
+
+    auto filterRow = area.removeFromTop(26);
+    filterButton.setBounds(filterRow.removeFromLeft(64));
+    filterRow.removeFromLeft(6);
+    filterModeBox_.setBounds(filterRow.removeFromLeft(104));
+    filterRow.removeFromLeft(8);
+    const int fw = juce::jmax(80, (filterRow.getWidth() - 8) / 2);
+    filterCutoffSlider.setBounds(filterRow.removeFromLeft(fw));
+    filterRow.removeFromLeft(8);
+    filterResoSlider.setBounds(filterRow);
     area.removeFromTop(6);
 
     auto delayRow = area.removeFromTop(26);
