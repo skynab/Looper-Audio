@@ -10,6 +10,7 @@ add_executable(looper_tests
   engine/SequencerMathTests.cpp
   engine/DelayLineTests.cpp
   engine/StateVariableFilterTests.cpp
+  engine/ReverbTests.cpp
   model/HistoryTests.cpp
   model/SongTests.cpp
   model/SerializationTests.cpp)

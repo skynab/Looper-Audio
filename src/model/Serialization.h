@@ -37,7 +37,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 3\n";
+    out << "LOOPER 4\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -49,6 +49,10 @@ inline std::string serialize(const Song& song)
         << detail::num((double) song.delay.timeMs) << " "
         << detail::num((double) song.delay.feedback) << " "
         << detail::num((double) song.delay.mix) << "\n";
+    out << "REVERB " << (song.reverb.enabled ? 1 : 0) << " "
+        << detail::num((double) song.reverb.roomSize) << " "
+        << detail::num((double) song.reverb.damping) << " "
+        << detail::num((double) song.reverb.mix) << "\n";
     out << "TRACKS " << song.tracks.size() << "\n";
 
     for (const auto& track : song.tracks)
@@ -127,6 +131,18 @@ inline bool deserialize(const std::string& text, Song& out)
         song.delay.timeMs   = (float) timeMs;
         song.delay.feedback = (float) feedback;
         song.delay.mix      = (float) mix;
+    }
+
+    if (! readTagged("REVERB", rest)) return false;
+    {
+        std::istringstream rs(rest);
+        int    enabled = 0;
+        double roomSize = 0.0, damping = 0.0, mix = 0.0;
+        rs >> enabled >> roomSize >> damping >> mix;
+        song.reverb.enabled  = enabled != 0;
+        song.reverb.roomSize = (float) roomSize;
+        song.reverb.damping  = (float) damping;
+        song.reverb.mix      = (float) mix;
     }
 
     if (! readTagged("TRACKS", rest)) return false;

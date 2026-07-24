@@ -12,6 +12,7 @@
 #include "engine/AudioFilePlayerNode.h"
 #include "engine/DelayEffect.h"
 #include "engine/FilterEffect.h"
+#include "engine/ReverbEffect.h"
 #include "engine/EngineCommand.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/MasterBusNode.h"
@@ -64,6 +65,11 @@ public:
     void setMasterDelayFeedback(float amount)  { masterDelay_.setFeedback(amount); }
     void setMasterDelayMix(float amount)       { masterDelay_.setMix(amount); }
 
+    void setMasterReverbEnabled(bool enabled)  { masterReverb_.setEnabled(enabled); }
+    void setMasterReverbRoomSize(float v)      { masterReverb_.setRoomSize(v); }
+    void setMasterReverbDamping(float v)       { masterReverb_.setDamping(v); }
+    void setMasterReverbMix(float v)           { masterReverb_.setMix(v); }
+
     /** Housekeeping to run periodically on the message thread (frees retired clips/patterns). */
     void pump() noexcept;
 
@@ -105,6 +111,7 @@ private:
     AudioFilePlayerNode filePlayer_;
     FilterEffect        masterFilter_;
     DelayEffect         masterDelay_;
+    ReverbEffect        masterReverb_;
     MasterBusNode       master_;
     Transport           transport_;
 

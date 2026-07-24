@@ -19,6 +19,10 @@ static Song makeSampleSong()
     s.filter.mode        = 1;
     s.filter.cutoff      = 800.0f;
     s.filter.resonance   = 1.2f;
+    s.reverb.enabled     = true;
+    s.reverb.roomSize    = 0.7f;
+    s.reverb.damping     = 0.4f;
+    s.reverb.mix         = 0.25f;
 
     const int synthId = addTrack(s, TrackType::Instrument, "Synth Lead").id; // name with a space
 

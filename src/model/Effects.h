@@ -24,4 +24,15 @@ struct FilterSettings
     bool operator==(const FilterSettings&) const = default;
 };
 
+/** Master reverb settings. */
+struct ReverbSettings
+{
+    bool  enabled  = false;
+    float roomSize = 0.5f; // 0..1
+    float damping  = 0.5f; // 0..1
+    float mix      = 0.3f; // 0..1
+
+    bool operator==(const ReverbSettings&) const = default;
+};
+
 } // namespace looper::model

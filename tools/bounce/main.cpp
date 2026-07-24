@@ -6,6 +6,7 @@
 #include "engine/DelayEffect.h"
 #include "engine/FilterEffect.h"
 #include "engine/OfflineRenderer.h"
+#include "engine/ReverbEffect.h"
 
 // Headless bounce: renders a demo arpeggio to a WAV so the synth + sequencer
 // audio path can be verified without an audio device. Also usable as a smoke test.
@@ -78,6 +79,22 @@ int main(int argc, char** argv)
     const float rmsFiltered      = filtered.getRMSLevel(0, 0, filtered.getNumSamples());
     const bool  filterAttenuates = rmsFiltered < rmsDry;
 
+    // Reverb check: enabling reverb must change the signal.
+    juce::AudioBuffer<float> reverbed(buffer.getNumChannels(), buffer.getNumSamples());
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        reverbed.copyFrom(ch, 0, buffer, ch, 0, buffer.getNumSamples());
+
+    ReverbEffect reverb;
+    reverb.prepare(sampleRate, 512);
+    reverb.setEnabled(true);
+    reverb.setRoomSize(0.7f);
+    reverb.setDamping(0.4f);
+    reverb.setMix(0.4f);
+    reverb.process(reverbed);
+
+    const float rmsReverbed  = reverbed.getRMSLevel(0, 0, reverbed.getNumSamples());
+    const bool  reverbChanged = std::abs(rmsReverbed - rmsDry) > 1.0e-4f;
+
     // The written file is the wet (delayed) mix.
     if (! OfflineRenderer::writeWav(out, wet, sampleRate))
     {
@@ -92,12 +109,14 @@ int main(int argc, char** argv)
               << "  rmsFiltered=" << rmsFiltered
               << "  gainRatio(-6dB)=" << gainRatio
               << "  delayChanged=" << (delayChanged ? 1 : 0)
-              << "  filterAtten=" << (filterAttenuates ? 1 : 0) << "\n";
+              << "  filterAtten=" << (filterAttenuates ? 1 : 0)
+              << "  reverbChanged=" << (reverbChanged ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
-    // signal, and a low-pass that attenuates together confirm the full path.
+    // signal, a low-pass that attenuates, and a reverb that changes the signal
+    // together confirm the full render + gain + effects path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
-                 && delayChanged && filterAttenuates;
+                 && delayChanged && filterAttenuates && reverbChanged;
     return ok ? 0 : 2;
 }

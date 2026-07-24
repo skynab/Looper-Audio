@@ -54,6 +54,7 @@ private:
     void                   updateTrackControls();
     void                   updateDelayControls();
     void                   updateFilterControls();
+    void                   updateReverbControls();
     void                   setSelectedTrackGain(float gainDb);
     void                   setSelectedTrackMuted(bool muted);
     int                    trackCount() const;
@@ -83,6 +84,8 @@ private:
     juce::Slider       filterCutoffSlider, filterResoSlider;
     juce::ToggleButton delayButton { "Delay" };
     juce::Slider       delayTimeSlider, delayFbSlider, delayMixSlider;
+    juce::ToggleButton reverbButton { "Reverb" };
+    juce::Slider       reverbRoomSlider, reverbDampSlider, reverbMixSlider;
     juce::Label        tempoLabel  { {}, "Tempo" };
     juce::Label        masterLabel { {}, "Master" };
     juce::Label  positionLabel, clipLabel;

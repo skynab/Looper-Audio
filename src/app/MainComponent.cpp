@@ -176,6 +176,48 @@ MainComponent::MainComponent()
     };
     addAndMakeVisible(delayMixSlider);
 
+    // ---- master reverb (stored in the document) ----
+    reverbButton.onClick = [this]
+    {
+        const bool on = reverbButton.getToggleState();
+        history_.mutableCurrent().reverb.enabled = on;
+        engine_.setMasterReverbEnabled(on);
+    };
+    addAndMakeVisible(reverbButton);
+
+    reverbRoomSlider.setRange(0.0, 100.0, 1.0);
+    reverbRoomSlider.setValue(50.0, juce::dontSendNotification);
+    reverbRoomSlider.setTextValueSuffix(" room");
+    reverbRoomSlider.onValueChange = [this]
+    {
+        const float v = (float) (reverbRoomSlider.getValue() / 100.0);
+        history_.mutableCurrent().reverb.roomSize = v;
+        engine_.setMasterReverbRoomSize(v);
+    };
+    addAndMakeVisible(reverbRoomSlider);
+
+    reverbDampSlider.setRange(0.0, 100.0, 1.0);
+    reverbDampSlider.setValue(50.0, juce::dontSendNotification);
+    reverbDampSlider.setTextValueSuffix(" damp");
+    reverbDampSlider.onValueChange = [this]
+    {
+        const float v = (float) (reverbDampSlider.getValue() / 100.0);
+        history_.mutableCurrent().reverb.damping = v;
+        engine_.setMasterReverbDamping(v);
+    };
+    addAndMakeVisible(reverbDampSlider);
+
+    reverbMixSlider.setRange(0.0, 100.0, 1.0);
+    reverbMixSlider.setValue(30.0, juce::dontSendNotification);
+    reverbMixSlider.setTextValueSuffix(" %");
+    reverbMixSlider.onValueChange = [this]
+    {
+        const float v = (float) (reverbMixSlider.getValue() / 100.0);
+        history_.mutableCurrent().reverb.mix = v;
+        engine_.setMasterReverbMix(v);
+    };
+    addAndMakeVisible(reverbMixSlider);
+
     positionLabel.setFont(juce::Font(juce::FontOptions(20.0f)));
     positionLabel.setText("Bar 1  Beat 1   |   0.00 s   |   STOPPED", juce::dontSendNotification);
     addAndMakeVisible(positionLabel);
@@ -204,12 +246,13 @@ MainComponent::MainComponent()
     updateTrackControls();
     updateDelayControls();
     updateFilterControls();
+    updateReverbControls();
 
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
 
     setWantsKeyboardFocus(true);
-    setSize(680, 904);
+    setSize(680, 936);
     startTimerHz(30);
 }
 
@@ -351,6 +394,20 @@ void MainComponent::updateFilterControls()
     engine_.setMasterFilterResonance(f.resonance);
 }
 
+void MainComponent::updateReverbControls()
+{
+    const auto& rv = history_.current().reverb;
+    reverbButton.setToggleState(rv.enabled, juce::dontSendNotification);
+    reverbRoomSlider.setValue(rv.roomSize * 100.0, juce::dontSendNotification);
+    reverbDampSlider.setValue(rv.damping * 100.0, juce::dontSendNotification);
+    reverbMixSlider.setValue(rv.mix * 100.0, juce::dontSendNotification);
+
+    engine_.setMasterReverbEnabled(rv.enabled);
+    engine_.setMasterReverbRoomSize(rv.roomSize);
+    engine_.setMasterReverbDamping(rv.damping);
+    engine_.setMasterReverbMix(rv.mix);
+}
+
 void MainComponent::setSelectedTrackGain(float gainDb)
 {
     // Live tweak: update the current document in place (not a separate undo step).
@@ -383,6 +440,7 @@ void MainComponent::refreshFromModel()
     updateTrackControls();
     updateDelayControls();
     updateFilterControls();
+    updateReverbControls();
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -533,6 +591,17 @@ void MainComponent::bounceProject()
             fx.process(buffer);
         }
 
+        if (song.reverb.enabled)
+        {
+            engine::ReverbEffect rv;
+            rv.prepare(sampleRate, 512);
+            rv.setEnabled(true);
+            rv.setRoomSize(song.reverb.roomSize);
+            rv.setDamping(song.reverb.damping);
+            rv.setMix(song.reverb.mix);
+            rv.process(buffer);
+        }
+
         clipLabel.setText(engine::OfflineRenderer::writeWav(file, buffer, sampleRate)
                               ? "Bounced: " + file.getFileName()
                               : juce::String("Bounce failed"),
@@ -655,6 +724,17 @@ void MainComponent::resized()
     delayFbSlider.setBounds(delayRow.removeFromLeft(dw));
     delayRow.removeFromLeft(8);
     delayMixSlider.setBounds(delayRow);
+    area.removeFromTop(6);
+
+    auto reverbRow = area.removeFromTop(26);
+    reverbButton.setBounds(reverbRow.removeFromLeft(70));
+    reverbRow.removeFromLeft(8);
+    const int rw = juce::jmax(60, (reverbRow.getWidth() - 16) / 3);
+    reverbRoomSlider.setBounds(reverbRow.removeFromLeft(rw));
+    reverbRow.removeFromLeft(8);
+    reverbDampSlider.setBounds(reverbRow.removeFromLeft(rw));
+    reverbRow.removeFromLeft(8);
+    reverbMixSlider.setBounds(reverbRow);
     area.removeFromTop(8);
 
     meter_.setBounds(area.removeFromTop(44));

@@ -24,6 +24,7 @@ struct Song
     int                nextId = 1; // monotonic id source for tracks and clips
     FilterSettings     filter;
     DelaySettings      delay;
+    ReverbSettings     reverb;
 
     bool operator==(const Song&) const = default;
 };

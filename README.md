@@ -5,10 +5,10 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
 > **Status: Phase 4 (mixer + effects).** On top of Phases 1–3 (multi-track sequenced synth + audio
 > playback, transport/loop, a project document with undo/redo and `.looper` save/load, offline WAV
-> bounce, tabbed piano-roll/arrangement UI): per-track **gain + mute**, and a master **filter**
-> (state-variable LP/HP/BP, frequency-response tested) → **delay** chain — all saved with the project
-> and applied on export. Deferred to validate live: audio recording, disk streaming. Next: reverb,
-> sends/returns, automation. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> bounce, tabbed piano-roll/arrangement UI): per-track **gain + mute**, and a master **filter → delay
+> → reverb** chain (all unit-tested by frequency response / tail decay) — saved with the project and
+> applied on export. Deferred to validate live: audio recording, disk streaming. Next: automation,
+> sends/returns. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

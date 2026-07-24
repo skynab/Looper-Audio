@@ -153,6 +153,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputCh
     filePlayer_.process(output, incomingMidi_, context);
     masterFilter_.process(output);
     masterDelay_.process(output);
+    masterReverb_.process(output);
     master_.process(output, incomingMidi_, context);
 
     transport_.advance(numSamples);
@@ -174,6 +175,7 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     filePlayer_.prepare(sampleRate, blockSize);
     masterFilter_.prepare(sampleRate, blockSize);
     masterDelay_.prepare(sampleRate, blockSize);
+    masterReverb_.prepare(sampleRate, blockSize);
     master_.prepare(sampleRate, blockSize);
 }
 
