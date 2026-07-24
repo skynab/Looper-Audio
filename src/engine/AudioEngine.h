@@ -48,6 +48,7 @@ public:
     void setActiveTrackCount(int count);
     void setTrackPattern(int index, const Pattern& pattern);
     void setTrackMuted(int index, bool muted);
+    void setTrackGainDb(int index, float gainDb);
     void setArmedTrack(int index);
 
     /** Housekeeping to run periodically on the message thread (frees retired clips/patterns). */

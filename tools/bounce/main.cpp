@@ -28,7 +28,16 @@ int main(int argc, char** argv)
     bass.notes.push_back({ 0.0, 1.0, 36, 0.9f });
     bass.notes.push_back({ 2.0, 1.0, 43, 0.9f });
 
-    const auto buffer = OfflineRenderer::render({ arp, bass }, bpm, sampleRate, seconds);
+    // The written file is the full two-track mix at unity gain.
+    const auto buffer = OfflineRenderer::render({ arp, bass }, { 0.0f, 0.0f }, bpm, sampleRate, seconds);
+
+    // Per-track gain check: -6 dB should roughly halve the amplitude (10^(-6/20) ~= 0.501).
+    const std::vector<Pattern> one { arp };
+    const auto  full      = OfflineRenderer::render(one, std::vector<float> { 0.0f },  bpm, sampleRate, seconds);
+    const auto  quiet     = OfflineRenderer::render(one, std::vector<float> { -6.0f }, bpm, sampleRate, seconds);
+    const float rmsFull   = full.getRMSLevel(0, 0, full.getNumSamples());
+    const float rmsQuiet  = quiet.getRMSLevel(0, 0, quiet.getNumSamples());
+    const float gainRatio = rmsFull > 0.0f ? rmsQuiet / rmsFull : 0.0f;
 
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
@@ -45,8 +54,10 @@ int main(int argc, char** argv)
     std::cout << "wrote " << out.getFullPathName()
               << "  frames=" << buffer.getNumSamples()
               << "  rms=" << rms
-              << "  peak=" << peak << "\n";
+              << "  peak=" << peak
+              << "  gainRatio(-6dB)=" << gainRatio << "\n";
 
-    // Non-silent output confirms notes actually sounded.
-    return (rms > 0.0f && std::isfinite(rms)) ? 0 : 2;
+    // Non-silent output plus a correct -6 dB ratio confirm the render + gain paths.
+    const bool ok = rms > 0.0f && std::isfinite(rms) && gainRatio > 0.47f && gainRatio < 0.53f;
+    return ok ? 0 : 2;
 }

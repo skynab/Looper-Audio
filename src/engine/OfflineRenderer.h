@@ -22,8 +22,9 @@ namespace looper::engine
 class OfflineRenderer
 {
 public:
-    /** Renders one instrument track per pattern, summed. */
+    /** Renders one instrument track per pattern, at the given per-track gains (dB), summed. */
     static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
+                                           const std::vector<float>&   gainsDb,
                                            double bpm,
                                            double sampleRate,
                                            double numSeconds,
@@ -34,11 +35,13 @@ public:
         output.clear();
 
         std::vector<std::unique_ptr<InstrumentTrack>> tracks;
-        for (const auto& pattern : patterns)
+        for (size_t i = 0; i < patterns.size(); ++i)
         {
             auto track = std::make_unique<InstrumentTrack>();
             track->prepare(sampleRate, blockSize);
-            track->sequencer.submitPattern(new Pattern(pattern));
+            track->sequencer.submitPattern(new Pattern(patterns[i]));
+            if (i < gainsDb.size())
+                track->gainDb.store(gainsDb[i]);
             tracks.push_back(std::move(track));
         }
 
@@ -69,6 +72,13 @@ public:
         }
 
         return output;
+    }
+
+    /** Convenience overload: patterns at unity gain. */
+    static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns, double bpm,
+                                           double sampleRate, double numSeconds, int blockSize = 512)
+    {
+        return render(patterns, std::vector<float>(patterns.size(), 0.0f), bpm, sampleRate, numSeconds, blockSize);
     }
 
     /** Convenience overload for a single pattern. */

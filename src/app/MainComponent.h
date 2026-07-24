@@ -51,6 +51,9 @@ private:
     void                   syncEngineTracks();
     void                   rebuildTrackSelector();
     void                   refreshPianoRollForSelected();
+    void                   updateTrackControls();
+    void                   setSelectedTrackGain(float gainDb);
+    void                   setSelectedTrackMuted(bool muted);
     int                    trackCount() const;
 
     engine::AudioEngine         engine_;
@@ -67,8 +70,10 @@ private:
     juce::TextButton   openButton     { "Open..." };
     juce::TextButton   bounceButton   { "Bounce..." };
     juce::TextButton   addTrackButton { "Add Track" };
-    juce::ToggleButton loopButton     { "Loop" };
+    juce::ToggleButton loopButton      { "Loop" };
     juce::ComboBox     trackSelector_;
+    juce::ToggleButton trackMuteButton { "Mute" };
+    juce::Slider       trackGainSlider;
 
     juce::Slider tempoSlider, masterSlider;
     juce::Label  tempoLabel  { {}, "Tempo" };

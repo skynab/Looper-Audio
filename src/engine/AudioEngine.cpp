@@ -84,6 +84,12 @@ void AudioEngine::setTrackMuted(int index, bool muted)
         tracks_[(size_t) index].muted.store(muted, std::memory_order_relaxed);
 }
 
+void AudioEngine::setTrackGainDb(int index, float gainDb)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].gainDb.store(gainDb, std::memory_order_relaxed);
+}
+
 void AudioEngine::setArmedTrack(int index)
 {
     armedTrack_.store(juce::jlimit(0, kMaxTracks - 1, index), std::memory_order_relaxed);

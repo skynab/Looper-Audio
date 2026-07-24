@@ -22,6 +22,10 @@ public:
 
     const State& current() const noexcept { return present_; }
 
+    /** Non-snapshotting access for live parameter tweaks (e.g. faders) that
+        should not each create their own undo step. */
+    State& mutableCurrent() noexcept { return present_; }
+
     /** Replace the whole state, recording the previous one for undo. */
     void reset(State initial)
     {

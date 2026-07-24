@@ -56,8 +56,18 @@ MainComponent::MainComponent()
         selectedTrackIndex_ = id - 1;
         engine_.setArmedTrack(selectedTrackIndex_);
         refreshPianoRollForSelected();
+        updateTrackControls();
     };
     addAndMakeVisible(trackSelector_);
+
+    trackMuteButton.onClick = [this] { setSelectedTrackMuted(trackMuteButton.getToggleState()); };
+    addAndMakeVisible(trackMuteButton);
+
+    trackGainSlider.setRange(-60.0, 6.0, 0.1);
+    trackGainSlider.setValue(0.0, juce::dontSendNotification);
+    trackGainSlider.setTextValueSuffix(" dB");
+    trackGainSlider.onValueChange = [this] { setSelectedTrackGain((float) trackGainSlider.getValue()); };
+    addAndMakeVisible(trackGainSlider);
 
     // ---- sliders ----
     tempoSlider.setRange(40.0, 240.0, 0.1);
@@ -105,6 +115,7 @@ MainComponent::MainComponent()
     engine_.setArmedTrack(0);
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
+    updateTrackControls();
 
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
@@ -173,6 +184,7 @@ void MainComponent::addTrack()
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
+    updateTrackControls();
 }
 
 void MainComponent::syncEngineTracks()
@@ -185,6 +197,7 @@ void MainComponent::syncEngineTracks()
         const auto& track = song.tracks[(size_t) i];
         engine_.setTrackPattern(i, track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
         engine_.setTrackMuted(i, track.muted);
+        engine_.setTrackGainDb(i, track.gainDb);
     }
     engine_.setActiveTrackCount(n);
 }
@@ -211,6 +224,36 @@ void MainComponent::refreshPianoRollForSelected()
     pianoRoll_.setPattern(currentPattern());
 }
 
+void MainComponent::updateTrackControls()
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+        return;
+
+    const auto& track = song.tracks[(size_t) selectedTrackIndex_];
+    trackGainSlider.setValue(track.gainDb, juce::dontSendNotification);
+    trackMuteButton.setToggleState(track.muted, juce::dontSendNotification);
+}
+
+void MainComponent::setSelectedTrackGain(float gainDb)
+{
+    // Live tweak: update the current document in place (not a separate undo step).
+    const int idx  = selectedTrackIndex_;
+    auto&     song = history_.mutableCurrent();
+    if (idx >= 0 && idx < (int) song.tracks.size())
+        song.tracks[(size_t) idx].gainDb = gainDb;
+    engine_.setTrackGainDb(idx, gainDb);
+}
+
+void MainComponent::setSelectedTrackMuted(bool muted)
+{
+    const int idx  = selectedTrackIndex_;
+    auto&     song = history_.mutableCurrent();
+    if (idx >= 0 && idx < (int) song.tracks.size())
+        song.tracks[(size_t) idx].muted = muted;
+    engine_.setTrackMuted(idx, muted);
+}
+
 void MainComponent::refreshFromModel()
 {
     if (selectedTrackIndex_ >= trackCount())
@@ -221,6 +264,7 @@ void MainComponent::refreshFromModel()
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
+    updateTrackControls();
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -447,9 +491,13 @@ void MainComponent::resized()
     area.removeFromTop(10);
 
     auto trackRow = area.removeFromTop(28);
-    addTrackButton.setBounds(trackRow.removeFromLeft(100));
+    addTrackButton.setBounds(trackRow.removeFromLeft(90));
+    trackRow.removeFromLeft(8);
+    trackSelector_.setBounds(trackRow.removeFromLeft(150));
+    trackRow.removeFromLeft(12);
+    trackMuteButton.setBounds(trackRow.removeFromLeft(60));
     trackRow.removeFromLeft(10);
-    trackSelector_.setBounds(trackRow.removeFromLeft(220));
+    trackGainSlider.setBounds(trackRow);
     area.removeFromTop(8);
 
     deviceSelector.setBounds(area.removeFromBottom(130));
