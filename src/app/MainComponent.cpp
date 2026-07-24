@@ -90,6 +90,28 @@ MainComponent::MainComponent()
     tempoLabel.attachToComponent(&tempoSlider, true);
     masterLabel.attachToComponent(&masterSlider, true);
 
+    // ---- master delay (engine-only for now; not yet saved) ----
+    delayButton.onClick = [this] { engine_.setMasterDelayEnabled(delayButton.getToggleState()); };
+    addAndMakeVisible(delayButton);
+
+    delayTimeSlider.setRange(20.0, 1000.0, 1.0);
+    delayTimeSlider.setValue(300.0, juce::dontSendNotification);
+    delayTimeSlider.setTextValueSuffix(" ms");
+    delayTimeSlider.onValueChange = [this] { engine_.setMasterDelayTimeMs((float) delayTimeSlider.getValue()); };
+    addAndMakeVisible(delayTimeSlider);
+
+    delayFbSlider.setRange(0.0, 95.0, 1.0);
+    delayFbSlider.setValue(35.0, juce::dontSendNotification);
+    delayFbSlider.setTextValueSuffix(" %");
+    delayFbSlider.onValueChange = [this] { engine_.setMasterDelayFeedback((float) (delayFbSlider.getValue() / 100.0)); };
+    addAndMakeVisible(delayFbSlider);
+
+    delayMixSlider.setRange(0.0, 100.0, 1.0);
+    delayMixSlider.setValue(30.0, juce::dontSendNotification);
+    delayMixSlider.setTextValueSuffix(" %");
+    delayMixSlider.onValueChange = [this] { engine_.setMasterDelayMix((float) (delayMixSlider.getValue() / 100.0)); };
+    addAndMakeVisible(delayMixSlider);
+
     positionLabel.setFont(juce::Font(juce::FontOptions(20.0f)));
     positionLabel.setText("Bar 1  Beat 1   |   0.00 s   |   STOPPED", juce::dontSendNotification);
     addAndMakeVisible(positionLabel);
@@ -121,7 +143,7 @@ MainComponent::MainComponent()
     logAudioDeviceStatus();
 
     setWantsKeyboardFocus(true);
-    setSize(680, 840);
+    setSize(680, 872);
     startTimerHz(30);
 }
 
@@ -485,6 +507,17 @@ void MainComponent::resized()
     tempoSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
     area.removeFromTop(4);
     masterSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
+    area.removeFromTop(6);
+
+    auto delayRow = area.removeFromTop(26);
+    delayButton.setBounds(delayRow.removeFromLeft(70));
+    delayRow.removeFromLeft(8);
+    const int dw = juce::jmax(60, (delayRow.getWidth() - 16) / 3);
+    delayTimeSlider.setBounds(delayRow.removeFromLeft(dw));
+    delayRow.removeFromLeft(8);
+    delayFbSlider.setBounds(delayRow.removeFromLeft(dw));
+    delayRow.removeFromLeft(8);
+    delayMixSlider.setBounds(delayRow);
     area.removeFromTop(8);
 
     meter_.setBounds(area.removeFromTop(44));

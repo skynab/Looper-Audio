@@ -8,6 +8,7 @@ add_executable(looper_tests
   engine/InterpolationTests.cpp
   engine/MidiNoteTests.cpp
   engine/SequencerMathTests.cpp
+  engine/DelayLineTests.cpp
   model/HistoryTests.cpp
   model/SongTests.cpp
   model/SerializationTests.cpp)

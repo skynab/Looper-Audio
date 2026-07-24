@@ -3,12 +3,11 @@
 A cross-platform **loop-centric, AI-assisted DAW** written in C++ — for arranging and
 generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
-> **Status: Phase 3 done (bar recording/streaming) + Phase 4 mixer started.** Multi-track sequenced
-> synth + audio playback, transport/loop, a project document (`Song` → tracks → clips) with undo/redo
-> and `.looper` save/load, offline WAV bounce, and a tabbed piano-roll/arrangement UI. Now per-track
-> **gain + mute** too (verified by a −6 dB bounce ratio check). Deferred to validate live: audio
-> recording, disk streaming. Next: sends/effects/automation. See the full roadmap in
-> [`docs/PLAN.md`](docs/PLAN.md).
+> **Status: Phase 4 (mixer + effects).** On top of Phases 1–3 (multi-track sequenced synth + audio
+> playback, transport/loop, a project document with undo/redo and `.looper` save/load, offline WAV
+> bounce, tabbed piano-roll/arrangement UI): per-track **gain + mute** and a **master delay** effect
+> (feedback delay line, unit-tested). Deferred to validate live: audio recording, disk streaming.
+> Next: more effects, sends/returns, automation. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

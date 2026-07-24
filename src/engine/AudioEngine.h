@@ -10,6 +10,7 @@
 #include "rt/SpscRingBuffer.h"
 
 #include "engine/AudioFilePlayerNode.h"
+#include "engine/DelayEffect.h"
 #include "engine/EngineCommand.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/MasterBusNode.h"
@@ -51,6 +52,12 @@ public:
     void setTrackGainDb(int index, float gainDb);
     void setArmedTrack(int index);
 
+    // Master delay (thread-safe atomics; safe to call from the message thread).
+    void setMasterDelayEnabled(bool enabled)   { masterDelay_.setEnabled(enabled); }
+    void setMasterDelayTimeMs(float ms)        { masterDelay_.setTimeMs(ms); }
+    void setMasterDelayFeedback(float amount)  { masterDelay_.setFeedback(amount); }
+    void setMasterDelayMix(float amount)       { masterDelay_.setMix(amount); }
+
     /** Housekeeping to run periodically on the message thread (frees retired clips/patterns). */
     void pump() noexcept;
 
@@ -90,6 +97,7 @@ private:
     std::atomic<int>                        armedTrack_ { 0 };
 
     AudioFilePlayerNode filePlayer_;
+    DelayEffect         masterDelay_;
     MasterBusNode       master_;
     Transport           transport_;
 

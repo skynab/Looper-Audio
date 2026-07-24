@@ -75,9 +75,11 @@ private:
     juce::ToggleButton trackMuteButton { "Mute" };
     juce::Slider       trackGainSlider;
 
-    juce::Slider tempoSlider, masterSlider;
-    juce::Label  tempoLabel  { {}, "Tempo" };
-    juce::Label  masterLabel { {}, "Master" };
+    juce::Slider       tempoSlider, masterSlider;
+    juce::ToggleButton delayButton { "Delay" };
+    juce::Slider       delayTimeSlider, delayFbSlider, delayMixSlider;
+    juce::Label        tempoLabel  { {}, "Tempo" };
+    juce::Label        masterLabel { {}, "Master" };
     juce::Label  positionLabel, clipLabel;
 
     juce::AudioDeviceSelectorComponent deviceSelector;
