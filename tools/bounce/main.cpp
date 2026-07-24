@@ -1,7 +1,9 @@
+#include <cmath>
 #include <iostream>
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/DelayEffect.h"
 #include "engine/OfflineRenderer.h"
 
 // Headless bounce: renders a demo arpeggio to a WAV so the synth + sequencer
@@ -42,22 +44,41 @@ int main(int argc, char** argv)
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
 
-    if (! OfflineRenderer::writeWav(out, buffer, sampleRate))
+    // Delay check: applying the master delay must change the signal.
+    juce::AudioBuffer<float> wet(buffer.getNumChannels(), buffer.getNumSamples());
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        wet.copyFrom(ch, 0, buffer, ch, 0, buffer.getNumSamples());
+
+    DelayEffect delay;
+    delay.prepare(sampleRate, 512);
+    delay.setEnabled(true);
+    delay.setTimeMs(250.0f);
+    delay.setFeedback(0.4f);
+    delay.setMix(0.5f);
+    delay.process(wet);
+
+    const float rmsDry       = buffer.getRMSLevel(0, 0, buffer.getNumSamples());
+    const float rmsWet       = wet.getRMSLevel(0, 0, wet.getNumSamples());
+    const bool  delayChanged = std::abs(rmsWet - rmsDry) > 1.0e-4f;
+
+    // The written file is the wet (delayed) mix.
+    if (! OfflineRenderer::writeWav(out, wet, sampleRate))
     {
         std::cerr << "Failed to write " << out.getFullPathName() << "\n";
         return 1;
     }
 
-    const float rms  = buffer.getRMSLevel(0, 0, buffer.getNumSamples());
-    const float peak = buffer.getMagnitude(0, buffer.getNumSamples());
-
     std::cout << "wrote " << out.getFullPathName()
-              << "  frames=" << buffer.getNumSamples()
-              << "  rms=" << rms
-              << "  peak=" << peak
-              << "  gainRatio(-6dB)=" << gainRatio << "\n";
+              << "  frames=" << wet.getNumSamples()
+              << "  rmsDry=" << rmsDry
+              << "  rmsWet=" << rmsWet
+              << "  gainRatio(-6dB)=" << gainRatio
+              << "  delayChanged=" << (delayChanged ? 1 : 0) << "\n";
 
-    // Non-silent output plus a correct -6 dB ratio confirm the render + gain paths.
-    const bool ok = rms > 0.0f && std::isfinite(rms) && gainRatio > 0.47f && gainRatio < 0.53f;
+    // Non-silent output, a correct -6 dB gain ratio, and a delay that alters the
+    // signal together confirm the render + gain + effect paths.
+    const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
+                 && gainRatio > 0.47f && gainRatio < 0.53f
+                 && delayChanged;
     return ok ? 0 : 2;
 }

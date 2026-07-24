@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "model/Effects.h"
 #include "model/Track.h"
 
 namespace looper::model
@@ -21,6 +22,7 @@ struct Song
 
     std::vector<Track> tracks;
     int                nextId = 1; // monotonic id source for tracks and clips
+    DelaySettings      delay;
 
     bool operator==(const Song&) const = default;
 };

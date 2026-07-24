@@ -52,6 +52,7 @@ private:
     void                   rebuildTrackSelector();
     void                   refreshPianoRollForSelected();
     void                   updateTrackControls();
+    void                   updateDelayControls();
     void                   setSelectedTrackGain(float gainDb);
     void                   setSelectedTrackMuted(bool muted);
     int                    trackCount() const;

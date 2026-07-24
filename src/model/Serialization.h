@@ -37,11 +37,15 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 1\n";
+    out << "LOOPER 2\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
     out << "NEXTID " << song.nextId << "\n";
+    out << "DELAY " << (song.delay.enabled ? 1 : 0) << " "
+        << detail::num((double) song.delay.timeMs) << " "
+        << detail::num((double) song.delay.feedback) << " "
+        << detail::num((double) song.delay.mix) << "\n";
     out << "TRACKS " << song.tracks.size() << "\n";
 
     for (const auto& track : song.tracks)
@@ -97,6 +101,19 @@ inline bool deserialize(const std::string& text, Song& out)
     if (! readTagged("TSNUM", rest))  return false; song.timeSigNumerator = std::atoi(rest.c_str());
     if (! readTagged("TSDEN", rest))  return false; song.timeSigDenominator = std::atoi(rest.c_str());
     if (! readTagged("NEXTID", rest)) return false; song.nextId = std::atoi(rest.c_str());
+
+    if (! readTagged("DELAY", rest)) return false;
+    {
+        std::istringstream ds(rest);
+        int    enabled = 0;
+        double timeMs = 0.0, feedback = 0.0, mix = 0.0;
+        ds >> enabled >> timeMs >> feedback >> mix;
+        song.delay.enabled  = enabled != 0;
+        song.delay.timeMs   = (float) timeMs;
+        song.delay.feedback = (float) feedback;
+        song.delay.mix      = (float) mix;
+    }
+
     if (! readTagged("TRACKS", rest)) return false;
     const int trackCount = std::atoi(rest.c_str());
 

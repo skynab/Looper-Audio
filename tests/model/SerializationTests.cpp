@@ -11,6 +11,10 @@ static Song makeSampleSong()
     s.bpm                = 128.0;
     s.timeSigNumerator   = 3;
     s.timeSigDenominator = 4;
+    s.delay.enabled      = true;
+    s.delay.timeMs       = 250.0f;
+    s.delay.feedback     = 0.4f;
+    s.delay.mix          = 0.5f;
 
     const int synthId = addTrack(s, TrackType::Instrument, "Synth Lead").id; // name with a space
 

@@ -90,26 +90,46 @@ MainComponent::MainComponent()
     tempoLabel.attachToComponent(&tempoSlider, true);
     masterLabel.attachToComponent(&masterSlider, true);
 
-    // ---- master delay (engine-only for now; not yet saved) ----
-    delayButton.onClick = [this] { engine_.setMasterDelayEnabled(delayButton.getToggleState()); };
+    // ---- master delay (stored in the document, so it saves + restores) ----
+    delayButton.onClick = [this]
+    {
+        const bool on = delayButton.getToggleState();
+        history_.mutableCurrent().delay.enabled = on;
+        engine_.setMasterDelayEnabled(on);
+    };
     addAndMakeVisible(delayButton);
 
     delayTimeSlider.setRange(20.0, 1000.0, 1.0);
     delayTimeSlider.setValue(300.0, juce::dontSendNotification);
     delayTimeSlider.setTextValueSuffix(" ms");
-    delayTimeSlider.onValueChange = [this] { engine_.setMasterDelayTimeMs((float) delayTimeSlider.getValue()); };
+    delayTimeSlider.onValueChange = [this]
+    {
+        const float ms = (float) delayTimeSlider.getValue();
+        history_.mutableCurrent().delay.timeMs = ms;
+        engine_.setMasterDelayTimeMs(ms);
+    };
     addAndMakeVisible(delayTimeSlider);
 
     delayFbSlider.setRange(0.0, 95.0, 1.0);
     delayFbSlider.setValue(35.0, juce::dontSendNotification);
     delayFbSlider.setTextValueSuffix(" %");
-    delayFbSlider.onValueChange = [this] { engine_.setMasterDelayFeedback((float) (delayFbSlider.getValue() / 100.0)); };
+    delayFbSlider.onValueChange = [this]
+    {
+        const float fb = (float) (delayFbSlider.getValue() / 100.0);
+        history_.mutableCurrent().delay.feedback = fb;
+        engine_.setMasterDelayFeedback(fb);
+    };
     addAndMakeVisible(delayFbSlider);
 
     delayMixSlider.setRange(0.0, 100.0, 1.0);
     delayMixSlider.setValue(30.0, juce::dontSendNotification);
     delayMixSlider.setTextValueSuffix(" %");
-    delayMixSlider.onValueChange = [this] { engine_.setMasterDelayMix((float) (delayMixSlider.getValue() / 100.0)); };
+    delayMixSlider.onValueChange = [this]
+    {
+        const float mix = (float) (delayMixSlider.getValue() / 100.0);
+        history_.mutableCurrent().delay.mix = mix;
+        engine_.setMasterDelayMix(mix);
+    };
     addAndMakeVisible(delayMixSlider);
 
     positionLabel.setFont(juce::Font(juce::FontOptions(20.0f)));
@@ -138,6 +158,7 @@ MainComponent::MainComponent()
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
     updateTrackControls();
+    updateDelayControls();
 
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
@@ -257,6 +278,20 @@ void MainComponent::updateTrackControls()
     trackMuteButton.setToggleState(track.muted, juce::dontSendNotification);
 }
 
+void MainComponent::updateDelayControls()
+{
+    const auto& d = history_.current().delay;
+    delayButton.setToggleState(d.enabled, juce::dontSendNotification);
+    delayTimeSlider.setValue(d.timeMs, juce::dontSendNotification);
+    delayFbSlider.setValue(d.feedback * 100.0, juce::dontSendNotification);
+    delayMixSlider.setValue(d.mix * 100.0, juce::dontSendNotification);
+
+    engine_.setMasterDelayEnabled(d.enabled);
+    engine_.setMasterDelayTimeMs(d.timeMs);
+    engine_.setMasterDelayFeedback(d.feedback);
+    engine_.setMasterDelayMix(d.mix);
+}
+
 void MainComponent::setSelectedTrackGain(float gainDb)
 {
     // Live tweak: update the current document in place (not a separate undo step).
@@ -287,6 +322,7 @@ void MainComponent::refreshFromModel()
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
     updateTrackControls();
+    updateDelayControls();
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -397,15 +433,34 @@ void MainComponent::bounceProject()
 
         file = file.withFileExtension("wav");
 
+        const auto& song = history_.current();
         std::vector<engine::Pattern> patterns;
-        for (const auto& track : history_.current().tracks)
+        std::vector<float>           gains;
+        for (const auto& track : song.tracks)
+        {
             patterns.push_back(track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
+            gains.push_back(track.muted ? -100.0f : track.gainDb);
+        }
         if (patterns.empty())
+        {
             patterns.push_back({});
+            gains.push_back(0.0f);
+        }
 
         const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 44100.0;
-        const double bpm        = history_.current().bpm;
-        const auto   buffer     = engine::OfflineRenderer::render(patterns, bpm, sampleRate, 8.0);
+        const double bpm        = song.bpm;
+        auto         buffer     = engine::OfflineRenderer::render(patterns, gains, bpm, sampleRate, 8.0);
+
+        if (song.delay.enabled)
+        {
+            engine::DelayEffect fx;
+            fx.prepare(sampleRate, 512);
+            fx.setEnabled(true);
+            fx.setTimeMs(song.delay.timeMs);
+            fx.setFeedback(song.delay.feedback);
+            fx.setMix(song.delay.mix);
+            fx.process(buffer);
+        }
 
         clipLabel.setText(engine::OfflineRenderer::writeWav(file, buffer, sampleRate)
                               ? "Bounced: " + file.getFileName()
