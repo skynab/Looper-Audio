@@ -62,6 +62,18 @@ int main(int argc, char** argv)
                                                              delayedStart.getNumSamples() - oneSecondSamples);
     const bool  clipStartGates    = rmsBeforeStart < 1.0e-5f && rmsAfterStart > 0.01f;
 
+    // Send-bus check: with a track sending fully into the bus, enabling the
+    // send-bus reverb must change the output relative to the send bus being off.
+    const auto  noSendBus   = OfflineRenderer::render(one, std::vector<float> { 0.0f }, std::vector<bool>{},
+                                                      std::vector<double>{}, std::vector<float> { 1.0f },
+                                                      false, 0.6f, 0.4f, 0.7f, bpm, sampleRate, seconds);
+    const auto  withSendBus = OfflineRenderer::render(one, std::vector<float> { 0.0f }, std::vector<bool>{},
+                                                      std::vector<double>{}, std::vector<float> { 1.0f },
+                                                      true, 0.6f, 0.4f, 0.7f, bpm, sampleRate, seconds);
+    const float rmsNoSendBus   = noSendBus.getRMSLevel(0, 0, noSendBus.getNumSamples());
+    const float rmsWithSendBus = withSendBus.getRMSLevel(0, 0, withSendBus.getNumSamples());
+    const bool  sendBusChanged = std::abs(rmsWithSendBus - rmsNoSendBus) > 1.0e-4f;
+
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
 
@@ -155,16 +167,17 @@ int main(int argc, char** argv)
               << "  reverbChanged=" << (reverbChanged ? 1 : 0)
               << "  automationFades=" << (automationFades ? 1 : 0)
               << "  soloMatchesArpOnly=" << (soloMatchesArpOnly ? 1 : 0)
-              << "  clipStartGates=" << (clipStartGates ? 1 : 0) << "\n";
+              << "  clipStartGates=" << (clipStartGates ? 1 : 0)
+              << "  sendBusChanged=" << (sendBusChanged ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
     // signal, a low-pass that attenuates, a reverb that changes the signal, a
-    // gain ramp that fades in, solo correctly silencing the other track, and a
-    // clip start that gates playback together confirm the full
-    // render/gain/fx/automation/solo/clip-start path.
+    // gain ramp that fades in, solo correctly silencing the other track, a clip
+    // start that gates playback, and a send bus that changes the output together
+    // confirm the full render/gain/fx/automation/solo/clip-start/send-bus path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
-                 && soloMatchesArpOnly && clipStartGates;
+                 && soloMatchesArpOnly && clipStartGates && sendBusChanged;
     return ok ? 0 : 2;
 }

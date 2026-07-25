@@ -18,9 +18,12 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > indefinitely from there — an arrangement-style "this part enters at bar N"), verified by the bounce
 > tool. Clip *length* deliberately doesn't gate playback yet (every track's clip length still equals
 > its pattern length, so that would silence every track after one loop); full clip-length gating and
-> multiple clips per track are future work. Deferred to validate live: audio recording, disk
-> streaming. Next: sends/returns, clip-length gating, more automation targets. See the full roadmap
-> in [`docs/PLAN.md`](docs/PLAN.md).
+> multiple clips per track are future work. Each track also has a **send** (a "Send" slider on its
+> mixer strip) into a shared **send bus** — a dedicated, always-fully-wet reverb every track can dip
+> into pre-fader, independent of its own fader — with its own toggle/room/damping/return controls on
+> the master strip, saved with the project and applied on export; verified by the bounce tool.
+> Deferred to validate live: audio recording, disk streaming. Next: clip-length gating, more
+> automation targets, more send-bus effect types. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

@@ -35,4 +35,22 @@ struct ReverbSettings
     bool operator==(const ReverbSettings&) const = default;
 };
 
+/**
+    The shared send/return bus: every track can send a pre-fader portion of its
+    signal into it (Track::sendLevel), summed and passed through this reverb,
+    then mixed back into the master before its own effects chain. Unlike the
+    master reverb, the send bus's own reverb is always fully wet — there's no
+    "dry" concept for a return bus — so returnLevel is the only level control
+    (a plain output gain on the wet return).
+*/
+struct SendBusSettings
+{
+    bool  enabled     = false;
+    float roomSize    = 0.5f; // 0..1
+    float damping     = 0.5f; // 0..1
+    float returnLevel = 0.5f; // 0..1, linear gain on the wet return
+
+    bool operator==(const SendBusSettings&) const = default;
+};
+
 } // namespace looper::model

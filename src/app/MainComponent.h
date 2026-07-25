@@ -76,10 +76,12 @@ private:
     void                   updateDelayControls();
     void                   updateFilterControls();
     void                   updateReverbControls();
+    void                   updateSendBusControls();
     void                   updateMixerStrips();
     void                   setTrackGain(int index, float gainDb);
     void                   setTrackMuted(int index, bool muted);
     void                   setTrackSolo(int index, bool solo);
+    void                   setTrackSendLevel(int index, float level);
     void                   selectTrack(int index);
     void                   layoutLeftPane();
     void                   layoutRightPane();
@@ -113,6 +115,8 @@ private:
     juce::Slider       delayTimeSlider, delayFbSlider, delayMixSlider;
     juce::ToggleButton reverbButton { "Reverb" };
     juce::Slider       reverbRoomSlider, reverbDampSlider, reverbMixSlider;
+    juce::ToggleButton sendBusButton { "Send FX" };
+    juce::Slider       sendRoomSlider, sendDampSlider, sendReturnSlider;
     juce::ToggleButton autoRecButton   { "Rec Auto" };
     juce::TextButton   autoClearButton { "Clr Auto" };
     juce::Label        tempoLabel  { {}, "Tempo" };

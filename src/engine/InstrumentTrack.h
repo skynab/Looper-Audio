@@ -13,7 +13,7 @@ namespace looper::engine
 {
 /**
     One instrument track: a synth driven by its own sequencer, with a per-track
-    gain, mute, solo, and post-gain peak metering.
+    gain, mute, solo, pre-fader send, and post-gain peak metering.
 
     Tracks live in a fixed, pre-allocated pool inside the engine, so
     activating/deactivating a track is just an atomic flag — there is no real-time
@@ -26,15 +26,21 @@ namespace looper::engine
     is currently soloed (a single scan of atomics, done once per block), and this
     track goes silent if it's muted, or if some other track is soloed and this one
     isn't — the standard "solo overrides, mute always wins" behaviour.
+
+    sendLevel sends a copy of the raw (pre-fader) synth output into the caller's
+    shared send bus, independent of the track's own gainDb — so a track can be
+    faded down in the main mix while still reaching the send bus at a fixed level
+    (the usual "aux send" behaviour), or vice versa.
 */
 struct InstrumentTrack
 {
     SynthInstrumentNode      synth;
     Sequencer                sequencer;
-    std::atomic<bool>        active { false };
-    std::atomic<bool>        muted  { false };
-    std::atomic<bool>        solo   { false };
-    std::atomic<float>       gainDb { 0.0f };
+    std::atomic<bool>        active     { false };
+    std::atomic<bool>        muted      { false };
+    std::atomic<bool>        solo       { false };
+    std::atomic<float>       gainDb     { 0.0f };
+    std::atomic<float>       sendLevel  { 0.0f }; // 0..1, pre-fader
     juce::MidiBuffer         trackMidi;
     juce::AudioBuffer<float> scratch;
     std::atomic<float>       channelPeak_[2] {};
@@ -54,8 +60,10 @@ struct InstrumentTrack
             : 0.0f;
     }
 
-    /** Audio thread: render this track (post-gain) additively into @p mix. */
-    void render(juce::AudioBuffer<float>& mix, const juce::MidiBuffer& liveMidi,
+    /** Audio thread: render this track (post-gain) additively into @p mix, and
+        its pre-fader send additively into @p sendBus. */
+    void render(juce::AudioBuffer<float>& mix, juce::AudioBuffer<float>& sendBus,
+                const juce::MidiBuffer& liveMidi,
                 const ProcessContext& context, bool receivesLiveMidi, bool anySoloActive)
     {
         trackMidi.clear();
@@ -82,10 +90,14 @@ struct InstrumentTrack
         synth.process(scratch, trackMidi, context);
 
         const float gain     = juce::Decibels::decibelsToGain(gainDb.load(std::memory_order_relaxed));
+        const float send     = sendLevel.load(std::memory_order_relaxed);
         const int   channels = juce::jmin(mix.getNumChannels(), scratch.getNumChannels());
         for (int ch = 0; ch < channels; ++ch)
         {
             mix.addFrom(ch, 0, scratch, ch, 0, numSamples, gain);
+
+            if (send > 0.0f && ch < sendBus.getNumChannels())
+                sendBus.addFrom(ch, 0, scratch, ch, 0, numSamples, send);
 
             if (ch < 2)
             {

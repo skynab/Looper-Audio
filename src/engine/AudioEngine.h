@@ -54,6 +54,7 @@ public:
     void setTrackMuted(int index, bool muted);
     void setTrackSolo(int index, bool solo);
     void setTrackGainDb(int index, float gainDb);
+    void setTrackSendLevel(int index, float level);
     void setArmedTrack(int index);
 
     // Master effects (thread-safe atomics; safe to call from the message thread).
@@ -71,6 +72,14 @@ public:
     void setMasterReverbRoomSize(float v)      { masterReverb_.setRoomSize(v); }
     void setMasterReverbDamping(float v)       { masterReverb_.setDamping(v); }
     void setMasterReverbMix(float v)           { masterReverb_.setMix(v); }
+
+    // Shared send bus: every track can send a pre-fader portion of its signal
+    // into this always-fully-wet reverb, which mixes back into the master
+    // before the master's own effects chain (thread-safe atomics).
+    void setSendBusEnabled(bool enabled)  { sendBusEnabled_.store(enabled, std::memory_order_relaxed); }
+    void setSendBusRoomSize(float v)      { sendBusReverb_.setRoomSize(v); }
+    void setSendBusDamping(float v)       { sendBusReverb_.setDamping(v); }
+    void setSendBusReturnLevel(float v)   { sendReturnGain_.store(v, std::memory_order_relaxed); }
 
     /** Housekeeping to run periodically on the message thread (frees retired clips/patterns). */
     void pump() noexcept;
@@ -120,6 +129,13 @@ private:
     ReverbEffect        masterReverb_;
     MasterBusNode       master_;
     Transport           transport_;
+
+    // Send bus: accumulated from every track's pre-fader send, reverberated,
+    // and mixed back into the main output before the master effects chain.
+    juce::AudioBuffer<float> sendBus_;
+    ReverbEffect             sendBusReverb_;
+    std::atomic<bool>        sendBusEnabled_ { false };
+    std::atomic<float>       sendReturnGain_ { 0.0f };
 
     std::atomic<double> sampleRate_ { 0.0 };
 

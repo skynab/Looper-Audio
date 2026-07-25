@@ -37,7 +37,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 6\n";
+    out << "LOOPER 7\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -53,6 +53,10 @@ inline std::string serialize(const Song& song)
         << detail::num((double) song.reverb.roomSize) << " "
         << detail::num((double) song.reverb.damping) << " "
         << detail::num((double) song.reverb.mix) << "\n";
+    out << "SENDBUS " << (song.sendBus.enabled ? 1 : 0) << " "
+        << detail::num((double) song.sendBus.roomSize) << " "
+        << detail::num((double) song.sendBus.damping) << " "
+        << detail::num((double) song.sendBus.returnLevel) << "\n";
     out << "AUTO " << song.masterGainDb.points().size() << "\n";
     for (const auto& p : song.masterGainDb.points())
         out << "APT " << detail::num(p.beat) << " " << detail::num((double) p.value) << "\n";
@@ -62,7 +66,8 @@ inline std::string serialize(const Song& song)
     {
         out << "TRACK " << track.id << " " << (int) track.type << " "
             << detail::num((double) track.gainDb) << " " << (track.muted ? 1 : 0)
-            << " " << (track.solo ? 1 : 0) << " " << track.name << "\n";
+            << " " << (track.solo ? 1 : 0) << " " << detail::num((double) track.sendLevel)
+            << " " << track.name << "\n";
         out << "CLIPS " << track.clips.size() << "\n";
 
         for (const auto& clip : track.clips)
@@ -148,6 +153,18 @@ inline bool deserialize(const std::string& text, Song& out)
         song.reverb.mix      = (float) mix;
     }
 
+    if (! readTagged("SENDBUS", rest)) return false;
+    {
+        std::istringstream sb(rest);
+        int    enabled = 0;
+        double roomSize = 0.0, damping = 0.0, returnLevel = 0.0;
+        sb >> enabled >> roomSize >> damping >> returnLevel;
+        song.sendBus.enabled     = enabled != 0;
+        song.sendBus.roomSize    = (float) roomSize;
+        song.sendBus.damping     = (float) damping;
+        song.sendBus.returnLevel = (float) returnLevel;
+    }
+
     if (! readTagged("AUTO", rest)) return false;
     {
         const int pointCount = std::atoi(rest.c_str());
@@ -174,12 +191,13 @@ inline bool deserialize(const std::string& text, Song& out)
         {
             std::istringstream ts(rest);
             int typeInt = 0, muteInt = 0, soloInt = 0;
-            double gain = 0.0;
-            ts >> track.id >> typeInt >> gain >> muteInt >> soloInt;
-            track.type   = (TrackType) typeInt;
-            track.gainDb = (float) gain;
-            track.muted  = muteInt != 0;
-            track.solo   = soloInt != 0;
+            double gain = 0.0, sendLevel = 0.0;
+            ts >> track.id >> typeInt >> gain >> muteInt >> soloInt >> sendLevel;
+            track.type      = (TrackType) typeInt;
+            track.gainDb    = (float) gain;
+            track.muted     = muteInt != 0;
+            track.solo      = soloInt != 0;
+            track.sendLevel = (float) sendLevel;
             std::string name;
             std::getline(ts, name);
             track.name = detail::trimLeadingSpace(std::move(name));

@@ -102,6 +102,12 @@ void AudioEngine::setTrackGainDb(int index, float gainDb)
         tracks_[(size_t) index].gainDb.store(gainDb, std::memory_order_relaxed);
 }
 
+void AudioEngine::setTrackSendLevel(int index, float level)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].sendLevel.store(level, std::memory_order_relaxed);
+}
+
 void AudioEngine::setArmedTrack(int index)
 {
     armedTrack_.store(juce::jlimit(0, kMaxTracks - 1, index), std::memory_order_relaxed);
@@ -158,11 +164,23 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputCh
     for (auto& track : tracks_)
         anySolo |= track.solo.load(std::memory_order_relaxed);
 
+    sendBus_.setSize(2, numSamples, false, false, true);
+    sendBus_.clear();
+
     const int armed = armedTrack_.load(std::memory_order_relaxed);
     for (int i = 0; i < kMaxTracks; ++i)
     {
         if (tracks_[(size_t) i].active.load(std::memory_order_relaxed))
-            tracks_[(size_t) i].render(output, incomingMidi_, context, i == armed, anySolo);
+            tracks_[(size_t) i].render(output, sendBus_, incomingMidi_, context, i == armed, anySolo);
+    }
+
+    if (sendBusEnabled_.load(std::memory_order_relaxed))
+    {
+        sendBusReverb_.process(sendBus_);
+        const float returnGain = sendReturnGain_.load(std::memory_order_relaxed);
+        const int   channels   = juce::jmin(output.getNumChannels(), sendBus_.getNumChannels());
+        for (int ch = 0; ch < channels; ++ch)
+            output.addFrom(ch, 0, sendBus_, ch, 0, numSamples, returnGain);
     }
 
     // The file player and master ignore the MIDI buffer.
@@ -193,6 +211,11 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     masterDelay_.prepare(sampleRate, blockSize);
     masterReverb_.prepare(sampleRate, blockSize);
     master_.prepare(sampleRate, blockSize);
+
+    sendBus_.setSize(2, blockSize);
+    sendBusReverb_.prepare(sampleRate, blockSize);
+    sendBusReverb_.setEnabled(true); // always on internally; sendBusEnabled_ gates the mix-back
+    sendBusReverb_.setMix(1.0f);     // a return bus is always fully wet
 }
 
 void AudioEngine::audioDeviceStopped()

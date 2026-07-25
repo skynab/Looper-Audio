@@ -26,6 +26,7 @@ struct Song
     FilterSettings     filter;
     DelaySettings      delay;
     ReverbSettings     reverb;
+    SendBusSettings    sendBus;
     AutomationLane     masterGainDb; // master gain automation (dB over beats)
 
     bool operator==(const Song&) const = default;

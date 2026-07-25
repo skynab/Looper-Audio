@@ -23,6 +23,7 @@ public:
     std::function<void(float)> onGainChange;
     std::function<void(bool)>  onMuteChange;
     std::function<void(bool)>  onSoloChange;
+    std::function<void(float)> onSendChange;
     std::function<void()>      onSelect;
 
     MixerStrip()
@@ -42,6 +43,18 @@ public:
         soloButton_.onClick = [this] { if (onSoloChange) onSoloChange(soloButton_.getToggleState()); };
         addAndMakeVisible(soloButton_);
 
+        sendSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
+        sendSlider_.setRange(0.0, 100.0, 1.0);
+        sendSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        sendSlider_.onValueChange = [this] { if (onSendChange) onSendChange((float) (sendSlider_.getValue() / 100.0)); };
+        addAndMakeVisible(sendSlider_);
+
+        sendLabel_.setText("Send", juce::dontSendNotification);
+        sendLabel_.setFont(juce::Font(juce::FontOptions(10.0f)));
+        sendLabel_.setJustificationType(juce::Justification::centredLeft);
+        sendLabel_.setInterceptsMouseClicks(false, false);
+        addAndMakeVisible(sendLabel_);
+
         gainSlider_.setSliderStyle(juce::Slider::LinearVertical);
         gainSlider_.setRange(-60.0, 6.0, 0.1);
         gainSlider_.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 72, 20);
@@ -56,6 +69,7 @@ public:
     void setGainDb(float db)   { gainSlider_.setValue(db, juce::dontSendNotification); }
     void setMuted(bool muted)  { muteButton_.setToggleState(muted, juce::dontSendNotification); }
     void setSoloed(bool solo)  { soloButton_.setToggleState(solo, juce::dontSendNotification); }
+    void setSendLevel(float level) { sendSlider_.setValue(level * 100.0, juce::dontSendNotification); }
     void setSelected(bool sel) { if (selected_ != sel) { selected_ = sel; repaint(); } }
     void setLevel(int channel, float linearPeak) { meter_.setLevel(channel, linearPeak); }
 
@@ -88,6 +102,11 @@ public:
         auto btnRow = area.removeFromTop(22);
         muteButton_.setBounds(btnRow.removeFromLeft(btnRow.getWidth() / 2).reduced(2));
         soloButton_.setBounds(btnRow.reduced(2));
+        area.removeFromTop(4);
+
+        auto sendRow = area.removeFromTop(16);
+        sendLabel_.setBounds(sendRow.removeFromLeft(30));
+        sendSlider_.setBounds(sendRow);
         area.removeFromTop(6);
 
         auto meterArea = area.removeFromRight(20);
@@ -100,6 +119,8 @@ private:
     juce::Label      nameLabel_;
     juce::TextButton muteButton_ { "M" };
     juce::TextButton soloButton_ { "S" };
+    juce::Label      sendLabel_;
+    juce::Slider     sendSlider_;
     juce::Slider     gainSlider_;
     LevelMeter       meter_;
     bool             selected_ = false;

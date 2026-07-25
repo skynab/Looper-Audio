@@ -10,6 +10,7 @@
 #include "engine/InstrumentTrack.h"
 #include "engine/Pattern.h"
 #include "engine/ProcessContext.h"
+#include "engine/ReverbEffect.h"
 
 namespace looper::engine
 {
@@ -23,14 +24,21 @@ class OfflineRenderer
 {
 public:
     /** Renders one instrument track per pattern, at the given per-track gains (dB),
-        solo flags, and clip start offsets (beats — the track stays silent until
-        the transport reaches this point, then plays and loops indefinitely).
+        solo flags, clip start offsets (beats — the track stays silent until the
+        transport reaches this point, then plays and loops indefinitely), and
+        pre-fader send levels (0..1) into a shared send-bus reverb (always fully
+        wet; returnGain scales the wet return before it's summed into the mix).
         Solo follows the same "solo overrides, mute always wins" rule as the live
         engine. */
     static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
                                            const std::vector<float>&   gainsDb,
                                            const std::vector<bool>&    soloFlags,
                                            const std::vector<double>&  clipStartBeats,
+                                           const std::vector<float>&   sendLevels,
+                                           bool  sendBusEnabled,
+                                           float sendRoomSize,
+                                           float sendDamping,
+                                           float sendReturnGain,
                                            double bpm,
                                            double sampleRate,
                                            double numSeconds,
@@ -52,6 +60,8 @@ public:
                 track->solo.store(soloFlags[i]);
             if (i < clipStartBeats.size())
                 track->sequencer.setClipStartBeats(clipStartBeats[i]);
+            if (i < sendLevels.size())
+                track->sendLevel.store(sendLevels[i]);
             tracks.push_back(std::move(track));
         }
 
@@ -59,7 +69,15 @@ public:
         for (auto& track : tracks)
             anySolo |= track->solo.load();
 
+        ReverbEffect sendReverb;
+        sendReverb.prepare(sampleRate, blockSize);
+        sendReverb.setEnabled(true);
+        sendReverb.setMix(1.0f); // a return bus is always fully wet
+        sendReverb.setRoomSize(sendRoomSize);
+        sendReverb.setDamping(sendDamping);
+
         juce::AudioBuffer<float> block(2, blockSize);
+        juce::AudioBuffer<float> sendBus(2, blockSize);
         juce::MidiBuffer         noLiveMidi;
 
         int64_t playhead = 0;
@@ -68,6 +86,8 @@ public:
             const int n = std::min(blockSize, totalSamples - pos);
             block.setSize(2, n, false, false, true);
             block.clear();
+            sendBus.setSize(2, n, false, false, true);
+            sendBus.clear();
 
             ProcessContext ctx;
             ctx.sampleRate                = sampleRate;
@@ -77,7 +97,14 @@ public:
             ctx.transport.bpm             = bpm;
 
             for (auto& track : tracks)
-                track->render(block, noLiveMidi, ctx, false, anySolo);
+                track->render(block, sendBus, noLiveMidi, ctx, false, anySolo);
+
+            if (sendBusEnabled)
+            {
+                sendReverb.process(sendBus);
+                for (int ch = 0; ch < 2; ++ch)
+                    block.addFrom(ch, 0, sendBus, ch, 0, n, sendReturnGain);
+            }
 
             for (int ch = 0; ch < 2; ++ch)
                 output.copyFrom(ch, pos, block, ch, 0, n);
@@ -88,7 +115,18 @@ public:
         return output;
     }
 
-    /** Convenience overload: no solo flags, no clip-start offsets. */
+    /** Convenience overload: no send bus. */
+    static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
+                                           const std::vector<float>&   gainsDb,
+                                           const std::vector<bool>&    soloFlags,
+                                           const std::vector<double>&  clipStartBeats,
+                                           double bpm, double sampleRate, double numSeconds, int blockSize = 512)
+    {
+        return render(patterns, gainsDb, soloFlags, clipStartBeats, std::vector<float>{},
+                      false, 0.5f, 0.5f, 0.0f, bpm, sampleRate, numSeconds, blockSize);
+    }
+
+    /** Convenience overload: no solo flags, no clip-start offsets, no send bus. */
     static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
                                            const std::vector<float>&   gainsDb,
                                            const std::vector<bool>&    soloFlags,

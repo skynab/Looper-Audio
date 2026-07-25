@@ -18,9 +18,10 @@ struct Track
     int               id     = 0;
     std::string       name;
     TrackType         type   = TrackType::Instrument;
-    float             gainDb = 0.0f;
-    bool              muted  = false;
-    bool              solo   = false;
+    float             gainDb     = 0.0f;
+    bool              muted      = false;
+    bool              solo       = false;
+    float             sendLevel  = 0.0f; // 0..1, pre-fader send to the shared send bus
     std::vector<Clip> clips;
 
     bool operator==(const Track&) const = default;

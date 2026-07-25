@@ -217,6 +217,48 @@ MainComponent::MainComponent()
     };
     mixerView_.addAndMakeVisible(reverbMixSlider);
 
+    // ---- send bus: a shared reverb every track can send into (stored in the document) ----
+    sendBusButton.onClick = [this]
+    {
+        const bool on = sendBusButton.getToggleState();
+        history_.mutableCurrent().sendBus.enabled = on;
+        engine_.setSendBusEnabled(on);
+    };
+    mixerView_.addAndMakeVisible(sendBusButton);
+
+    sendRoomSlider.setRange(0.0, 100.0, 1.0);
+    sendRoomSlider.setValue(60.0, juce::dontSendNotification);
+    sendRoomSlider.setTextValueSuffix(" room");
+    sendRoomSlider.onValueChange = [this]
+    {
+        const float v = (float) (sendRoomSlider.getValue() / 100.0);
+        history_.mutableCurrent().sendBus.roomSize = v;
+        engine_.setSendBusRoomSize(v);
+    };
+    mixerView_.addAndMakeVisible(sendRoomSlider);
+
+    sendDampSlider.setRange(0.0, 100.0, 1.0);
+    sendDampSlider.setValue(40.0, juce::dontSendNotification);
+    sendDampSlider.setTextValueSuffix(" damp");
+    sendDampSlider.onValueChange = [this]
+    {
+        const float v = (float) (sendDampSlider.getValue() / 100.0);
+        history_.mutableCurrent().sendBus.damping = v;
+        engine_.setSendBusDamping(v);
+    };
+    mixerView_.addAndMakeVisible(sendDampSlider);
+
+    sendReturnSlider.setRange(0.0, 100.0, 1.0);
+    sendReturnSlider.setValue(50.0, juce::dontSendNotification);
+    sendReturnSlider.setTextValueSuffix(" ret");
+    sendReturnSlider.onValueChange = [this]
+    {
+        const float v = (float) (sendReturnSlider.getValue() / 100.0);
+        history_.mutableCurrent().sendBus.returnLevel = v;
+        engine_.setSendBusReturnLevel(v);
+    };
+    mixerView_.addAndMakeVisible(sendReturnSlider);
+
     // ---- master-gain automation: arm, then move the master fader while playing ----
     autoRecButton.onClick   = [this] { recordAutomation_ = autoRecButton.getToggleState(); };
     autoClearButton.onClick = [this] { history_.mutableCurrent().masterGainDb.clear(); };
@@ -232,6 +274,7 @@ MainComponent::MainComponent()
         strip->onGainChange = [this, i](float db) { setTrackGain(i, db); };
         strip->onMuteChange = [this, i](bool m)   { setTrackMuted(i, m); };
         strip->onSoloChange = [this, i](bool s)   { setTrackSolo(i, s); };
+        strip->onSendChange = [this, i](float lv) { setTrackSendLevel(i, lv); };
         strip->onSelect     = [this, i]           { selectTrack(i); };
         trackStrips_.add(strip);
         mixerView_.addAndMakeVisible(strip);
@@ -291,6 +334,7 @@ MainComponent::MainComponent()
     updateDelayControls();
     updateFilterControls();
     updateReverbControls();
+    updateSendBusControls();
 
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
@@ -458,6 +502,7 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackMuted(i, track.muted);
         engine_.setTrackSolo(i, track.solo);
         engine_.setTrackGainDb(i, track.gainDb);
+        engine_.setTrackSendLevel(i, track.sendLevel);
     }
     engine_.setActiveTrackCount(n);
 }
@@ -484,6 +529,7 @@ void MainComponent::updateMixerStrips()
             strip->setGainDb(track.gainDb);
             strip->setMuted(track.muted);
             strip->setSoloed(track.solo);
+            strip->setSendLevel(track.sendLevel);
         }
         strip->setSelected(i == selectedTrackIndex_);
     }
@@ -533,6 +579,20 @@ void MainComponent::updateReverbControls()
     engine_.setMasterReverbMix(rv.mix);
 }
 
+void MainComponent::updateSendBusControls()
+{
+    const auto& sb = history_.current().sendBus;
+    sendBusButton.setToggleState(sb.enabled, juce::dontSendNotification);
+    sendRoomSlider.setValue(sb.roomSize * 100.0, juce::dontSendNotification);
+    sendDampSlider.setValue(sb.damping * 100.0, juce::dontSendNotification);
+    sendReturnSlider.setValue(sb.returnLevel * 100.0, juce::dontSendNotification);
+
+    engine_.setSendBusEnabled(sb.enabled);
+    engine_.setSendBusRoomSize(sb.roomSize);
+    engine_.setSendBusDamping(sb.damping);
+    engine_.setSendBusReturnLevel(sb.returnLevel);
+}
+
 void MainComponent::setTrackGain(int index, float gainDb)
 {
     // Live tweak: update the current document in place (not a separate undo step).
@@ -556,6 +616,14 @@ void MainComponent::setTrackSolo(int index, bool solo)
     if (index >= 0 && index < (int) song.tracks.size())
         song.tracks[(size_t) index].solo = solo;
     engine_.setTrackSolo(index, solo);
+}
+
+void MainComponent::setTrackSendLevel(int index, float level)
+{
+    auto& song = history_.mutableCurrent();
+    if (index >= 0 && index < (int) song.tracks.size())
+        song.tracks[(size_t) index].sendLevel = level;
+    engine_.setTrackSendLevel(index, level);
 }
 
 void MainComponent::selectTrack(int index)
@@ -582,6 +650,7 @@ void MainComponent::refreshFromModel()
     updateDelayControls();
     updateFilterControls();
     updateReverbControls();
+    updateSendBusControls();
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -697,12 +766,14 @@ void MainComponent::bounceProject()
         std::vector<float>           gains;
         std::vector<bool>            solos;
         std::vector<double>          clipStarts;
+        std::vector<float>           sends;
         for (const auto& track : song.tracks)
         {
             patterns.push_back(track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
             gains.push_back(track.muted ? -100.0f : track.gainDb);
             solos.push_back(track.solo);
             clipStarts.push_back(track.clips.empty() ? 0.0 : track.clips[0].startBeats);
+            sends.push_back(track.sendLevel);
         }
         if (patterns.empty())
         {
@@ -710,11 +781,14 @@ void MainComponent::bounceProject()
             gains.push_back(0.0f);
             solos.push_back(false);
             clipStarts.push_back(0.0);
+            sends.push_back(0.0f);
         }
 
         const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 44100.0;
         const double bpm        = song.bpm;
-        auto         buffer     = engine::OfflineRenderer::render(patterns, gains, solos, clipStarts,
+        auto         buffer     = engine::OfflineRenderer::render(patterns, gains, solos, clipStarts, sends,
+                                                                  song.sendBus.enabled, song.sendBus.roomSize,
+                                                                  song.sendBus.damping, song.sendBus.returnLevel,
                                                                   bpm, sampleRate, 8.0);
 
         if (song.filter.enabled)
@@ -951,6 +1025,17 @@ void MainComponent::layoutMixerView()
     reverbDampSlider.setBounds(reverbRow.removeFromLeft(rw));
     reverbRow.removeFromLeft(8);
     reverbMixSlider.setBounds(reverbRow);
+    masterArea.removeFromTop(6);
+
+    auto sendRow = masterArea.removeFromTop(26);
+    sendBusButton.setBounds(sendRow.removeFromLeft(70));
+    sendRow.removeFromLeft(8);
+    const int sw = juce::jmax(50, (sendRow.getWidth() - 16) / 3);
+    sendRoomSlider.setBounds(sendRow.removeFromLeft(sw));
+    sendRow.removeFromLeft(8);
+    sendDampSlider.setBounds(sendRow.removeFromLeft(sw));
+    sendRow.removeFromLeft(8);
+    sendReturnSlider.setBounds(sendRow);
     masterArea.removeFromTop(8);
 
     meter_.setBounds(masterArea.removeFromTop(44));
