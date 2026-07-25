@@ -35,19 +35,32 @@ struct ReverbSettings
     bool operator==(const ReverbSettings&) const = default;
 };
 
+/** Which effect the shared send bus applies (see SendBusSettings). */
+enum class SendBusEffectType { Reverb, Delay };
+
 /**
     The shared send/return bus: every track can send a pre-fader portion of its
-    signal into it (Track::sendLevel), summed and passed through this reverb,
-    then mixed back into the master before its own effects chain. Unlike the
-    master reverb, the send bus's own reverb is always fully wet — there's no
-    "dry" concept for a return bus — so returnLevel is the only level control
-    (a plain output gain on the wet return).
+    signal into it (Track::sendLevel), summed and passed through one effect —
+    reverb or delay, chosen by effectType — then mixed back into the master
+    before its own effects chain. Unlike the master versions of these effects,
+    the send bus's effect is always fully wet — there's no "dry" concept for a
+    return bus — so returnLevel is the only level control (a plain output gain
+    on the wet return), shared by both effect types. roomSize/damping apply
+    when effectType is Reverb; delayTimeMs/delayFeedback when it's Delay —
+    both sets of params are always stored so switching types doesn't lose
+    whichever one isn't currently active.
 */
 struct SendBusSettings
 {
-    bool  enabled     = false;
-    float roomSize    = 0.5f; // 0..1
-    float damping     = 0.5f; // 0..1
+    bool              enabled    = false;
+    SendBusEffectType effectType = SendBusEffectType::Reverb;
+
+    float roomSize = 0.5f; // 0..1, reverb only
+    float damping  = 0.5f; // 0..1, reverb only
+
+    float delayTimeMs   = 300.0f; // delay only
+    float delayFeedback = 0.35f;  // 0..0.95, delay only
+
     float returnLevel = 0.5f; // 0..1, linear gain on the wet return
 
     bool operator==(const SendBusSettings&) const = default;

@@ -23,10 +23,13 @@ static Song makeSampleSong()
     s.reverb.roomSize    = 0.7f;
     s.reverb.damping     = 0.4f;
     s.reverb.mix         = 0.25f;
-    s.sendBus.enabled     = true;
-    s.sendBus.roomSize    = 0.6f;
-    s.sendBus.damping     = 0.3f;
-    s.sendBus.returnLevel = 0.45f;
+    s.sendBus.enabled       = true;
+    s.sendBus.effectType    = SendBusEffectType::Delay;
+    s.sendBus.roomSize      = 0.6f;
+    s.sendBus.damping       = 0.3f;
+    s.sendBus.delayTimeMs   = 250.0f;
+    s.sendBus.delayFeedback = 0.4f;
+    s.sendBus.returnLevel   = 0.45f;
     s.masterGainDb.addPoint(0.0, -40.0f);
     s.masterGainDb.addPoint(4.0, 0.0f);
     s.masterGainDb.addPoint(8.0, -6.0f);

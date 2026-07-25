@@ -37,7 +37,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 8\n";
+    out << "LOOPER 9\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -54,8 +54,11 @@ inline std::string serialize(const Song& song)
         << detail::num((double) song.reverb.damping) << " "
         << detail::num((double) song.reverb.mix) << "\n";
     out << "SENDBUS " << (song.sendBus.enabled ? 1 : 0) << " "
+        << (int) song.sendBus.effectType << " "
         << detail::num((double) song.sendBus.roomSize) << " "
         << detail::num((double) song.sendBus.damping) << " "
+        << detail::num((double) song.sendBus.delayTimeMs) << " "
+        << detail::num((double) song.sendBus.delayFeedback) << " "
         << detail::num((double) song.sendBus.returnLevel) << "\n";
     out << "AUTO " << song.masterGainDb.points().size() << "\n";
     for (const auto& p : song.masterGainDb.points())
@@ -159,13 +162,16 @@ inline bool deserialize(const std::string& text, Song& out)
     if (! readTagged("SENDBUS", rest)) return false;
     {
         std::istringstream sb(rest);
-        int    enabled = 0;
-        double roomSize = 0.0, damping = 0.0, returnLevel = 0.0;
-        sb >> enabled >> roomSize >> damping >> returnLevel;
-        song.sendBus.enabled     = enabled != 0;
-        song.sendBus.roomSize    = (float) roomSize;
-        song.sendBus.damping     = (float) damping;
-        song.sendBus.returnLevel = (float) returnLevel;
+        int    enabled = 0, effectType = 0;
+        double roomSize = 0.0, damping = 0.0, delayTimeMs = 0.0, delayFeedback = 0.0, returnLevel = 0.0;
+        sb >> enabled >> effectType >> roomSize >> damping >> delayTimeMs >> delayFeedback >> returnLevel;
+        song.sendBus.enabled       = enabled != 0;
+        song.sendBus.effectType    = (SendBusEffectType) effectType;
+        song.sendBus.roomSize      = (float) roomSize;
+        song.sendBus.damping       = (float) damping;
+        song.sendBus.delayTimeMs   = (float) delayTimeMs;
+        song.sendBus.delayFeedback = (float) delayFeedback;
+        song.sendBus.returnLevel   = (float) returnLevel;
     }
 
     if (! readTagged("AUTO", rest)) return false;

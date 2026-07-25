@@ -124,11 +124,16 @@ public:
     void setMasterReverbMix(float v)           { masterReverb_.setMix(v); }
 
     // Shared send bus: every track can send a pre-fader portion of its signal
-    // into this always-fully-wet reverb, which mixes back into the master
-    // before the master's own effects chain (thread-safe atomics).
+    // into one always-fully-wet effect — reverb or delay, chosen by
+    // setSendBusEffectType — which mixes back into the master before the
+    // master's own effects chain (thread-safe atomics).
     void setSendBusEnabled(bool enabled)  { sendBusEnabled_.store(enabled, std::memory_order_relaxed); }
+    /** 0 = reverb, 1 = delay. */
+    void setSendBusEffectType(int type)   { sendBusEffectType_.store(type, std::memory_order_relaxed); }
     void setSendBusRoomSize(float v)      { sendBusReverb_.setRoomSize(v); }
     void setSendBusDamping(float v)       { sendBusReverb_.setDamping(v); }
+    void setSendBusDelayTimeMs(float ms)  { sendBusDelay_.setTimeMs(ms); }
+    void setSendBusDelayFeedback(float v) { sendBusDelay_.setFeedback(v); }
     void setSendBusReturnLevel(float v)   { sendReturnGain_.store(v, std::memory_order_relaxed); }
 
     /** Housekeeping to run periodically on the message thread (frees retired clips/patterns). */
@@ -187,12 +192,17 @@ private:
     MasterBusNode       master_;
     Transport           transport_;
 
-    // Send bus: accumulated from every track's pre-fader send, reverberated,
-    // and mixed back into the main output before the master effects chain.
+    // Send bus: accumulated from every track's pre-fader send, passed through
+    // one always-fully-wet effect (sendBusEffectType_: 0 = reverb, 1 =
+    // delay), and mixed back into the main output before the master effects
+    // chain. Both effect instances stay prepared/configured regardless of
+    // which is selected, so switching types takes effect immediately.
     juce::AudioBuffer<float> sendBus_;
     ReverbEffect             sendBusReverb_;
-    std::atomic<bool>        sendBusEnabled_ { false };
-    std::atomic<float>       sendReturnGain_ { 0.0f };
+    DelayEffect              sendBusDelay_;
+    std::atomic<bool>        sendBusEnabled_    { false };
+    std::atomic<int>         sendBusEffectType_ { 0 };
+    std::atomic<float>       sendReturnGain_    { 0.0f };
 
     std::atomic<double> sampleRate_ { 0.0 };
 

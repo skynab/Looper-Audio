@@ -88,6 +88,7 @@ private:
     void                   updateFilterControls();
     void                   updateReverbControls();
     void                   updateSendBusControls();
+    void                   updateSendBusEffectVisibility();
     void                   updateMixerStrips();
     void                   setTrackGain(int index, float gainDb);
     void                   setTrackMuted(int index, bool muted);
@@ -141,7 +142,10 @@ private:
     juce::ToggleButton reverbButton { "Reverb" };
     juce::Slider       reverbRoomSlider, reverbDampSlider, reverbMixSlider;
     juce::ToggleButton sendBusButton { "Send FX" };
-    juce::Slider       sendRoomSlider, sendDampSlider, sendReturnSlider;
+    juce::ComboBox     sendEffectTypeBox_;
+    juce::Slider       sendRoomSlider, sendDampSlider; // shown when the send bus effect is Reverb
+    juce::Slider       sendDelayTimeSlider, sendDelayFbSlider; // shown when it's Delay
+    juce::Slider       sendReturnSlider;
     juce::ToggleButton autoRecButton   { "Rec Auto" };
     juce::TextButton   autoClearButton { "Clr Auto" };
     juce::Label        tempoLabel  { {}, "Tempo" };

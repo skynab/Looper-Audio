@@ -129,8 +129,20 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > `rmsDry=0.149266` and `audioTrackWorks` (the original single-clip path), both unchanged, confirming
 > the rewrite didn't disturb the case every existing project already relies on.
 >
-> Next: more send-bus effect types, persisting the dockable-workspace layout, and user-editable
-> file-browser bookmarks. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> **The send bus can now be delay, not just reverb** — a mixer strip **Reverb/Delay** selector
+> (`sendEffectTypeBox_`) picks which always-fully-wet effect every track's send dips into; room/damp
+> and delay-time/feedback share the same two slider slots, only one pair visible at a time depending
+> on the selection. `AudioEngine` now holds a `sendBusDelay_` alongside the existing `sendBusReverb_`
+> (both always prepared/configured; the audio callback just picks which one processes the bus each
+> block) and `OfflineRenderer::render()` gained matching trailing params so bounce/export honours
+> whichever is selected. `SendBusSettings` grew `effectType`/`delayTimeMs`/`delayFeedback` fields
+> (format bumped to `LOOPER 9`) — both effects' params are always stored, so switching types never
+> loses whichever one isn't currently active. Verified by a new `sendBusDelayWorks` bounce-tool check
+> (the delay-routed bus differs from both "bus off" and the existing reverb-routed bus) alongside
+> every existing check, including `rmsDry=0.149266`, unchanged.
+>
+> Next: persisting the dockable-workspace layout, and user-editable file-browser bookmarks. See the
+> full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

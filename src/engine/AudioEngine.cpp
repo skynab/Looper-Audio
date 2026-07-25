@@ -251,7 +251,11 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
 
     if (sendBusEnabled_.load(std::memory_order_relaxed))
     {
-        sendBusReverb_.process(sendBus_);
+        if (sendBusEffectType_.load(std::memory_order_relaxed) == 1) // 1 = delay, 0 = reverb
+            sendBusDelay_.process(sendBus_);
+        else
+            sendBusReverb_.process(sendBus_);
+
         const float returnGain = sendReturnGain_.load(std::memory_order_relaxed);
         const int   channels   = juce::jmin(output.getNumChannels(), sendBus_.getNumChannels());
         for (int ch = 0; ch < channels; ++ch)
@@ -291,6 +295,10 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     sendBusReverb_.prepare(sampleRate, blockSize);
     sendBusReverb_.setEnabled(true); // always on internally; sendBusEnabled_ gates the mix-back
     sendBusReverb_.setMix(1.0f);     // a return bus is always fully wet
+
+    sendBusDelay_.prepare(sampleRate, blockSize);
+    sendBusDelay_.setEnabled(true); // same convention as sendBusReverb_ above
+    sendBusDelay_.setMix(1.0f);     // a return bus is always fully wet
 
     recorder_.prepare(sampleRate, 2, kMaxRecordSeconds);
 }

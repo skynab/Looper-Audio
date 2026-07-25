@@ -139,6 +139,19 @@ int main(int argc, char** argv)
     const float rmsWithSendBus = withSendBus.getRMSLevel(0, 0, withSendBus.getNumSamples());
     const bool  sendBusChanged = std::abs(rmsWithSendBus - rmsNoSendBus) > 1.0e-4f;
 
+    // Send-bus DELAY check: same setup, but with the bus's effect type set to
+    // Delay (1) instead of the default Reverb (0) — must differ from both
+    // "bus off" and the reverb-based bus above, confirming the engine
+    // genuinely switches which effect processes the send bus.
+    const auto  withSendBusDelay     = OfflineRenderer::render(one, std::vector<float> { 0.0f }, std::vector<bool>{},
+                                                               std::vector<double>{}, std::vector<float> { 1.0f },
+                                                               true, 0.6f, 0.4f, 0.7f, bpm, sampleRate, seconds,
+                                                               512, OfflineRenderer::GainAutomationFn {},
+                                                               1, 250.0f, 0.4f);
+    const float rmsWithSendBusDelay  = withSendBusDelay.getRMSLevel(0, 0, withSendBusDelay.getNumSamples());
+    const bool  sendBusDelayWorks    = std::abs(rmsWithSendBusDelay - rmsNoSendBus) > 1.0e-4f
+                                     && std::abs(rmsWithSendBusDelay - rmsWithSendBus) > 1.0e-4f;
+
     // Multi-clip check: two clips on one track (0-4 beats, then 6-10 beats,
     // leaving a 2-beat gap and nothing after) must produce sound only inside
     // each clip's own window — real length gating, not the single-clip
@@ -359,6 +372,7 @@ int main(int argc, char** argv)
               << "  soloMatchesArpOnly=" << (soloMatchesArpOnly ? 1 : 0)
               << "  clipStartGates=" << (clipStartGates ? 1 : 0)
               << "  sendBusChanged=" << (sendBusChanged ? 1 : 0)
+              << "  sendBusDelayWorks=" << (sendBusDelayWorks ? 1 : 0)
               << "  multiClipGates=" << (multiClipGates ? 1 : 0)
               << "  audioTrackWorks=" << (audioTrackWorks ? 1 : 0)
               << "  multiClipAudioGates=" << (multiClipAudioGates ? 1 : 0)
@@ -369,17 +383,18 @@ int main(int argc, char** argv)
     // gain ramp that fades in, a sample-accurate per-track automation curve
     // that fades one track while leaving an unautomated sibling stable, solo
     // correctly silencing the other track, a clip start that gates playback, a
-    // send bus that changes the output, two MIDI clips on one track each
-    // sounding only in their own window, a decoded audio clip playing back
-    // through a track, two AUDIO clips on one track likewise each sounding
-    // only in their own window, and the recorder's capture/handoff logic (fed
-    // synthetic input, since there's no live mic here) together confirm
+    // send bus that changes the output whether it's reverb or delay, two
+    // MIDI clips on one track each sounding only in their own window, a
+    // decoded audio clip playing back through a track, two AUDIO clips on one
+    // track likewise each sounding only in their own window, and the
+    // recorder's capture/handoff logic (fed synthetic input, since there's no
+    // live mic here) together confirm
     // the full render/gain/fx/automation/solo/clip/send-bus/audio/record path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
                  && perTrackAutomationWorks
-                 && soloMatchesArpOnly && clipStartGates && sendBusChanged && multiClipGates
+                 && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && recorderWorks;
     return ok ? 0 : 2;
 }

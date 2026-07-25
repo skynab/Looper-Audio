@@ -11,6 +11,7 @@
 #include "engine/AudioClipSlot.h"
 #include "engine/ClipData.h"
 #include "engine/ClipSlot.h"
+#include "engine/DelayEffect.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/Pattern.h"
 #include "engine/ProcessContext.h"
@@ -52,7 +53,11 @@ public:
         only way to get sample-accurate *per-track* automation, since (unlike
         master automation) it can't be applied as a single post-render multiply
         once tracks are already summed. Leaving it unset keeps the original,
-        untouched fast path (a plain per-track render() straight into the mix). */
+        untouched fast path (a plain per-track render() straight into the mix).
+
+        The send bus applies reverb (sendRoomSize/sendDamping) when
+        @p sendBusEffectType is 0, or delay (sendDelayTimeMs/sendDelayFeedback)
+        when it's 1 — matching AudioEngine::setSendBusEffectType's convention. */
     static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
                                            const std::vector<float>&   gainsDb,
                                            const std::vector<bool>&    soloFlags,
@@ -66,7 +71,10 @@ public:
                                            double sampleRate,
                                            double numSeconds,
                                            int    blockSize = 512,
-                                           GainAutomationFn gainAutomation = {})
+                                           GainAutomationFn gainAutomation = {},
+                                           int    sendBusEffectType = 0,
+                                           float  sendDelayTimeMs = 300.0f,
+                                           float  sendDelayFeedback = 0.35f)
     {
         const int totalSamples = (int) std::ceil(numSeconds * sampleRate);
         juce::AudioBuffer<float> output(2, std::max(1, totalSamples));
@@ -107,6 +115,13 @@ public:
         sendReverb.setMix(1.0f); // a return bus is always fully wet
         sendReverb.setRoomSize(sendRoomSize);
         sendReverb.setDamping(sendDamping);
+
+        DelayEffect sendDelay;
+        sendDelay.prepare(sampleRate, blockSize);
+        sendDelay.setEnabled(true);
+        sendDelay.setMix(1.0f); // a return bus is always fully wet
+        sendDelay.setTimeMs(sendDelayTimeMs);
+        sendDelay.setFeedback(sendDelayFeedback);
 
         juce::AudioBuffer<float> block(2, blockSize);
         juce::AudioBuffer<float> sendBus(2, blockSize);
@@ -167,7 +182,11 @@ public:
 
             if (sendBusEnabled)
             {
-                sendReverb.process(sendBus);
+                if (sendBusEffectType == 1)
+                    sendDelay.process(sendBus);
+                else
+                    sendReverb.process(sendBus);
+
                 for (int ch = 0; ch < 2; ++ch)
                     block.addFrom(ch, 0, sendBus, ch, 0, n, sendReturnGain);
             }

@@ -246,7 +246,7 @@ MainComponent::MainComponent()
     };
     mixerView_.addAndMakeVisible(reverbMixSlider);
 
-    // ---- send bus: a shared reverb every track can send into (stored in the document) ----
+    // ---- send bus: a shared reverb-or-delay every track can send into (stored in the document) ----
     sendBusButton.onClick = [this]
     {
         const bool on = sendBusButton.getToggleState();
@@ -254,6 +254,19 @@ MainComponent::MainComponent()
         engine_.setSendBusEnabled(on);
     };
     mixerView_.addAndMakeVisible(sendBusButton);
+
+    sendEffectTypeBox_.addItem("Reverb", 1);
+    sendEffectTypeBox_.addItem("Delay", 2);
+    sendEffectTypeBox_.setSelectedId(1, juce::dontSendNotification);
+    sendEffectTypeBox_.onChange = [this]
+    {
+        const auto type = sendEffectTypeBox_.getSelectedId() == 2 ? model::SendBusEffectType::Delay
+                                                                  : model::SendBusEffectType::Reverb;
+        history_.mutableCurrent().sendBus.effectType = type;
+        engine_.setSendBusEffectType((int) type);
+        updateSendBusEffectVisibility();
+    };
+    mixerView_.addAndMakeVisible(sendEffectTypeBox_);
 
     sendRoomSlider.setRange(0.0, 100.0, 1.0);
     sendRoomSlider.setValue(60.0, juce::dontSendNotification);
@@ -276,6 +289,28 @@ MainComponent::MainComponent()
         engine_.setSendBusDamping(v);
     };
     mixerView_.addAndMakeVisible(sendDampSlider);
+
+    sendDelayTimeSlider.setRange(20.0, 1000.0, 1.0);
+    sendDelayTimeSlider.setValue(300.0, juce::dontSendNotification);
+    sendDelayTimeSlider.setTextValueSuffix(" ms");
+    sendDelayTimeSlider.onValueChange = [this]
+    {
+        const float ms = (float) sendDelayTimeSlider.getValue();
+        history_.mutableCurrent().sendBus.delayTimeMs = ms;
+        engine_.setSendBusDelayTimeMs(ms);
+    };
+    mixerView_.addAndMakeVisible(sendDelayTimeSlider);
+
+    sendDelayFbSlider.setRange(0.0, 95.0, 1.0);
+    sendDelayFbSlider.setValue(35.0, juce::dontSendNotification);
+    sendDelayFbSlider.setTextValueSuffix(" %");
+    sendDelayFbSlider.onValueChange = [this]
+    {
+        const float fb = (float) (sendDelayFbSlider.getValue() / 100.0);
+        history_.mutableCurrent().sendBus.delayFeedback = fb;
+        engine_.setSendBusDelayFeedback(fb);
+    };
+    mixerView_.addAndMakeVisible(sendDelayFbSlider);
 
     sendReturnSlider.setRange(0.0, 100.0, 1.0);
     sendReturnSlider.setValue(50.0, juce::dontSendNotification);
@@ -774,14 +809,31 @@ void MainComponent::updateSendBusControls()
 {
     const auto& sb = history_.current().sendBus;
     sendBusButton.setToggleState(sb.enabled, juce::dontSendNotification);
+    sendEffectTypeBox_.setSelectedId(sb.effectType == model::SendBusEffectType::Delay ? 2 : 1,
+                                     juce::dontSendNotification);
     sendRoomSlider.setValue(sb.roomSize * 100.0, juce::dontSendNotification);
     sendDampSlider.setValue(sb.damping * 100.0, juce::dontSendNotification);
+    sendDelayTimeSlider.setValue(sb.delayTimeMs, juce::dontSendNotification);
+    sendDelayFbSlider.setValue(sb.delayFeedback * 100.0, juce::dontSendNotification);
     sendReturnSlider.setValue(sb.returnLevel * 100.0, juce::dontSendNotification);
+    updateSendBusEffectVisibility();
 
     engine_.setSendBusEnabled(sb.enabled);
+    engine_.setSendBusEffectType((int) sb.effectType);
     engine_.setSendBusRoomSize(sb.roomSize);
     engine_.setSendBusDamping(sb.damping);
+    engine_.setSendBusDelayTimeMs(sb.delayTimeMs);
+    engine_.setSendBusDelayFeedback(sb.delayFeedback);
     engine_.setSendBusReturnLevel(sb.returnLevel);
+}
+
+void MainComponent::updateSendBusEffectVisibility()
+{
+    const bool isDelay = history_.current().sendBus.effectType == model::SendBusEffectType::Delay;
+    sendRoomSlider.setVisible(! isDelay);
+    sendDampSlider.setVisible(! isDelay);
+    sendDelayTimeSlider.setVisible(isDelay);
+    sendDelayFbSlider.setVisible(isDelay);
 }
 
 void MainComponent::setTrackGain(int index, float gainDb)
@@ -1236,7 +1288,9 @@ void MainComponent::bounceProject()
         auto buffer = engine::OfflineRenderer::render(patterns, gains, solos, clipStarts, sends,
                                                        song.sendBus.enabled, song.sendBus.roomSize,
                                                        song.sendBus.damping, song.sendBus.returnLevel,
-                                                       bpm, sampleRate, 8.0, 512, gainAutomationFn);
+                                                       bpm, sampleRate, 8.0, 512, gainAutomationFn,
+                                                       (int) song.sendBus.effectType,
+                                                       song.sendBus.delayTimeMs, song.sendBus.delayFeedback);
 
         if (song.filter.enabled)
         {
@@ -1521,11 +1575,19 @@ void MainComponent::layoutMixerView()
     auto sendRow = masterArea.removeFromTop(26);
     sendBusButton.setBounds(sendRow.removeFromLeft(70));
     sendRow.removeFromLeft(8);
-    const int sw = juce::jmax(50, (sendRow.getWidth() - 16) / 3);
-    sendRoomSlider.setBounds(sendRow.removeFromLeft(sw));
+    sendEffectTypeBox_.setBounds(sendRow.removeFromLeft(80));
     sendRow.removeFromLeft(8);
-    sendDampSlider.setBounds(sendRow.removeFromLeft(sw));
+    const int sw           = juce::jmax(50, (sendRow.getWidth() - 16) / 3);
+    const auto param1Bounds = sendRow.removeFromLeft(sw);
     sendRow.removeFromLeft(8);
+    const auto param2Bounds = sendRow.removeFromLeft(sw);
+    sendRow.removeFromLeft(8);
+    // Reverb (room/damp) and delay (time/feedback) share the same two slots —
+    // only one pair is visible at a time (see updateSendBusEffectVisibility).
+    sendRoomSlider.setBounds(param1Bounds);
+    sendDampSlider.setBounds(param2Bounds);
+    sendDelayTimeSlider.setBounds(param1Bounds);
+    sendDelayFbSlider.setBounds(param2Bounds);
     sendReturnSlider.setBounds(sendRow);
     masterArea.removeFromTop(8);
 
