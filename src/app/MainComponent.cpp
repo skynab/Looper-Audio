@@ -270,9 +270,17 @@ MainComponent::MainComponent()
     };
     mixerView_.addAndMakeVisible(sendReturnSlider);
 
-    // ---- master-gain automation: arm, then move the master fader while playing ----
+    // ---- gain automation: arm, then move the master fader or a track's fader
+    // while playing (Rec Auto arms both; Clr Auto clears both, the master lane
+    // and the currently selected track's) ----
     autoRecButton.onClick   = [this] { recordAutomation_ = autoRecButton.getToggleState(); };
-    autoClearButton.onClick = [this] { history_.mutableCurrent().masterGainDb.clear(); };
+    autoClearButton.onClick = [this]
+    {
+        auto& song = history_.mutableCurrent();
+        song.masterGainDb.clear();
+        if (selectedTrackIndex_ >= 0 && selectedTrackIndex_ < (int) song.tracks.size())
+            song.tracks[(size_t) selectedTrackIndex_].gainAutomation.clear();
+    };
     mixerView_.addAndMakeVisible(autoRecButton);
     mixerView_.addAndMakeVisible(autoClearButton);
 
@@ -751,7 +759,19 @@ void MainComponent::setTrackGain(int index, float gainDb)
     // Live tweak: update the current document in place (not a separate undo step).
     auto& song = history_.mutableCurrent();
     if (index >= 0 && index < (int) song.tracks.size())
-        song.tracks[(size_t) index].gainDb = gainDb;
+    {
+        auto& track = song.tracks[(size_t) index];
+        track.gainDb = gainDb;
+
+        // The same global "Rec Auto" toggle used for master-gain automation
+        // also arms per-track gain automation — touch whichever fader you want
+        // to automate while it's on.
+        if (recordAutomation_ && engine_.isPlaying())
+        {
+            const double beat = uiTempoMap_.ppqFromSamples(engine_.playheadSamples());
+            track.gainAutomation.addPoint(beat, gainDb);
+        }
+    }
     engine_.setTrackGainDb(index, gainDb);
 }
 
@@ -1202,13 +1222,30 @@ void MainComponent::timerCallback()
 
     arrangementView_.setPlayheadBeats(uiTempoMap_.ppqFromSamples(playhead));
 
-    // Master-gain automation playback (coarse, message-thread; sample-accurate on export).
-    if (! recordAutomation_ && engine_.isPlaying() && ! history_.current().masterGainDb.empty())
+    // Gain automation playback (coarse, message-thread; sample-accurate on
+    // export — see bounceProject()). Master and per-track lanes both apply.
+    if (! recordAutomation_ && engine_.isPlaying())
     {
         const double beat = uiTempoMap_.ppqFromSamples(playhead);
-        const float  db   = history_.current().masterGainDb.valueAt(beat, (float) masterSlider.getValue());
-        post(Cmd::SetMasterGainDb, db);
-        masterSlider.setValue(db, juce::dontSendNotification);
+        const auto&  song = history_.current();
+
+        if (! song.masterGainDb.empty())
+        {
+            const float db = song.masterGainDb.valueAt(beat, (float) masterSlider.getValue());
+            post(Cmd::SetMasterGainDb, db);
+            masterSlider.setValue(db, juce::dontSendNotification);
+        }
+
+        for (int i = 0; i < n; ++i)
+        {
+            const auto& lane = song.tracks[(size_t) i].gainAutomation;
+            if (lane.empty())
+                continue;
+
+            const float db = lane.valueAt(beat, song.tracks[(size_t) i].gainDb);
+            engine_.setTrackGainDb(i, db);
+            trackStrips_[i]->setGainDb(db);
+        }
     }
 }
 

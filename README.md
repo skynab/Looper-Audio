@@ -57,9 +57,19 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > and confirmed exact sample-for-sample capture, correct armed/finished state transitions, and safe
 > capping when a take exceeds its buffer (a 3-minute-per-take v1 limit — no disk streaming yet). What
 > can't be verified without you: whether your Mac's actual microphone reaches the callback — that's
-> the one thing left to try live. Deferred to validate live: **recording itself** (see above), disk
-> streaming. Next: more automation targets, more send-bus effect types, multi-clip audio tracks. See
-> the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> the one thing left to try live.
+>
+> Automation isn't master-only anymore: the same **Rec Auto** toggle now also arms **per-track gain
+> automation** — touch a mixer strip's fader instead of the master's while it's on, and that track
+> gets its own automation lane (saved with the project, format v8). **Clr Auto** clears both the master
+> lane and the currently selected track's. This reuses entirely proven machinery (the same
+> `AutomationLane` class, the same `setTrackGainDb` the static fader already uses), so there's no new
+> engine surface to verify — live playback works; **sample-accurate export of per-track automation is
+> deliberately deferred** (doing it right means rendering each track in isolation before the shared
+> send bus sums them, a bigger change than this pass warranted) — exporting a track with automation
+> currently uses its static gain, a safe fallback rather than wrong audio. Deferred to validate live:
+> recording itself, disk streaming. Next: sample-accurate per-track automation export, more send-bus
+> effect types, multi-clip audio tracks. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

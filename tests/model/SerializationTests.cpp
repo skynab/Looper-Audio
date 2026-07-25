@@ -53,6 +53,8 @@ static Song makeSampleSong()
     s.tracks[0].solo      = true;
     s.tracks[0].sendLevel = 0.65f;
     s.tracks[1].muted     = true;
+    s.tracks[0].gainAutomation.addPoint(0.0, -20.0f);
+    s.tracks[0].gainAutomation.addPoint(4.0, 0.0f);
 
     return s;
 }

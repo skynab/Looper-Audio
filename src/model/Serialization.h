@@ -37,7 +37,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 7\n";
+    out << "LOOPER 8\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -68,6 +68,9 @@ inline std::string serialize(const Song& song)
             << detail::num((double) track.gainDb) << " " << (track.muted ? 1 : 0)
             << " " << (track.solo ? 1 : 0) << " " << detail::num((double) track.sendLevel)
             << " " << track.name << "\n";
+        out << "TAUTO " << track.gainAutomation.points().size() << "\n";
+        for (const auto& p : track.gainAutomation.points())
+            out << "TAPT " << detail::num(p.beat) << " " << detail::num((double) p.value) << "\n";
         out << "CLIPS " << track.clips.size() << "\n";
 
         for (const auto& clip : track.clips)
@@ -201,6 +204,19 @@ inline bool deserialize(const std::string& text, Song& out)
             std::string name;
             std::getline(ts, name);
             track.name = detail::trimLeadingSpace(std::move(name));
+        }
+
+        if (! readTagged("TAUTO", rest)) return false;
+        {
+            const int pointCount = std::atoi(rest.c_str());
+            for (int p = 0; p < pointCount; ++p)
+            {
+                if (! readTagged("TAPT", rest)) return false;
+                std::istringstream ps(rest);
+                double beat = 0.0, value = 0.0;
+                ps >> beat >> value;
+                track.gainAutomation.addPoint(beat, (float) value);
+            }
         }
 
         if (! readTagged("CLIPS", rest))
