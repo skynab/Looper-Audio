@@ -11,14 +11,16 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > workspace** with a draggable divider, plus a **Mixer tab** — a channel strip per track (fader,
 > level meter, mute, solo, click to select/arm) and a master strip carrying the effects chain. Solo
 > follows the standard "solo overrides, mute always wins" rule, verified headlessly by the bounce
-> tool. The Arrange tab is now a real timeline: zoomable/scrollable (a `Viewport` over a
-> content-sized `ArrangementView`) with **click-to-seek** on the ruler/lanes; the beat↔pixel
-> geometry is unit-tested headless. Dragging clips to reposition them is intentionally not
-> implemented yet — the engine doesn't use a clip's timeline position for playback scheduling (each
-> track's pattern always loops from the origin), so dragging would only be cosmetic; making clip
-> position actually gate playback is a separate future engine change. Deferred to validate live:
-> audio recording, disk streaming. Next: sends/returns, clip-position-aware playback, more
-> automation targets. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> tool. The Arrange tab is a real timeline: zoomable/scrollable (a `Viewport` over a content-sized
+> `ArrangementView`) with **click-to-seek** on the ruler/lanes and **drag-to-reposition** clips — the
+> beat↔pixel geometry is unit-tested headless. Dragging is now a real scheduling change, not just
+> cosmetic: a track's clip start beat **delays when its pattern begins** (it plays and loops
+> indefinitely from there — an arrangement-style "this part enters at bar N"), verified by the bounce
+> tool. Clip *length* deliberately doesn't gate playback yet (every track's clip length still equals
+> its pattern length, so that would silence every track after one loop); full clip-length gating and
+> multiple clips per track are future work. Deferred to validate live: audio recording, disk
+> streaming. Next: sends/returns, clip-length gating, more automation targets. See the full roadmap
+> in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

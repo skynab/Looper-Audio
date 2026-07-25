@@ -20,19 +20,17 @@ namespace looper
 
     Sizes itself to the full content (song length x number of tracks, scaled by
     zoom) rather than the viewport — the owner wraps it in a juce::Viewport so
-    long or heavily-zoomed timelines scroll instead of squeezing. Click anywhere
-    in the ruler/lane area to seek the transport there.
-
-    Note: dragging clips to new positions is not implemented yet — the engine
-    currently always loops each track's pattern from the timeline origin, so a
-    clip's on-screen position is not yet a real scheduling input. Making that
-    true is a separate, deliberately-deferred engine change (see the "clip
-    position gates playback" note in the roadmap).
+    long or heavily-zoomed timelines scroll instead of squeezing. Click empty
+    ruler/lane space to seek the transport there; drag a clip to move where it
+    starts (the engine now delays a track's pattern until its clip's start beat,
+    so this is a real scheduling change, not just cosmetic — see Sequencer's
+    clip-start gating).
 */
 class ArrangementView final : public juce::Component
 {
 public:
     std::function<void(double)> onSeek; // beat position clicked
+    std::function<void(int trackIndex, int clipIndex, double newStartBeats)> onClipMoved;
 
     void setSong(const model::Song& song)
     {
@@ -102,12 +100,16 @@ public:
                        8, (int) y, (int) geometry_.gutterWidth - 12, (int) geometry_.laneHeight,
                        juce::Justification::centredLeft);
 
-            for (const auto& clip : track.clips)
+            for (int c = 0; c < (int) track.clips.size(); ++c)
             {
-                const float cx = geometry_.xForBeat(clip.startBeats);
+                const auto&  clip        = track.clips[(size_t) c];
+                const bool   isBeingMoved = dragging_ && i == dragTrackIndex_ && c == dragClipIndex_;
+                const double startBeats  = isBeingMoved ? dragPreviewStart_ : clip.startBeats;
+
+                const float cx = geometry_.xForBeat(startBeats);
                 const float cw = juce::jmax(2.0f, (float) clip.lengthBeats * ppb);
                 const juce::Rectangle<float> r(cx, y + 3.0f, cw, geometry_.laneHeight - 6.0f);
-                g.setColour(juce::Colour(0xff3a7d44));
+                g.setColour(isBeingMoved ? juce::Colour(0xff5aad64) : juce::Colour(0xff3a7d44));
                 g.fillRoundedRectangle(r, 3.0f);
                 g.setColour(juce::Colours::black.withAlpha(0.3f));
                 g.drawRoundedRectangle(r, 3.0f, 1.0f);
@@ -129,14 +131,74 @@ public:
 
     void mouseDown(const juce::MouseEvent& e) override
     {
-        if ((float) e.x < geometry_.gutterWidth)
+        int trackIndex = -1, clipIndex = -1;
+        if (findClipAt(e.position, trackIndex, clipIndex))
+        {
+            dragging_          = true;
+            dragTrackIndex_    = trackIndex;
+            dragClipIndex_     = clipIndex;
+            dragGrabBeat_      = geometry_.beatForX(e.position.x);
+            dragOriginalStart_ = song_.tracks[(size_t) trackIndex].clips[(size_t) clipIndex].startBeats;
+            dragPreviewStart_  = dragOriginalStart_;
+            return;
+        }
+
+        if (e.position.x < geometry_.gutterWidth)
             return; // clicked the track-name gutter, not the timeline
 
         if (onSeek)
-            onSeek(geometry_.beatForX((float) e.x));
+            onSeek(geometry_.beatForX(e.position.x));
+    }
+
+    void mouseDrag(const juce::MouseEvent& e) override
+    {
+        if (! dragging_)
+            return;
+
+        const double currentBeat = geometry_.beatForX(e.position.x);
+        dragPreviewStart_ = std::max(0.0, dragOriginalStart_ + (currentBeat - dragGrabBeat_));
+        repaint();
+    }
+
+    void mouseUp(const juce::MouseEvent&) override
+    {
+        if (! dragging_)
+            return;
+
+        dragging_ = false;
+        if (onClipMoved)
+            onClipMoved(dragTrackIndex_, dragClipIndex_, dragPreviewStart_);
+        repaint();
     }
 
 private:
+    /** Finds the clip under @p pos, if any (searching by lane, then by clip rect). */
+    bool findClipAt(juce::Point<float> pos, int& trackIndexOut, int& clipIndexOut) const
+    {
+        for (int i = 0; i < (int) song_.tracks.size(); ++i)
+        {
+            const float y = geometry_.rulerHeight + (float) i * geometry_.laneHeight;
+            if (pos.y < y || pos.y >= y + geometry_.laneHeight)
+                continue;
+
+            const auto& track = song_.tracks[(size_t) i];
+            for (int c = 0; c < (int) track.clips.size(); ++c)
+            {
+                const auto& clip = track.clips[(size_t) c];
+                const float cx   = geometry_.xForBeat(clip.startBeats);
+                const float cw   = juce::jmax(2.0f, (float) clip.lengthBeats * geometry_.pixelsPerBeat());
+
+                if (pos.x >= cx && pos.x < cx + cw)
+                {
+                    trackIndexOut = i;
+                    clipIndexOut  = c;
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     double quartersPerBar() const
     {
         return juce::jmax(1, song_.timeSigNumerator) * 4.0 / (double) juce::jmax(1, song_.timeSigDenominator);
@@ -168,6 +230,13 @@ private:
     TimelineGeometry geometry_;
     model::Song      song_;
     double           playheadBeats_ = 0.0;
+
+    bool   dragging_          = false;
+    int    dragTrackIndex_    = -1;
+    int    dragClipIndex_     = -1;
+    double dragGrabBeat_      = 0.0; // beat under the mouse at grab
+    double dragOriginalStart_ = 0.0; // the clip's startBeats at grab
+    double dragPreviewStart_  = 0.0; // live preview while dragging
 };
 
 } // namespace looper

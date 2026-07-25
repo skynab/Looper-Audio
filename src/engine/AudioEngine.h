@@ -50,6 +50,7 @@ public:
     int  maxTracks() const noexcept { return kMaxTracks; }
     void setActiveTrackCount(int count);
     void setTrackPattern(int index, const Pattern& pattern);
+    void setTrackClipStartBeats(int index, double beats);
     void setTrackMuted(int index, bool muted);
     void setTrackSolo(int index, bool solo);
     void setTrackGainDb(int index, float gainDb);

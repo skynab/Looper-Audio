@@ -22,12 +22,15 @@ namespace looper::engine
 class OfflineRenderer
 {
 public:
-    /** Renders one instrument track per pattern, at the given per-track gains (dB)
-        and solo flags, summed. Solo follows the same "solo overrides, mute always
-        wins" rule as the live engine. */
+    /** Renders one instrument track per pattern, at the given per-track gains (dB),
+        solo flags, and clip start offsets (beats — the track stays silent until
+        the transport reaches this point, then plays and loops indefinitely).
+        Solo follows the same "solo overrides, mute always wins" rule as the live
+        engine. */
     static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
                                            const std::vector<float>&   gainsDb,
                                            const std::vector<bool>&    soloFlags,
+                                           const std::vector<double>&  clipStartBeats,
                                            double bpm,
                                            double sampleRate,
                                            double numSeconds,
@@ -47,6 +50,8 @@ public:
                 track->gainDb.store(gainsDb[i]);
             if (i < soloFlags.size())
                 track->solo.store(soloFlags[i]);
+            if (i < clipStartBeats.size())
+                track->sequencer.setClipStartBeats(clipStartBeats[i]);
             tracks.push_back(std::move(track));
         }
 
@@ -83,7 +88,16 @@ public:
         return output;
     }
 
-    /** Convenience overload: no solo flags (no track is ever solo-silenced). */
+    /** Convenience overload: no solo flags, no clip-start offsets. */
+    static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
+                                           const std::vector<float>&   gainsDb,
+                                           const std::vector<bool>&    soloFlags,
+                                           double bpm, double sampleRate, double numSeconds, int blockSize = 512)
+    {
+        return render(patterns, gainsDb, soloFlags, std::vector<double>{}, bpm, sampleRate, numSeconds, blockSize);
+    }
+
+    /** Convenience overload: no solo flags (no track is ever solo-silenced), no clip-start offsets. */
     static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
                                            const std::vector<float>&   gainsDb,
                                            double bpm, double sampleRate, double numSeconds, int blockSize = 512)

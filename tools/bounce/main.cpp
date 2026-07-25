@@ -52,6 +52,16 @@ int main(int argc, char** argv)
     const float rmsSoloArp         = soloArp.getRMSLevel(0, 0, soloArp.getNumSamples());
     const bool  soloMatchesArpOnly = std::abs(rmsSoloArp - rmsFull) < 1.0e-4f;
 
+    // Clip-start check: delaying a track's clip start by 2 beats (1s at 120bpm)
+    // must produce silence before that point and real signal after it.
+    const auto  delayedStart      = OfflineRenderer::render(one, std::vector<float> { 0.0f }, std::vector<bool>{},
+                                                            std::vector<double> { 2.0 }, bpm, sampleRate, seconds);
+    const int   oneSecondSamples  = (int) sampleRate;
+    const float rmsBeforeStart    = delayedStart.getRMSLevel(0, 0, oneSecondSamples);
+    const float rmsAfterStart     = delayedStart.getRMSLevel(0, oneSecondSamples,
+                                                             delayedStart.getNumSamples() - oneSecondSamples);
+    const bool  clipStartGates    = rmsBeforeStart < 1.0e-5f && rmsAfterStart > 0.01f;
+
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
 
@@ -144,15 +154,17 @@ int main(int argc, char** argv)
               << "  filterAtten=" << (filterAttenuates ? 1 : 0)
               << "  reverbChanged=" << (reverbChanged ? 1 : 0)
               << "  automationFades=" << (automationFades ? 1 : 0)
-              << "  soloMatchesArpOnly=" << (soloMatchesArpOnly ? 1 : 0) << "\n";
+              << "  soloMatchesArpOnly=" << (soloMatchesArpOnly ? 1 : 0)
+              << "  clipStartGates=" << (clipStartGates ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
     // signal, a low-pass that attenuates, a reverb that changes the signal, a
-    // gain ramp that fades in, and solo correctly silencing the other track
-    // together confirm the full render/gain/fx/automation/solo path.
+    // gain ramp that fades in, solo correctly silencing the other track, and a
+    // clip start that gates playback together confirm the full
+    // render/gain/fx/automation/solo/clip-start path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
-                 && soloMatchesArpOnly;
+                 && soloMatchesArpOnly && clipStartGates;
     return ok ? 0 : 2;
 }

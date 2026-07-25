@@ -78,6 +78,12 @@ void AudioEngine::setTrackPattern(int index, const Pattern& pattern)
         tracks_[(size_t) index].sequencer.submitPattern(new Pattern(pattern));
 }
 
+void AudioEngine::setTrackClipStartBeats(int index, double beats)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].sequencer.setClipStartBeats(beats);
+}
+
 void AudioEngine::setTrackMuted(int index, bool muted)
 {
     if (index >= 0 && index < kMaxTracks)

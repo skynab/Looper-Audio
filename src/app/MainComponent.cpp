@@ -258,6 +258,21 @@ MainComponent::MainComponent()
         post(Cmd::Seek, (double) uiTempoMap_.samplesFromPpq(juce::jmax(0.0, beat)));
     };
 
+    arrangementView_.onClipMoved = [this](int trackIndex, int clipIndex, double newStartBeats)
+    {
+        history_.edit("Move clip", [trackIndex, clipIndex, newStartBeats](model::Song& s)
+        {
+            if (trackIndex < 0 || trackIndex >= (int) s.tracks.size())
+                return;
+            auto& clips = s.tracks[(size_t) trackIndex].clips;
+            if (clipIndex >= 0 && clipIndex < (int) clips.size())
+                clips[(size_t) clipIndex].startBeats = juce::jmax(0.0, newStartBeats);
+        });
+
+        arrangementView_.setSong(history_.current());
+        syncEngineTracks(); // push the updated clip start to the engine (clip 0 only, for now)
+    };
+
     const auto tabBg = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
     tabs_.addTab("Arrange", tabBg, &arrangeTab_, false);
     tabs_.addTab("Edit", tabBg, &pianoRoll_, false);
@@ -439,6 +454,7 @@ void MainComponent::syncEngineTracks()
     {
         const auto& track = song.tracks[(size_t) i];
         engine_.setTrackPattern(i, track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
+        engine_.setTrackClipStartBeats(i, track.clips.empty() ? 0.0 : track.clips[0].startBeats);
         engine_.setTrackMuted(i, track.muted);
         engine_.setTrackSolo(i, track.solo);
         engine_.setTrackGainDb(i, track.gainDb);
@@ -680,22 +696,26 @@ void MainComponent::bounceProject()
         std::vector<engine::Pattern> patterns;
         std::vector<float>           gains;
         std::vector<bool>            solos;
+        std::vector<double>          clipStarts;
         for (const auto& track : song.tracks)
         {
             patterns.push_back(track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
             gains.push_back(track.muted ? -100.0f : track.gainDb);
             solos.push_back(track.solo);
+            clipStarts.push_back(track.clips.empty() ? 0.0 : track.clips[0].startBeats);
         }
         if (patterns.empty())
         {
             patterns.push_back({});
             gains.push_back(0.0f);
             solos.push_back(false);
+            clipStarts.push_back(0.0);
         }
 
         const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 44100.0;
         const double bpm        = song.bpm;
-        auto         buffer     = engine::OfflineRenderer::render(patterns, gains, solos, bpm, sampleRate, 8.0);
+        auto         buffer     = engine::OfflineRenderer::render(patterns, gains, solos, clipStarts,
+                                                                  bpm, sampleRate, 8.0);
 
         if (song.filter.enabled)
         {
