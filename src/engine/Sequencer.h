@@ -1,11 +1,11 @@
 #pragma once
 
 #include <array>
-#include <atomic>
+#include <vector>
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
-#include "engine/Pattern.h"
+#include "engine/ClipSlot.h"
 #include "engine/ProcessContext.h"
 #include "engine/SequencerMath.h"
 #include "rt/SpscRingBuffer.h"
@@ -13,49 +13,48 @@
 namespace looper::engine
 {
 /**
-    Turns a Pattern into MIDI, emitted into the per-block buffer sample-accurately
-    and slaved to the transport. The pattern loops on its own length, so it
-    repeats cleanly whether or not the transport's loop is engaged (its length
-    should divide the transport loop length).
+    Turns a track's ClipSlots into MIDI, emitted into the per-block buffer
+    sample-accurately and slaved to the transport. Each clip's pattern loops on
+    its own length within the clip's [startBeats, startBeats + lengthBeats)
+    window; outside every clip's window the track is silent. Clips are expected
+    not to overlap — the first whose window covers the current block wins.
 
-    A clip start offset (in beats) delays when the pattern begins: the track
-    stays silent until the transport reaches that point, then plays and loops
-    indefinitely from there — an arrangement-style "this part enters at bar N."
-    The clip's *length* deliberately does not gate playback (only its start):
-    every track created through the current UI has clip.lengthBeats equal to the
-    pattern's own length, so honouring it would silence every track after one
-    loop and regress the "plays until Stop" behaviour the whole app is built
-    around. Gating on length too is future work once there's a UI for it.
+    A track with a single clip is given an effectively unbounded length by the
+    caller (see AudioEngine::setTrackClips), so it keeps looping indefinitely
+    from its start — the "plays until Stop" behaviour every track has always
+    had. Real length gating (and silence between clips) only bites once a track
+    has more than one clip.
 
-    Pattern edits are handed over lock-free (inbox/reclaim FIFOs, same as clips),
-    and the audio thread never allocates. On stop, or when playback is before
-    the clip start, any notes it started are flushed so voices don't hang.
+    Clip-list edits are handed over lock-free (inbox/reclaim FIFOs), and the
+    audio thread never allocates. On stop, or when switching between clips (or
+    into silence), any notes still sounding are flushed so voices don't hang.
 */
 class Sequencer
 {
 public:
+    using ClipList = std::vector<ClipSlot>;
+
     ~Sequencer()
     {
         collectRetired();
         delete current_;
 
-        Pattern* straggler = nullptr;
+        ClipList* straggler = nullptr;
         while (inbox_.pop(straggler))
             delete straggler;
     }
 
     // ---- message thread ----
-    void submitPattern(Pattern* pattern)
+    /** Hands ownership of @p clips (a whole new clip list for this track) to the audio thread. */
+    void submitClips(ClipList* clips)
     {
-        if (! inbox_.push(pattern))
-            delete pattern;
+        if (! inbox_.push(clips))
+            delete clips;
     }
-
-    void setClipStartBeats(double beats) { clipStartBeats_.store(beats, std::memory_order_relaxed); }
 
     void collectRetired()
     {
-        Pattern* retired = nullptr;
+        ClipList* retired = nullptr;
         while (reclaim_.pop(retired))
             delete retired;
     }
@@ -63,7 +62,7 @@ public:
     // ---- audio thread ----
     void renderBlock(juce::MidiBuffer& midi, const ProcessContext& context)
     {
-        Pattern* incoming = nullptr;
+        ClipList* incoming = nullptr;
         while (inbox_.pop(incoming))
         {
             if (current_ != nullptr)
@@ -76,43 +75,62 @@ public:
             if (wasPlaying_)
             {
                 flushActiveNotes(midi);
-                wasPlaying_ = false;
-                wasActive_  = false;
+                wasPlaying_      = false;
+                activeClipIndex_ = -1;
             }
             return;
         }
         wasPlaying_ = true;
 
-        if (current_ == nullptr || context.transport.bpm <= 0.0 || context.sampleRate <= 0.0)
+        if (current_ == nullptr || current_->empty()
+            || context.transport.bpm <= 0.0 || context.sampleRate <= 0.0)
             return;
 
-        const double samplesPerBeat  = context.sampleRate * 60.0 / context.transport.bpm;
-        const double clipStartSample = clipStartBeats_.load(std::memory_order_relaxed) * samplesPerBeat;
-        const double localStart      = (double) context.transport.playheadSamples - clipStartSample;
-        const int    numSamples      = context.numSamples;
+        const double  samplesPerBeat = context.sampleRate * 60.0 / context.transport.bpm;
+        const int     numSamples     = context.numSamples;
+        const int64_t playhead       = context.transport.playheadSamples;
 
-        if (localStart + (double) numSamples <= 0.0)
+        // Find the clip whose window overlaps this block (block-granularity: a
+        // block straddling a clip boundary can place a note up to one block
+        // early/late — an accepted, documented imprecision at typical block
+        // sizes of a few ms).
+        int    foundIndex = -1;
+        double localStart = 0.0;
+
+        for (int i = 0; i < (int) current_->size(); ++i)
         {
-            // The whole block is before this track's clip starts.
-            if (wasActive_)
-            {
-                flushActiveNotes(midi);
-                wasActive_ = false;
-            }
-            return;
-        }
-        wasActive_ = true;
+            const auto& slot              = (*current_)[(size_t) i];
+            const double clipStartSample  = slot.startBeats * samplesPerBeat;
+            const double clipLengthSample = slot.lengthBeats * samplesPerBeat;
+            const double local            = (double) playhead - clipStartSample;
 
-        const double length = current_->lengthBeats * samplesPerBeat;
+            if (local + (double) numSamples > 0.0 && local < clipLengthSample)
+            {
+                foundIndex = i;
+                localStart = local;
+                break;
+            }
+        }
+
+        if (foundIndex != activeClipIndex_)
+        {
+            // Switching clips, or moving into/out of silence — flush whatever
+            // notes the previous clip left hanging before starting the next.
+            flushActiveNotes(midi);
+            activeClipIndex_ = foundIndex;
+        }
+
+        if (foundIndex < 0)
+            return; // between clips, or before/after every clip's window
+
+        const auto&  slot   = (*current_)[(size_t) foundIndex];
+        const double length = slot.pattern.lengthBeats * samplesPerBeat;
         if (length <= 1.0)
             return;
 
-        // blockStart is the pattern-local position, wrapped; for the block that
-        // straddles the clip's start, this can place a note up to one block
-        // early — an accepted, documented imprecision (blocks are a few ms).
         const double blockStart = wrapPositive(localStart, length);
 
-        for (const auto& note : current_->notes)
+        for (const auto& note : slot.pattern.notes)
         {
             double onSample  = note.startBeats * samplesPerBeat;
             double offSample = (note.startBeats + note.lengthBeats) * samplesPerBeat;
@@ -155,13 +173,12 @@ private:
         }
     }
 
-    Pattern* current_ = nullptr;
-    rt::SpscRingBuffer<Pattern*> inbox_   { 16 };
-    rt::SpscRingBuffer<Pattern*> reclaim_ { 32 };
+    ClipList* current_ = nullptr;
+    rt::SpscRingBuffer<ClipList*> inbox_   { 16 };
+    rt::SpscRingBuffer<ClipList*> reclaim_ { 32 };
 
-    std::atomic<double>   clipStartBeats_ { 0.0 };
-    bool                  wasPlaying_ = false;
-    bool                  wasActive_  = false;
+    bool                  wasPlaying_      = false;
+    int                   activeClipIndex_ = -1;
     std::array<bool, 128> activeNotes_ {};
 };
 

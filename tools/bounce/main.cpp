@@ -3,6 +3,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
 #include "engine/FilterEffect.h"
 #include "engine/OfflineRenderer.h"
@@ -73,6 +74,25 @@ int main(int argc, char** argv)
     const float rmsNoSendBus   = noSendBus.getRMSLevel(0, 0, noSendBus.getNumSamples());
     const float rmsWithSendBus = withSendBus.getRMSLevel(0, 0, withSendBus.getNumSamples());
     const bool  sendBusChanged = std::abs(rmsWithSendBus - rmsNoSendBus) > 1.0e-4f;
+
+    // Multi-clip check: two clips on one track (0-4 beats, then 6-10 beats,
+    // leaving a 2-beat gap and nothing after) must produce sound only inside
+    // each clip's own window — real length gating, not the single-clip
+    // "loop forever" case checked above. The synth has a 250ms ADSR release
+    // tail, so "silence" is checked from 0.5s into the gap/tail onward, well
+    // past any legitimate release decay from the last note (whose own note-off
+    // already fires before the clip boundary).
+    ClipSlot clipA; clipA.pattern = arp; clipA.startBeats = 0.0; clipA.lengthBeats = 4.0;
+    ClipSlot clipB; clipB.pattern = arp; clipB.startBeats = 6.0; clipB.lengthBeats = 4.0;
+    const auto multiClip = OfflineRenderer::renderClips({ clipA, clipB }, bpm, sampleRate, 6.0);
+
+    const int   halfSec       = (int) sampleRate / 2;
+    const float rmsClipA      = multiClip.getRMSLevel(0, 0 * halfSec, 4 * halfSec); // 0-2s: clip A
+    const float rmsGap        = multiClip.getRMSLevel(0, 5 * halfSec, 1 * halfSec); // 2.5-3s: late in the gap
+    const float rmsClipB      = multiClip.getRMSLevel(0, 6 * halfSec, 4 * halfSec); // 3-5s: clip B
+    const float rmsTail       = multiClip.getRMSLevel(0, 11 * halfSec, 1 * halfSec); // 5.5-6s: late in the tail
+    const bool  multiClipGates = rmsClipA > 0.01f && rmsGap < 1.0e-5f
+                              && rmsClipB > 0.01f && rmsTail < 1.0e-5f;
 
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
@@ -168,16 +188,18 @@ int main(int argc, char** argv)
               << "  automationFades=" << (automationFades ? 1 : 0)
               << "  soloMatchesArpOnly=" << (soloMatchesArpOnly ? 1 : 0)
               << "  clipStartGates=" << (clipStartGates ? 1 : 0)
-              << "  sendBusChanged=" << (sendBusChanged ? 1 : 0) << "\n";
+              << "  sendBusChanged=" << (sendBusChanged ? 1 : 0)
+              << "  multiClipGates=" << (multiClipGates ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
     // signal, a low-pass that attenuates, a reverb that changes the signal, a
     // gain ramp that fades in, solo correctly silencing the other track, a clip
-    // start that gates playback, and a send bus that changes the output together
-    // confirm the full render/gain/fx/automation/solo/clip-start/send-bus path.
+    // start that gates playback, a send bus that changes the output, and two
+    // clips on one track each sounding only in their own window together
+    // confirm the full render/gain/fx/automation/solo/clip/send-bus path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
-                 && soloMatchesArpOnly && clipStartGates && sendBusChanged;
+                 && soloMatchesArpOnly && clipStartGates && sendBusChanged && multiClipGates;
     return ok ? 0 : 2;
 }

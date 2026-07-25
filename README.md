@@ -16,14 +16,22 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > beat↔pixel geometry is unit-tested headless. Dragging is now a real scheduling change, not just
 > cosmetic: a track's clip start beat **delays when its pattern begins** (it plays and loops
 > indefinitely from there — an arrangement-style "this part enters at bar N"), verified by the bounce
-> tool. Clip *length* deliberately doesn't gate playback yet (every track's clip length still equals
-> its pattern length, so that would silence every track after one loop); full clip-length gating and
-> multiple clips per track are future work. Each track also has a **send** (a "Send" slider on its
-> mixer strip) into a shared **send bus** — a dedicated, always-fully-wet reverb every track can dip
-> into pre-fader, independent of its own fader — with its own toggle/room/damping/return controls on
-> the master strip, saved with the project and applied on export; verified by the bounce tool.
-> Deferred to validate live: audio recording, disk streaming. Next: clip-length gating, more
-> automation targets, more send-bus effect types. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> tool. Each track also has a **send** (a "Send" slider on its mixer strip) into a shared **send
+> bus** — a dedicated, always-fully-wet reverb every track can dip into pre-fader, independent of its
+> own fader — with its own toggle/room/damping/return controls on the master strip, saved with the
+> project and applied on export; verified by the bounce tool.
+>
+> The engine now genuinely supports **multiple clips per track**, each gating playback to its own
+> [start, start+length) window (silence between clips, silence after the last one) — a real
+> correctness fix, since the document model has always supported N clips per track but the engine
+> silently only ever played the first. A track with exactly one clip still loops indefinitely from its
+> start (today's validated "plays until Stop" behaviour, so every existing project is unaffected);
+> real length gating only kicks in once a track has more than one clip. Verified by the bounce tool
+> (silence in the gap between two clips and after the last one, each clip sounding only in its own
+> window). There's no UI yet to add a second clip to a track — that, plus per-clip piano-roll editing,
+> is the natural next increment. Deferred to validate live: audio recording, disk streaming. Next:
+> multi-clip UI + per-clip editing, more automation targets, more send-bus effect types. See the full
+> roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

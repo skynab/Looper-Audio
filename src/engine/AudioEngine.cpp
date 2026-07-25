@@ -72,16 +72,10 @@ void AudioEngine::setActiveTrackCount(int count)
         tracks_[(size_t) i].active.store(i < clamped, std::memory_order_relaxed);
 }
 
-void AudioEngine::setTrackPattern(int index, const Pattern& pattern)
+void AudioEngine::setTrackClips(int index, const std::vector<ClipSlot>& clips)
 {
     if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].sequencer.submitPattern(new Pattern(pattern));
-}
-
-void AudioEngine::setTrackClipStartBeats(int index, double beats)
-{
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].sequencer.setClipStartBeats(beats);
+        tracks_[(size_t) index].sequencer.submitClips(new std::vector<ClipSlot>(clips));
 }
 
 void AudioEngine::setTrackMuted(int index, bool muted)

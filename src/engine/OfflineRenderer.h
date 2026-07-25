@@ -7,6 +7,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/ClipSlot.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/Pattern.h"
 #include "engine/ProcessContext.h"
@@ -53,13 +54,21 @@ public:
         {
             auto track = std::make_unique<InstrumentTrack>();
             track->prepare(sampleRate, blockSize);
-            track->sequencer.submitPattern(new Pattern(patterns[i]));
+
+            // One clip per track, given an effectively unbounded length so it
+            // keeps looping indefinitely from its start — the same semantics
+            // this render() has always modelled (see renderClips() below for
+            // genuine multi-clip-per-track scheduling).
+            ClipSlot slot;
+            slot.pattern     = patterns[i];
+            slot.startBeats  = i < clipStartBeats.size() ? clipStartBeats[i] : 0.0;
+            slot.lengthBeats = 1.0e9;
+            track->sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
             if (i < gainsDb.size())
                 track->gainDb.store(gainsDb[i]);
             if (i < soloFlags.size())
                 track->solo.store(soloFlags[i]);
-            if (i < clipStartBeats.size())
-                track->sequencer.setClipStartBeats(clipStartBeats[i]);
             if (i < sendLevels.size())
                 track->sendLevel.store(sendLevels[i]);
             tracks.push_back(std::move(track));
@@ -155,6 +164,54 @@ public:
                                            double sampleRate, double numSeconds, int blockSize = 512)
     {
         return render(std::vector<Pattern> { pattern }, bpm, sampleRate, numSeconds, blockSize);
+    }
+
+    /** Renders a single track from an explicit list of ClipSlots — for verifying
+        genuine multi-clip-per-track scheduling (silence between clips, each
+        clip's own length gating its end). The render() overloads above still
+        model one clip per track (all the current UI can create), always with
+        an unbounded length. */
+    static juce::AudioBuffer<float> renderClips(const std::vector<ClipSlot>& clips,
+                                                double bpm, double sampleRate, double numSeconds,
+                                                int blockSize = 512)
+    {
+        const int totalSamples = (int) std::ceil(numSeconds * sampleRate);
+        juce::AudioBuffer<float> output(2, std::max(1, totalSamples));
+        output.clear();
+
+        InstrumentTrack track;
+        track.prepare(sampleRate, blockSize);
+        track.sequencer.submitClips(new std::vector<ClipSlot>(clips));
+
+        juce::AudioBuffer<float> block(2, blockSize);
+        juce::AudioBuffer<float> sendBus(2, blockSize);
+        juce::MidiBuffer         noLiveMidi;
+
+        int64_t playhead = 0;
+        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        {
+            const int n = std::min(blockSize, totalSamples - pos);
+            block.setSize(2, n, false, false, true);
+            block.clear();
+            sendBus.setSize(2, n, false, false, true);
+            sendBus.clear();
+
+            ProcessContext ctx;
+            ctx.sampleRate                = sampleRate;
+            ctx.numSamples                = n;
+            ctx.transport.playing         = true;
+            ctx.transport.playheadSamples = playhead;
+            ctx.transport.bpm             = bpm;
+
+            track.render(block, sendBus, noLiveMidi, ctx, false, false);
+
+            for (int ch = 0; ch < 2; ++ch)
+                output.copyFrom(ch, pos, block, ch, 0, n);
+
+            playhead += n;
+        }
+
+        return output;
     }
 
     /** Writes a buffer to a 24-bit WAV. Returns false on failure. */

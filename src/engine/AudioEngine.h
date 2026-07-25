@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -10,6 +11,7 @@
 #include "rt/SpscRingBuffer.h"
 
 #include "engine/AudioFilePlayerNode.h"
+#include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
 #include "engine/FilterEffect.h"
 #include "engine/ReverbEffect.h"
@@ -24,10 +26,10 @@ namespace looper::engine
 /**
     The headless audio engine. It owns the audio device and is the device
     callback. Instrument tracks live in a fixed pre-allocated pool, so the UI
-    changes the "song" by activating slots and submitting patterns — no real-time
-    graph editing. The UI interacts only by posting commands, calling the
-    thread-safe control methods (which use lock-free FIFOs / atomics), and reading
-    published atomics.
+    changes the "song" by activating slots and submitting clip lists — no
+    real-time graph editing. The UI interacts only by posting commands, calling
+    the thread-safe control methods (which use lock-free FIFOs / atomics), and
+    reading published atomics.
 */
 class AudioEngine final : public juce::AudioIODeviceCallback,
                           public juce::MidiInputCallback
@@ -49,8 +51,10 @@ public:
     // ---- multi-track control (message thread) ----
     int  maxTracks() const noexcept { return kMaxTracks; }
     void setActiveTrackCount(int count);
-    void setTrackPattern(int index, const Pattern& pattern);
-    void setTrackClipStartBeats(int index, double beats);
+    /** Replaces a track's whole clip list. Each clip plays only within its own
+        [startBeats, startBeats + lengthBeats) window; give a single-clip track
+        an effectively unbounded lengthBeats to keep it looping indefinitely. */
+    void setTrackClips(int index, const std::vector<ClipSlot>& clips);
     void setTrackMuted(int index, bool muted);
     void setTrackSolo(int index, bool solo);
     void setTrackGainDb(int index, float gainDb);

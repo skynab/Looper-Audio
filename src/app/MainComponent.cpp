@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 
+#include "engine/ClipSlot.h"
 #include "engine/OfflineRenderer.h"
 #include "model/Serialization.h"
 
@@ -462,7 +463,7 @@ void MainComponent::editPattern(const engine::Pattern& pattern)
         if (idx >= 0 && idx < (int) s.tracks.size() && ! s.tracks[(size_t) idx].clips.empty())
             s.tracks[(size_t) idx].clips[0].pattern = pattern;
     });
-    engine_.setTrackPattern(idx, pattern);
+    syncEngineTracks(); // rebuilds every track's clip list, including this edit
 }
 
 void MainComponent::addTrack()
@@ -497,8 +498,24 @@ void MainComponent::syncEngineTracks()
     for (int i = 0; i < n; ++i)
     {
         const auto& track = song.tracks[(size_t) i];
-        engine_.setTrackPattern(i, track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
-        engine_.setTrackClipStartBeats(i, track.clips.empty() ? 0.0 : track.clips[0].startBeats);
+
+        std::vector<engine::ClipSlot> slots;
+        for (const auto& clip : track.clips)
+        {
+            if (clip.type != model::ClipType::Instrument)
+                continue; // audio clips aren't sequenced
+
+            engine::ClipSlot slot;
+            slot.pattern = clip.pattern;
+            slot.startBeats = clip.startBeats;
+            // A track's only clip keeps looping indefinitely from its start
+            // (today's validated "plays until Stop" behaviour); real length
+            // gating only applies once a track has more than one clip.
+            slot.lengthBeats = track.clips.size() == 1 ? 1.0e9 : clip.lengthBeats;
+            slots.push_back(slot);
+        }
+        engine_.setTrackClips(i, slots);
+
         engine_.setTrackMuted(i, track.muted);
         engine_.setTrackSolo(i, track.solo);
         engine_.setTrackGainDb(i, track.gainDb);
