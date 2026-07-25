@@ -13,6 +13,7 @@
 
 #include "ArrangementView.h"
 #include "DockRegion.h"
+#include "FileBrowserPanel.h"
 #include "LevelMeter.h"
 #include "MixerStrip.h"
 #include "PianoRoll.h"
@@ -75,6 +76,8 @@ private:
     void                   bounceProject();
     void                   showAudioSettings();
     void                   importAudioToNewTrack();
+    void                   importAudioFileAtBeat(const juce::File& file, double startBeats);
+    void                   previewAudioFile(const juce::File& file);
     void                   toggleRecording();
     void                   finishRecordingIfReady();
     juce::File             recordingsDirectory() const;
@@ -115,16 +118,18 @@ private:
 
     juce::MenuBarComponent          menuBar_;
 
-    // Resizable workspace: a transport sidebar, then two dockable regions
-    // (each a tab group) side by side, separated by draggable dividers. Panels
-    // (Arrange, Edit, Mixer) start out split across the two regions so
-    // arrangement and mixer tools are visible at once; dragging a region's tab
-    // header onto the other region moves that panel there.
+    // Resizable workspace: a Files region, a transport sidebar, then two more
+    // dockable regions side by side — each region a tab group, separated by
+    // draggable dividers. Panels (Files, Arrange, Edit, Mixer) start out split
+    // across the regions so arrangement and mixer tools are visible at once;
+    // dragging a tab header onto another region moves that panel there.
+    DockRegion                        dockRegionFiles_, dockRegionA_, dockRegionB_;
+    FileBrowserPanel                  fileBrowser_;
     juce::Component                   leftPane_;
-    DockRegion                        dockRegionA_, dockRegionB_;
     juce::StretchableLayoutManager    paneLayout_;
-    juce::StretchableLayoutResizerBar paneResizer_  { &paneLayout_, 1, true };
-    juce::StretchableLayoutResizerBar paneResizer2_ { &paneLayout_, 3, true };
+    juce::StretchableLayoutResizerBar paneResizerFiles_ { &paneLayout_, 1, true };
+    juce::StretchableLayoutResizerBar paneResizer_      { &paneLayout_, 3, true };
+    juce::StretchableLayoutResizerBar paneResizer2_     { &paneLayout_, 5, true };
 
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };

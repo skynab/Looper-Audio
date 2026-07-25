@@ -333,10 +333,11 @@ considered:
 
 **What was built:** `src/app/DockRegion.h` — a self-contained tab-group component (custom
 paint/mouse handling, not a `TabbedComponent` subclass, to keep full control of the drag gesture).
-`MainComponent`'s workspace is now `leftPane_` (transport, unchanged) plus **two** `DockRegion`s
-side by side, separated by draggable dividers (`juce::StretchableLayoutManager`, now 5 items).
-Default layout: Arrange + Edit share region A, Mixer owns region B. Dragging a tab header onto the
-other region (`DragAndDropContainer`/`DragAndDropTarget`) moves that panel there via
+`MainComponent`'s workspace is now a **Files** region, `leftPane_` (transport, unchanged), and
+**two more** `DockRegion`s side by side, separated by draggable dividers
+(`juce::StretchableLayoutManager`, now 7 items). Default layout: Files owns its own region,
+Arrange + Edit share region A, Mixer owns region B. Dragging a tab header onto another region
+(`DragAndDropContainer`/`DragAndDropTarget`) moves that panel there via
 `MainComponent::movePanelBetweenRegions`. Layout is in-memory only — it resets to the default split
 on restart; persisting the user's chosen arrangement is a natural follow-up, not yet done.
 
@@ -344,37 +345,46 @@ Verification: pure UI-shell change, zero engine/model impact — all unit tests 
 full check suite (including the `rmsDry=0.149266` regression sentinel) are unchanged. The actual
 drag gesture and visual layout could not be verified headlessly and need a live try.
 
-### File-management pane (planned, not yet built)
+### File-management pane (implemented)
 
-A left-side panel to browse and drag audio files (.wav and others) into the arrangement, docking
-into the same system above (it would be a third panel/region, or share a region via drag like any
-other panel).
+A left-side panel (`src/app/FileBrowserPanel.h`) to browse and drag audio files into the
+arrangement, docking into the system above as its own default region (drag its tab elsewhere like
+any other panel).
 
 - **Browsing:** JUCE's built-in `juce::FileTreeComponent` (backed by `DirectoryContentsList` +
-  `TimeSliceThread`), filtered to audio extensions, rather than a custom file tree. A "Places"
-  quick-access list (default-bookmarking `~/Documents/Looper-Audio Recordings/`, the folder the
-  recording feature already creates) alongside raw filesystem browsing.
-- **Drag-out:** the browser becomes a `DragAndDropContainer` source (`startDragging()` with the file
-  path); `ArrangementView` gains `juce::DragAndDropTarget` (`isInterestedInDragSource` /
-  `itemDragEnter/Move/Exit` / `itemDropped`), reusing the existing `TimelineGeometry::beatForX` and
-  lane hit-testing (already in `findClipAt`) to compute the drop's target track + beat.
-- **Backend — no new engine work:** dropping a file calls the already-proven
-  `AudioEngine::loadAudioFileForTrack(int index, const juce::File&, double clipStartBeats)` plus the
-  same `history_.edit(...)` pattern `MainComponent::importAudioToNewTrack()` already uses. The
-  browser is a new front door onto existing, verified machinery.
-- **Preview/audition:** reuse the existing global preview player path (double-click → `engine_.loadAudioFile(file)`).
-- **Open format-scope question:** `juce::AudioFormatManager::registerBasicFormats()` covers
-  WAV/AIFF/FLAC/OGG/(platform-dependent MP3); on Apple platforms JUCE also registers
-  `CoreAudioFormat`, which likely already decodes audio-only `.m4a`/AAC via the OS's own codecs —
-  so audio-only M4A may work with zero extra code on macOS. Genuine **`.mp4` video** files
-  (video+audio muxed) need a demuxer to pull out the audio track, which `juce_audio_formats` alone
-  does not reliably provide — that needs platform-specific code (AVFoundation/`AVAssetReader` on
-  Apple) or a new dependency (e.g. FFmpeg) for cross-platform support. Default plan: support what
-  JUCE's formats already decode (audio containers, including audio-only M4A where the OS provides
-  it); treat true video-file audio extraction as an explicitly separate, harder follow-up unless
-  told otherwise.
-- Additive only — does not replace the existing **File > Import Audio to Track...** or
-  **File > Import Audio...** menu flows.
+  `TimeSliceThread`), filtered to `*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3;*.m4a;*.mp4`. "Places" is
+  intentionally minimal for v1 — a **Home** button and a **Recordings** button (bookmarking
+  `MainComponent::recordingsDirectory()`, the folder the recording feature already creates) — not a
+  user-editable bookmark list; that's a natural follow-up, not done.
+- **Drag-out:** implemented via type, not the drag's description string — `ArrangementView` (now
+  also a `juce::DragAndDropTarget`) accepts a drag only when `SourceDetails::sourceComponent` is a
+  `juce::FileTreeComponent`, reading the actual file back off it via `getSelectedFile(0)`, and
+  computing the drop beat with the existing `TimelineGeometry::beatForX`. `DockRegion` explicitly
+  rejects the same drags (by the same type check) so a file dropped on a region's tab strip doesn't
+  get misinterpreted as a panel-move — JUCE resolves nested `DragAndDropTarget`s by walking up from
+  the deepest hit component, so `ArrangementView` (nested inside a `DockRegion`) is asked first.
+- **Backend — no new engine work:** dropping a file (or picking one via "Import Audio to
+  Track...") both now funnel through one shared `MainComponent::importAudioFileAtBeat(file,
+  startBeats)` — the same `AudioEngine`-track-creation + `history_.edit(...)` pattern this project
+  already had, just parameterized on the start beat (0 for the dialog, the drop position for a
+  drag) instead of duplicated.
+- **Preview/audition:** double-clicking a file in the browser calls the same
+  `MainComponent::previewAudioFile(file)` helper "File > Import Audio..." already used (also
+  de-duplicated out of that menu action's callback).
+- **Format-scope decision, as planned:** the filter includes `.mp4`/`.m4a`, which JUCE's
+  `CoreAudioFormat` can decode when the container is audio-only (e.g. AAC in an M4A/MP4 box) — no
+  new code needed for that case. Genuine video `.mp4` files will simply fail to decode
+  (`AudioEngine::loadAudioFileForTrack` returns false, same as any unsupported file) since no
+  demuxer was added — extracting audio from real video remains an explicitly separate, harder
+  follow-up (AVFoundation/`AVAssetReader` on Apple, or a cross-platform demuxer dependency).
+- Additive only, unchanged: **File > Import Audio to Track...** and **File > Import Audio...**
+  still work exactly as before.
+
+Verification: builds clean, all 50 unit tests and the bounce tool's full check suite (including
+`rmsDry=0.149266`) are unchanged — this only added a new front door onto already-verified
+`AudioEngine`/`history_` machinery. What can't be verified headlessly: the actual drag gesture, the
+file tree rendering, and whether a real audio-only `.m4a`/`.mp4` decodes via `CoreAudioFormat` on
+this machine — try dragging a `.wav` and an `.m4a` from the panel into the arrangement live.
 
 ---
 

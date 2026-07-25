@@ -181,6 +181,11 @@ public:
     // juce::DragAndDropTarget
     bool isInterestedInDragSource(const SourceDetails& details) override
     {
+        // File drags (from a FileBrowserPanel's FileTreeComponent) are for
+        // ArrangementView, not for regrouping dock panels — reject them here
+        // so they fall through to whichever ArrangementView is underneath.
+        if (dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get()) != nullptr)
+            return false;
         return details.description.isString() && ! hasPanel(details.description.toString());
     }
 

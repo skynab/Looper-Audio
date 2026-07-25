@@ -25,13 +25,22 @@ namespace looper
     starts (the engine now delays a track's pattern until its clip's start beat,
     so this is a real scheduling change, not just cosmetic — see Sequencer's
     clip-start gating).
+
+    Also a juce::DragAndDropTarget for files dragged out of a FileBrowserPanel
+    (identified by sourceComponent being a juce::FileTreeComponent, not by the
+    drag's description string — DockRegion uses that string for its own
+    panel-regrouping drags, so type is the unambiguous signal). Dropping a
+    file fires onFileDropped with the beat under the drop point; the owner
+    imports it as a new audio track's clip there.
 */
-class ArrangementView final : public juce::Component
+class ArrangementView final : public juce::Component,
+                              public juce::DragAndDropTarget
 {
 public:
     std::function<void(double)> onSeek; // beat position clicked
     std::function<void(int trackIndex, int clipIndex, double newStartBeats)> onClipMoved;
     std::function<void(int trackIndex, int clipIndex)> onClipSelected; // fired on press, before any drag
+    std::function<void(const juce::File& file, double dropBeat)> onFileDropped;
 
     void setSong(const model::Song& song)
     {
@@ -140,6 +149,14 @@ public:
             g.setColour(juce::Colours::orange.withAlpha(0.9f));
             g.fillRect(px, 0.0f, 2.0f, height);
         }
+
+        // Drop preview: a file is being dragged over the timeline.
+        if (fileDragActive_)
+        {
+            const float dx = geometry_.xForBeat(dropPreviewBeat_);
+            g.setColour(juce::Colours::cyan.withAlpha(0.5f));
+            g.fillRect(dx, 0.0f, 2.0f, height);
+        }
     }
 
     void mouseDown(const juce::MouseEvent& e) override
@@ -188,6 +205,45 @@ public:
         if (onClipMoved && std::abs(dragPreviewStart_ - dragOriginalStart_) > 1.0e-9)
             onClipMoved(dragTrackIndex_, dragClipIndex_, dragPreviewStart_);
         repaint();
+    }
+
+    // juce::DragAndDropTarget
+    bool isInterestedInDragSource(const SourceDetails& details) override
+    {
+        return dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get()) != nullptr;
+    }
+
+    void itemDragEnter(const SourceDetails& details) override
+    {
+        fileDragActive_  = true;
+        dropPreviewBeat_ = geometry_.beatForX((float) details.localPosition.x);
+        repaint();
+    }
+
+    void itemDragMove(const SourceDetails& details) override
+    {
+        dropPreviewBeat_ = geometry_.beatForX((float) details.localPosition.x);
+        repaint();
+    }
+
+    void itemDragExit(const SourceDetails&) override
+    {
+        fileDragActive_ = false;
+        repaint();
+    }
+
+    void itemDropped(const SourceDetails& details) override
+    {
+        fileDragActive_ = false;
+        repaint();
+
+        auto* fileTree = dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get());
+        if (fileTree == nullptr || fileTree->getNumSelectedFiles() == 0)
+            return;
+
+        const auto file = fileTree->getSelectedFile(0);
+        if (file != juce::File{} && onFileDropped)
+            onFileDropped(file, geometry_.beatForX((float) details.localPosition.x));
     }
 
 private:
@@ -259,6 +315,9 @@ private:
 
     int selectedTrackForEdit_ = -1;
     int selectedClipForEdit_  = -1;
+
+    bool   fileDragActive_  = false;
+    double dropPreviewBeat_ = 0.0;
 };
 
 } // namespace looper

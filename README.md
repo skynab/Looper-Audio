@@ -70,19 +70,33 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > currently uses its static gain, a safe fallback rather than wrong audio. Deferred to validate live:
 > recording itself, disk streaming.
 >
-> The app shell now has a real **dockable workspace** instead of a single fixed tab strip: the
-> right-hand area is two independent `DockRegion`s side by side (Arrange + Edit sharing one, Mixer in
-> its own), each a self-contained tab group with its own click-to-select and drag-a-tab-header-onto-
-> the-other-region-to-move-it behaviour (`src/app/DockRegion.h`), wired up by
-> `MainComponent::movePanelBetweenRegions`. Out of the box this means arrangement and mixer tools are
-> visible **at the same time** — the concrete complaint that motivated this — and any of the three
-> panels can be dragged into whichever region you'd rather have it in. This is a pure UI-shell
-> refactor (zero engine/model changes): all 50 unit tests pass unchanged and the bounce tool's full
-> check suite, including the `rmsDry=0.149266` regression sentinel, is bit-for-bit identical. What
-> can't be verified headlessly: the actual drag gesture and visual layout — try dragging a tab header
-> from one region onto the other. A **file-management pane** (browse/import audio, drag into the
-> arrangement) is planned as the next panel to plug into this same docking system; see
-> [`docs/PLAN.md`](docs/PLAN.md) for both plans in full.
+> The app shell now has a real **dockable workspace** instead of a single fixed tab strip: three
+> independent `DockRegion`s side by side (Files on its own, Arrange + Edit sharing one, Mixer in its
+> own), each a self-contained tab group with its own click-to-select and drag-a-tab-header-onto-
+> another-region-to-move-it behaviour (`src/app/DockRegion.h`), wired up by
+> `MainComponent::movePanelBetweenRegions`. Out of the box, file management, arrangement, and mixer
+> tools are all visible **at the same time** — the concrete complaint that motivated this — and any
+> panel can be dragged into whichever region you'd rather have it in.
+>
+> That Files region hosts a new **file-management pane** (`src/app/FileBrowserPanel.h`): a
+> `juce::FileTreeComponent` filtered to audio files, with Home/Recordings quick-access buttons.
+> **Drag a file onto the arrangement** and it imports as a new audio track's clip starting at the
+> beat you dropped it on; double-click previews it through the existing global preview player. Both
+> the drop path and the file-dialog path (**File > Import Audio to Track...**) now funnel through one
+> shared `MainComponent::importAudioFileAtBeat(file, startBeats)` — no new engine surface, just a new
+> front door onto the same proven `AudioEngine`/`history_` machinery. `ArrangementView` tells a
+> file-drag apart from a dock-panel-drag by the dragged component's *type* (a `FileTreeComponent`),
+> not by any string, so the two drag protocols can't cross-talk even though they share one
+> `DragAndDropContainer`.
+>
+> Both of these are a pure UI-shell addition — zero engine/model changes: all 50 unit tests pass
+> unchanged and the bounce tool's full check suite, including the `rmsDry=0.149266` regression
+> sentinel, is bit-for-bit identical. What can't be verified headlessly: the actual drag gestures
+> (panel-to-panel and file-to-arrangement), the file tree's visual rendering, and whether a real
+> audio-only `.m4a`/`.mp4` actually decodes via `CoreAudioFormat` on this machine — genuine video
+> `.mp4` (video+audio muxed) is deliberately out of scope for now, since extracting its audio needs a
+> demuxer this pass didn't add. Try both drags live, and see [`docs/PLAN.md`](docs/PLAN.md) for the
+> full design writeups (including the alternatives considered and why).
 
 ## Tech stack
 

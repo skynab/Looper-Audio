@@ -16,30 +16,31 @@ MainComponent::MainComponent()
     menuBar_.setModel(this);
     addAndMakeVisible(menuBar_);
 
-    // Dockable workspace: a transport sidebar, then two tab-group regions
-    // side by side, each separated by a draggable divider. Panels start out
-    // split across the two regions (see below) so arrangement and mixer
-    // tools are visible at the same time; dragging a tab onto the other
-    // region moves that panel there.
+    // Dockable workspace: a Files region, a transport sidebar, then two more
+    // tab-group regions side by side, each separated by a draggable divider.
+    // Panels start out split across the regions (see below) so file
+    // management, arrangement, and mixer tools are all visible at the same
+    // time; dragging a tab onto another region moves that panel there.
+    addAndMakeVisible(dockRegionFiles_);
+    addAndMakeVisible(paneResizerFiles_);
     addAndMakeVisible(leftPane_);
     addAndMakeVisible(paneResizer_);
     addAndMakeVisible(dockRegionA_);
     addAndMakeVisible(paneResizer2_);
     addAndMakeVisible(dockRegionB_);
-    paneLayout_.setItemLayout(0, 220, 380, 260);   // left pane (transport): min/max/preferred
+    paneLayout_.setItemLayout(0, 180, 320, 220);   // dock region (Files): min/max/preferred
     paneLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed width
-    paneLayout_.setItemLayout(2, 400, -1.0, -1.0); // dock region A (Arrange/Edit): flexible
+    paneLayout_.setItemLayout(2, 220, 380, 260);   // left pane (transport): min/max/preferred
     paneLayout_.setItemLayout(3, 8, 8, 8);         // divider: fixed width
-    paneLayout_.setItemLayout(4, 260, 520, 340);   // dock region B (Mixer): min/max/preferred
+    paneLayout_.setItemLayout(4, 400, -1.0, -1.0); // dock region A (Arrange/Edit): flexible
+    paneLayout_.setItemLayout(5, 8, 8, 8);         // divider: fixed width
+    paneLayout_.setItemLayout(6, 260, 520, 340);   // dock region B (Mixer): min/max/preferred
 
-    dockRegionA_.onForeignPanelDropped = [this](const juce::String& name, DockRegion& target)
-    {
-        movePanelBetweenRegions(name, target);
-    };
-    dockRegionB_.onForeignPanelDropped = [this](const juce::String& name, DockRegion& target)
-    {
-        movePanelBetweenRegions(name, target);
-    };
+    for (auto* region : { &dockRegionFiles_, &dockRegionA_, &dockRegionB_ })
+        region->onForeignPanelDropped = [this](const juce::String& name, DockRegion& target)
+        {
+            movePanelBetweenRegions(name, target);
+        };
 
     // ---- document: one instrument track holding the piano-roll pattern ----
     {
@@ -364,13 +365,24 @@ MainComponent::MainComponent()
         syncEngineTracks(); // pushes every track's whole clip list, including this move
     };
 
-    // Default docking layout: Arrange + Edit share region A, Mixer gets its
-    // own region B — so mixer and arrangement tools are visible at once out
-    // of the box. Drag either tab's header onto the other region to move it.
+    // Default docking layout: Files gets its own region, Arrange + Edit share
+    // region A, Mixer gets its own region B — so file management, mixer, and
+    // arrangement tools are all visible at once out of the box. Drag any
+    // tab's header onto another region to move it there instead.
+    dockRegionFiles_.addPanel("Files", fileBrowser_);
     dockRegionA_.addPanel("Arrange", arrangeTab_);
     dockRegionA_.addPanel("Edit", editTab_);
     dockRegionA_.showPanel("Edit"); // start on the note editor
     dockRegionB_.addPanel("Mixer", mixerView_);
+
+    fileBrowser_.setRecordingsDirectory(recordingsDirectory());
+    fileBrowser_.showDirectory(recordingsDirectory());
+    fileBrowser_.onFilePreview = [this](const juce::File& file) { previewAudioFile(file); };
+
+    arrangementView_.onFileDropped = [this](const juce::File& file, double dropBeat)
+    {
+        importAudioFileAtBeat(file, dropBeat);
+    };
 
     addAndMakeVisible(keyboard_);
 
@@ -895,16 +907,22 @@ void MainComponent::chooseFile()
     chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
     {
         const auto file = fc.getResult();
-        if (file == juce::File{})
-            return;
-
-        if (engine_.loadAudioFile(file))
-            clipLabel.setText(engine_.loadedClipName()
-                                  + juce::String::formatted("   (%.2f s)", engine_.loadedClipSeconds()),
-                              juce::dontSendNotification);
-        else
-            clipLabel.setText("Could not load: " + file.getFileName(), juce::dontSendNotification);
+        if (file != juce::File{})
+            previewAudioFile(file);
     });
+}
+
+/** Loads a file into the global preview player (not tied to any track) — used
+    by the "Import Audio..." menu item and by double-clicking a file in the
+    file-browser pane. */
+void MainComponent::previewAudioFile(const juce::File& file)
+{
+    if (engine_.loadAudioFile(file))
+        clipLabel.setText(engine_.loadedClipName()
+                              + juce::String::formatted("   (%.2f s)", engine_.loadedClipSeconds()),
+                          juce::dontSendNotification);
+    else
+        clipLabel.setText("Could not load: " + file.getFileName(), juce::dontSendNotification);
 }
 
 /** Imports an audio file onto a brand-new Audio track (as its one clip, at
@@ -925,31 +943,44 @@ void MainComponent::importAudioToNewTrack()
     chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
     {
         const auto file = fc.getResult();
-        if (file == juce::File{})
-            return;
-
-        const auto path = file.getFullPathName().toStdString();
-        int        newTrackIndex = -1;
-
-        history_.edit("Import audio track", [&path, &newTrackIndex](model::Song& s)
-        {
-            const auto name = "Audio " + juce::String((int) s.tracks.size() + 1);
-            model::addTrack(s, model::TrackType::Audio, name.toStdString());
-
-            model::Clip clip;
-            clip.id          = model::allocateId(s);
-            clip.type        = model::ClipType::Audio;
-            clip.startBeats  = 0.0;
-            clip.lengthBeats = 4.0; // display size only; audio clips don't loop/gate on length yet
-            clip.audioFile   = path;
-            s.tracks.back().clips.push_back(clip);
-
-            newTrackIndex = (int) s.tracks.size() - 1;
-        });
-
-        selectNewlyAddedTrack(newTrackIndex);
-        clipLabel.setText("Imported: " + file.getFileName() + "  (new track)", juce::dontSendNotification);
+        if (file != juce::File{})
+            importAudioFileAtBeat(file, 0.0);
     });
+}
+
+/** Imports a file onto a brand-new Audio track (as its one clip, starting at
+    @p startBeats) — the shared machinery behind both "Import Audio to
+    Track..." (always beat 0) and dragging a file from the file-browser pane
+    onto the arrangement (beat = wherever it was dropped). */
+void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBeats)
+{
+    if (trackCount() >= engine_.maxTracks())
+    {
+        clipLabel.setText("Track limit reached", juce::dontSendNotification);
+        return;
+    }
+
+    const auto path = file.getFullPathName().toStdString();
+    int        newTrackIndex = -1;
+
+    history_.edit("Import audio track", [&path, &newTrackIndex, startBeats](model::Song& s)
+    {
+        const auto name = "Audio " + juce::String((int) s.tracks.size() + 1);
+        model::addTrack(s, model::TrackType::Audio, name.toStdString());
+
+        model::Clip clip;
+        clip.id          = model::allocateId(s);
+        clip.type        = model::ClipType::Audio;
+        clip.startBeats  = juce::jmax(0.0, startBeats);
+        clip.lengthBeats = 4.0; // display size only; audio clips don't loop/gate on length yet
+        clip.audioFile   = path;
+        s.tracks.back().clips.push_back(clip);
+
+        newTrackIndex = (int) s.tracks.size() - 1;
+    });
+
+    selectNewlyAddedTrack(newTrackIndex);
+    clipLabel.setText("Imported: " + file.getFileName() + "  (new track)", juce::dontSendNotification);
 }
 
 void MainComponent::selectNewlyAddedTrack(int newTrackIndex)
@@ -1295,8 +1326,9 @@ void MainComponent::resized()
     keyboard_.setBounds(full.removeFromBottom(64));
     full.removeFromBottom(10);
 
-    juce::Component* panes[] = { &leftPane_, &paneResizer_, &dockRegionA_, &paneResizer2_, &dockRegionB_ };
-    paneLayout_.layOutComponents(panes, 5, full.getX(), full.getY(),
+    juce::Component* panes[] = { &dockRegionFiles_, &paneResizerFiles_, &leftPane_, &paneResizer_,
+                                &dockRegionA_,      &paneResizer2_,     &dockRegionB_ };
+    paneLayout_.layOutComponents(panes, 7, full.getX(), full.getY(),
                                  full.getWidth(), full.getHeight(),
                                  false,  // side-by-side, not stacked
                                  true);  // and stretch each to the full height
@@ -1327,18 +1359,22 @@ void MainComponent::layoutLeftPane()
 
 void MainComponent::movePanelBetweenRegions(const juce::String& panelName, DockRegion& target)
 {
-    DockRegion& source = dockRegionA_.hasPanel(panelName) ? dockRegionA_ : dockRegionB_;
-    if (&source == &target)
+    DockRegion* source = nullptr;
+    for (auto* region : { &dockRegionFiles_, &dockRegionA_, &dockRegionB_ })
+        if (region->hasPanel(panelName))
+            source = region;
+    if (source == nullptr || source == &target)
         return;
 
     juce::Component* content = nullptr;
-    if (panelName == "Arrange")     content = &arrangeTab_;
-    else if (panelName == "Edit")   content = &editTab_;
-    else if (panelName == "Mixer")  content = &mixerView_;
+    if (panelName == "Files")        content = &fileBrowser_;
+    else if (panelName == "Arrange") content = &arrangeTab_;
+    else if (panelName == "Edit")    content = &editTab_;
+    else if (panelName == "Mixer")   content = &mixerView_;
     if (content == nullptr)
         return;
 
-    source.removePanel(panelName);
+    source->removePanel(panelName);
     target.addPanel(panelName, *content);
 }
 
