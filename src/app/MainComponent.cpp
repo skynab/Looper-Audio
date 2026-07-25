@@ -15,6 +15,15 @@ MainComponent::MainComponent()
     menuBar_.setModel(this);
     addAndMakeVisible(menuBar_);
 
+    // Two-pane workspace: a controls sidebar (left) and arrange/edit + keyboard
+    // (right), separated by a draggable divider.
+    addAndMakeVisible(leftPane_);
+    addAndMakeVisible(paneResizer_);
+    addAndMakeVisible(rightPane_);
+    paneLayout_.setItemLayout(0, 340, 620, 420);   // left pane (controls): min/max/preferred
+    paneLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed width
+    paneLayout_.setItemLayout(2, 300, -1.0, -1.0); // right pane (arrange/edit): takes the rest
+
     // ---- document: one instrument track holding the piano-roll pattern ----
     {
         model::Song song;
@@ -38,8 +47,8 @@ MainComponent::MainComponent()
     addTrackButton.onClick = [this] { addTrack(); };
 
     for (auto* b : { &playButton, &stopButton, &addTrackButton })
-        addAndMakeVisible(b);
-    addAndMakeVisible(loopButton);
+        leftPane_.addAndMakeVisible(b);
+    leftPane_.addAndMakeVisible(loopButton);
 
     trackSelector_.onChange = [this]
     {
@@ -51,16 +60,16 @@ MainComponent::MainComponent()
         refreshPianoRollForSelected();
         updateTrackControls();
     };
-    addAndMakeVisible(trackSelector_);
+    leftPane_.addAndMakeVisible(trackSelector_);
 
     trackMuteButton.onClick = [this] { setSelectedTrackMuted(trackMuteButton.getToggleState()); };
-    addAndMakeVisible(trackMuteButton);
+    leftPane_.addAndMakeVisible(trackMuteButton);
 
     trackGainSlider.setRange(-60.0, 6.0, 0.1);
     trackGainSlider.setValue(0.0, juce::dontSendNotification);
     trackGainSlider.setTextValueSuffix(" dB");
     trackGainSlider.onValueChange = [this] { setSelectedTrackGain((float) trackGainSlider.getValue()); };
-    addAndMakeVisible(trackGainSlider);
+    leftPane_.addAndMakeVisible(trackGainSlider);
 
     // ---- sliders ----
     tempoSlider.setRange(40.0, 240.0, 0.1);
@@ -87,8 +96,8 @@ MainComponent::MainComponent()
         }
     };
 
-    addAndMakeVisible(tempoSlider);
-    addAndMakeVisible(masterSlider);
+    leftPane_.addAndMakeVisible(tempoSlider);
+    leftPane_.addAndMakeVisible(masterSlider);
     tempoLabel.attachToComponent(&tempoSlider, true);
     masterLabel.attachToComponent(&masterSlider, true);
 
@@ -99,7 +108,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.enabled = on;
         engine_.setMasterFilterEnabled(on);
     };
-    addAndMakeVisible(filterButton);
+    leftPane_.addAndMakeVisible(filterButton);
 
     filterModeBox_.addItem("Low-pass", 1);
     filterModeBox_.addItem("High-pass", 2);
@@ -111,7 +120,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.mode = mode;
         engine_.setMasterFilterMode(mode);
     };
-    addAndMakeVisible(filterModeBox_);
+    leftPane_.addAndMakeVisible(filterModeBox_);
 
     filterCutoffSlider.setRange(20.0, 18000.0, 1.0);
     filterCutoffSlider.setSkewFactorFromMidPoint(1000.0);
@@ -123,7 +132,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.cutoff = hz;
         engine_.setMasterFilterCutoff(hz);
     };
-    addAndMakeVisible(filterCutoffSlider);
+    leftPane_.addAndMakeVisible(filterCutoffSlider);
 
     filterResoSlider.setRange(0.1, 5.0, 0.01);
     filterResoSlider.setValue(0.707, juce::dontSendNotification);
@@ -134,7 +143,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.resonance = q;
         engine_.setMasterFilterResonance(q);
     };
-    addAndMakeVisible(filterResoSlider);
+    leftPane_.addAndMakeVisible(filterResoSlider);
 
     // ---- master delay (stored in the document, so it saves + restores) ----
     delayButton.onClick = [this]
@@ -143,7 +152,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.enabled = on;
         engine_.setMasterDelayEnabled(on);
     };
-    addAndMakeVisible(delayButton);
+    leftPane_.addAndMakeVisible(delayButton);
 
     delayTimeSlider.setRange(20.0, 1000.0, 1.0);
     delayTimeSlider.setValue(300.0, juce::dontSendNotification);
@@ -154,7 +163,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.timeMs = ms;
         engine_.setMasterDelayTimeMs(ms);
     };
-    addAndMakeVisible(delayTimeSlider);
+    leftPane_.addAndMakeVisible(delayTimeSlider);
 
     delayFbSlider.setRange(0.0, 95.0, 1.0);
     delayFbSlider.setValue(35.0, juce::dontSendNotification);
@@ -165,7 +174,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.feedback = fb;
         engine_.setMasterDelayFeedback(fb);
     };
-    addAndMakeVisible(delayFbSlider);
+    leftPane_.addAndMakeVisible(delayFbSlider);
 
     delayMixSlider.setRange(0.0, 100.0, 1.0);
     delayMixSlider.setValue(30.0, juce::dontSendNotification);
@@ -176,7 +185,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.mix = mix;
         engine_.setMasterDelayMix(mix);
     };
-    addAndMakeVisible(delayMixSlider);
+    leftPane_.addAndMakeVisible(delayMixSlider);
 
     // ---- master reverb (stored in the document) ----
     reverbButton.onClick = [this]
@@ -185,7 +194,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.enabled = on;
         engine_.setMasterReverbEnabled(on);
     };
-    addAndMakeVisible(reverbButton);
+    leftPane_.addAndMakeVisible(reverbButton);
 
     reverbRoomSlider.setRange(0.0, 100.0, 1.0);
     reverbRoomSlider.setValue(50.0, juce::dontSendNotification);
@@ -196,7 +205,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.roomSize = v;
         engine_.setMasterReverbRoomSize(v);
     };
-    addAndMakeVisible(reverbRoomSlider);
+    leftPane_.addAndMakeVisible(reverbRoomSlider);
 
     reverbDampSlider.setRange(0.0, 100.0, 1.0);
     reverbDampSlider.setValue(50.0, juce::dontSendNotification);
@@ -207,7 +216,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.damping = v;
         engine_.setMasterReverbDamping(v);
     };
-    addAndMakeVisible(reverbDampSlider);
+    leftPane_.addAndMakeVisible(reverbDampSlider);
 
     reverbMixSlider.setRange(0.0, 100.0, 1.0);
     reverbMixSlider.setValue(30.0, juce::dontSendNotification);
@@ -218,20 +227,20 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.mix = v;
         engine_.setMasterReverbMix(v);
     };
-    addAndMakeVisible(reverbMixSlider);
+    leftPane_.addAndMakeVisible(reverbMixSlider);
 
     // ---- master-gain automation: arm, then move the master fader while playing ----
     autoRecButton.onClick   = [this] { recordAutomation_ = autoRecButton.getToggleState(); };
     autoClearButton.onClick = [this] { history_.mutableCurrent().masterGainDb.clear(); };
-    addAndMakeVisible(autoRecButton);
-    addAndMakeVisible(autoClearButton);
+    leftPane_.addAndMakeVisible(autoRecButton);
+    leftPane_.addAndMakeVisible(autoClearButton);
 
     positionLabel.setFont(juce::Font(juce::FontOptions(20.0f)));
     positionLabel.setText("Bar 1  Beat 1   |   0.00 s   |   STOPPED", juce::dontSendNotification);
-    addAndMakeVisible(positionLabel);
+    leftPane_.addAndMakeVisible(positionLabel);
 
     clipLabel.setText("No clip loaded", juce::dontSendNotification);
-    addAndMakeVisible(clipLabel);
+    leftPane_.addAndMakeVisible(clipLabel);
 
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
 
@@ -239,10 +248,10 @@ MainComponent::MainComponent()
     tabs_.addTab("Arrange", tabBg, &arrangementView_, false);
     tabs_.addTab("Edit", tabBg, &pianoRoll_, false);
     tabs_.setCurrentTabIndex(1); // start on the note editor
-    addAndMakeVisible(tabs_);
+    rightPane_.addAndMakeVisible(tabs_);
 
-    addAndMakeVisible(meter_);
-    addAndMakeVisible(keyboard_);
+    leftPane_.addAndMakeVisible(meter_);
+    rightPane_.addAndMakeVisible(keyboard_);
 
     // Mirror the initial document into the engine + UI.
     rebuildTrackSelector();
@@ -259,7 +268,7 @@ MainComponent::MainComponent()
     logAudioDeviceStatus();
 
     setWantsKeyboardFocus(true);
-    setSize(700, 800);
+    setSize(900, 800);
     startTimerHz(30);
 }
 
@@ -783,7 +792,19 @@ void MainComponent::resized()
     auto full = getLocalBounds();
     menuBar_.setBounds(full.removeFromTop(24));
 
-    auto area = full.reduced(12);
+    juce::Component* panes[] = { &leftPane_, &paneResizer_, &rightPane_ };
+    paneLayout_.layOutComponents(panes, 3, full.getX(), full.getY(),
+                                 full.getWidth(), full.getHeight(),
+                                 false,  // side-by-side, not stacked
+                                 true);  // and stretch each to the full height
+
+    layoutLeftPane();
+    layoutRightPane();
+}
+
+void MainComponent::layoutLeftPane()
+{
+    auto area = leftPane_.getLocalBounds().reduced(12);
 
     auto row1 = area.removeFromTop(30);
     playButton.setBounds(row1.removeFromLeft(70));
@@ -852,7 +873,11 @@ void MainComponent::resized()
     trackMuteButton.setBounds(trackRow.removeFromLeft(60));
     trackRow.removeFromLeft(10);
     trackGainSlider.setBounds(trackRow);
-    area.removeFromTop(8);
+}
+
+void MainComponent::layoutRightPane()
+{
+    auto area = rightPane_.getLocalBounds();
 
     keyboard_.setBounds(area.removeFromBottom(64));
     area.removeFromBottom(10);

@@ -3,13 +3,15 @@
 A cross-platform **loop-centric, AI-assisted DAW** written in C++ — for arranging and
 generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
-> **Status: Phase 4 (mixer + effects).** On top of Phases 1–3 (multi-track sequenced synth + audio
-> playback, transport/loop, a project document with undo/redo and `.looper` save/load, offline WAV
-> bounce, tabbed piano-roll/arrangement UI): per-track **gain + mute**, a master **filter → delay →
-> reverb** chain (all unit-tested), and **master-gain automation** (record on the fader, played back
-> live and applied sample-accurately on export) — all saved with the project. Deferred to validate
-> live: audio recording, disk streaming. Next: sends/returns, more automation targets. See the full
-> roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> **Status: Phase 4 (mixer + effects) + app shell.** On top of Phases 1–3 (multi-track sequenced
+> synth + audio playback, transport/loop, a project document with undo/redo and `.looper` save/load,
+> offline WAV bounce): per-track **gain + mute**, a master **filter → delay → reverb** chain (all
+> unit-tested), and **master-gain automation** — all saved with the project. The UI now has a real
+> app shell: a **menu bar** (File: New/Open/Save/Import/Bounce/Audio Settings; Edit: Undo/Redo/Clear)
+> and a **resizable two-pane workspace** (controls sidebar | arrange/edit + keyboard) with a draggable
+> divider. Deferred to validate live: audio recording, disk streaming. Next: a proper mixer view
+> (channel strips), sends/returns, more automation targets. See the full roadmap in
+> [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

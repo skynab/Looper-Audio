@@ -65,6 +65,8 @@ private:
     void                   updateReverbControls();
     void                   setSelectedTrackGain(float gainDb);
     void                   setSelectedTrackMuted(bool muted);
+    void                   layoutLeftPane();
+    void                   layoutRightPane();
     int                    trackCount() const;
 
     engine::AudioEngine         engine_;
@@ -72,7 +74,13 @@ private:
     int                         selectedTrackIndex_ = 0;
     bool                        recordAutomation_   = false;
 
-    juce::MenuBarComponent menuBar_;
+    juce::MenuBarComponent          menuBar_;
+
+    // Resizable two-pane workspace: a controls sidebar and an arrange/edit +
+    // keyboard pane, separated by a draggable divider.
+    juce::Component                 leftPane_, rightPane_;
+    juce::StretchableLayoutManager  paneLayout_;
+    juce::StretchableLayoutResizerBar paneResizer_ { &paneLayout_, 1, true };
 
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };
