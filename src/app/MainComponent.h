@@ -23,7 +23,8 @@ namespace looper
 */
 class MainComponent final : public juce::Component,
                             private juce::Timer,
-                            private juce::ChangeListener
+                            private juce::ChangeListener,
+                            private juce::MenuBarModel
 {
 public:
     MainComponent();
@@ -32,6 +33,11 @@ public:
     void paint(juce::Graphics&) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress& key) override;
+
+    // juce::MenuBarModel
+    juce::StringArray getMenuBarNames() override;
+    juce::PopupMenu   getMenuForIndex(int topLevelMenuIndex, const juce::String& menuName) override;
+    void              menuItemSelected(int menuItemID, int topLevelMenuIndex) override;
 
 private:
     void timerCallback() override;
@@ -44,9 +50,11 @@ private:
     void                   editPattern(const engine::Pattern& pattern);
     void                   refreshFromModel();
     const engine::Pattern& currentPattern() const;
+    void                   newProject();
     void                   saveProject();
     void                   openProject();
     void                   bounceProject();
+    void                   showAudioSettings();
     void                   addTrack();
     void                   syncEngineTracks();
     void                   rebuildTrackSelector();
@@ -64,15 +72,10 @@ private:
     int                         selectedTrackIndex_ = 0;
     bool                        recordAutomation_   = false;
 
+    juce::MenuBarComponent menuBar_;
+
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };
-    juce::TextButton   loadButton     { "Load audio..." };
-    juce::TextButton   clearButton    { "Clear notes" };
-    juce::TextButton   undoButton     { "Undo" };
-    juce::TextButton   redoButton     { "Redo" };
-    juce::TextButton   saveButton     { "Save..." };
-    juce::TextButton   openButton     { "Open..." };
-    juce::TextButton   bounceButton   { "Bounce..." };
     juce::TextButton   addTrackButton { "Add Track" };
     juce::ToggleButton loopButton      { "Loop" };
     juce::ComboBox     trackSelector_;
@@ -93,7 +96,6 @@ private:
     juce::Label        masterLabel { {}, "Master" };
     juce::Label  positionLabel, clipLabel;
 
-    juce::AudioDeviceSelectorComponent deviceSelector;
     juce::MidiKeyboardComponent        keyboard_ { engine_.keyboardState(),
                                                    juce::MidiKeyboardComponent::horizontalKeyboard };
     LevelMeter                         meter_;

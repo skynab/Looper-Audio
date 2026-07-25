@@ -11,9 +11,10 @@ namespace looper
 using Cmd = engine::EngineCommand::Type;
 
 MainComponent::MainComponent()
-    : deviceSelector(engine_.deviceManager(),
-                     0, 0, 0, 2, false, false, false, false)
 {
+    menuBar_.setModel(this);
+    addAndMakeVisible(menuBar_);
+
     // ---- document: one instrument track holding the piano-roll pattern ----
     {
         model::Song song;
@@ -34,17 +35,9 @@ MainComponent::MainComponent()
         post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
         updateLoopRegion();
     };
-    loadButton.onClick     = [this] { chooseFile(); };
-    clearButton.onClick    = [this] { pianoRoll_.clear(); };
-    undoButton.onClick     = [this] { history_.undo(); refreshFromModel(); };
-    redoButton.onClick     = [this] { history_.redo(); refreshFromModel(); };
-    saveButton.onClick     = [this] { saveProject(); };
-    openButton.onClick     = [this] { openProject(); };
-    bounceButton.onClick   = [this] { bounceProject(); };
     addTrackButton.onClick = [this] { addTrack(); };
 
-    for (auto* b : { &playButton, &stopButton, &loadButton, &clearButton, &undoButton, &redoButton,
-                     &saveButton, &openButton, &bounceButton, &addTrackButton })
+    for (auto* b : { &playButton, &stopButton, &addTrackButton })
         addAndMakeVisible(b);
     addAndMakeVisible(loopButton);
 
@@ -250,7 +243,6 @@ MainComponent::MainComponent()
 
     addAndMakeVisible(meter_);
     addAndMakeVisible(keyboard_);
-    addAndMakeVisible(deviceSelector);
 
     // Mirror the initial document into the engine + UI.
     rebuildTrackSelector();
@@ -267,14 +259,98 @@ MainComponent::MainComponent()
     logAudioDeviceStatus();
 
     setWantsKeyboardFocus(true);
-    setSize(680, 936);
+    setSize(700, 800);
     startTimerHz(30);
 }
 
 MainComponent::~MainComponent()
 {
     stopTimer();
+    menuBar_.setModel(nullptr);
     engine_.deviceManager().removeChangeListener(this);
+}
+
+juce::StringArray MainComponent::getMenuBarNames()
+{
+    return { "File", "Edit" };
+}
+
+juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce::String&)
+{
+    juce::PopupMenu menu;
+
+    if (topLevelMenuIndex == 0) // File
+    {
+        menu.addItem(1, "New Project");
+        menu.addItem(2, "Open Project...");
+        menu.addItem(3, "Save Project...");
+        menu.addSeparator();
+        menu.addItem(4, "Import Audio...");
+        menu.addItem(5, "Bounce to WAV...");
+        menu.addSeparator();
+        menu.addItem(6, "Audio Settings...");
+    }
+    else if (topLevelMenuIndex == 1) // Edit
+    {
+        menu.addItem(10, "Undo", history_.canUndo());
+        menu.addItem(11, "Redo", history_.canRedo());
+        menu.addSeparator();
+        menu.addItem(12, "Clear Notes");
+    }
+
+    return menu;
+}
+
+void MainComponent::menuItemSelected(int menuItemID, int)
+{
+    switch (menuItemID)
+    {
+        case 1:  newProject(); break;
+        case 2:  openProject(); break;
+        case 3:  saveProject(); break;
+        case 4:  chooseFile(); break; // import audio
+        case 5:  bounceProject(); break;
+        case 6:  showAudioSettings(); break;
+        case 10: history_.undo(); refreshFromModel(); break;
+        case 11: history_.redo(); refreshFromModel(); break;
+        case 12: pianoRoll_.clear(); break;
+        default: break;
+    }
+}
+
+void MainComponent::newProject()
+{
+    model::Song song;
+    const int id = model::addTrack(song, model::TrackType::Instrument, "Synth 1").id;
+    model::Clip clip;
+    clip.type                = model::ClipType::Instrument;
+    clip.lengthBeats         = 4.0;
+    clip.pattern.lengthBeats = 4.0;
+    model::addClip(song, id, clip);
+
+    history_.reset(song);
+    selectedTrackIndex_ = 0;
+    tempoSlider.setValue(song.bpm, juce::dontSendNotification);
+    uiTempoMap_.setTempo(song.bpm);
+    post(Cmd::SetTempo, song.bpm);
+    refreshFromModel();
+    clipLabel.setText("No clip loaded", juce::dontSendNotification);
+}
+
+void MainComponent::showAudioSettings()
+{
+    auto selector = std::make_unique<juce::AudioDeviceSelectorComponent>(
+        engine_.deviceManager(), 0, 0, 0, 2, false, false, false, false);
+    selector->setSize(500, 420);
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(selector.release());
+    options.dialogTitle                  = "Audio Settings";
+    options.dialogBackgroundColour       = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar            = true;
+    options.resizable                    = true;
+    options.launchAsync();
 }
 
 void MainComponent::post(engine::EngineCommand::Type type, double a, double b)
@@ -652,8 +728,6 @@ void MainComponent::timerCallback()
 {
     engine_.pump();
 
-    undoButton.setEnabled(history_.canUndo());
-    redoButton.setEnabled(history_.canRedo());
     addTrackButton.setEnabled(trackCount() < engine_.maxTracks());
 
     const double sampleRate = engine_.sampleRate();
@@ -706,7 +780,10 @@ void MainComponent::paint(juce::Graphics& g)
 
 void MainComponent::resized()
 {
-    auto area = getLocalBounds().reduced(12);
+    auto full = getLocalBounds();
+    menuBar_.setBounds(full.removeFromTop(24));
+
+    auto area = full.reduced(12);
 
     auto row1 = area.removeFromTop(30);
     playButton.setBounds(row1.removeFromLeft(70));
@@ -714,22 +791,6 @@ void MainComponent::resized()
     stopButton.setBounds(row1.removeFromLeft(70));
     row1.removeFromLeft(12);
     loopButton.setBounds(row1.removeFromLeft(60));
-    row1.removeFromLeft(18);
-    undoButton.setBounds(row1.removeFromLeft(70));
-    row1.removeFromLeft(6);
-    redoButton.setBounds(row1.removeFromLeft(70));
-    area.removeFromTop(8);
-
-    auto row2 = area.removeFromTop(28);
-    loadButton.setBounds(row2.removeFromLeft(110));
-    row2.removeFromLeft(8);
-    clearButton.setBounds(row2.removeFromLeft(100));
-    row2.removeFromLeft(16);
-    saveButton.setBounds(row2.removeFromLeft(80));
-    row2.removeFromLeft(8);
-    openButton.setBounds(row2.removeFromLeft(80));
-    row2.removeFromLeft(8);
-    bounceButton.setBounds(row2.removeFromLeft(90));
     area.removeFromTop(8);
 
     positionLabel.setBounds(area.removeFromTop(28));
@@ -793,8 +854,6 @@ void MainComponent::resized()
     trackGainSlider.setBounds(trackRow);
     area.removeFromTop(8);
 
-    deviceSelector.setBounds(area.removeFromBottom(130));
-    area.removeFromBottom(8);
     keyboard_.setBounds(area.removeFromBottom(64));
     area.removeFromBottom(10);
 
