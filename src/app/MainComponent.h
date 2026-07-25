@@ -83,15 +83,20 @@ private:
     void                   setTrackSolo(int index, bool solo);
     void                   setTrackSendLevel(int index, float level);
     void                   selectTrack(int index);
+    void                   selectTrackAndClip(int trackIndex, int clipIndex);
+    void                   addClipToSelectedTrack();
+    void                   updateEditingLabel();
     void                   layoutLeftPane();
     void                   layoutRightPane();
     void                   layoutMixerView();
     void                   layoutArrangeTab();
+    void                   layoutEditTab();
     int                    trackCount() const;
 
     engine::AudioEngine         engine_;
     model::History<model::Song> history_;
     int                         selectedTrackIndex_ = 0;
+    int                         selectedClipIndex_  = 0;
     bool                        recordAutomation_   = false;
 
     juce::MenuBarComponent          menuBar_;
@@ -126,13 +131,17 @@ private:
     juce::MidiKeyboardComponent        keyboard_ { engine_.keyboardState(),
                                                    juce::MidiKeyboardComponent::horizontalKeyboard };
     LevelMeter                         meter_;
+
+    CallbackComponent                  editTab_;
+    juce::Label                        editingLabel_;
     PianoRoll                          pianoRoll_;
 
     CallbackComponent                  arrangeTab_;
     juce::Viewport                     arrangementViewport_;
     ArrangementView                    arrangementView_;
-    juce::TextButton                   zoomInButton_  { "+" };
-    juce::TextButton                   zoomOutButton_ { "-" };
+    juce::TextButton                   zoomInButton_   { "+" };
+    juce::TextButton                   zoomOutButton_  { "-" };
+    juce::TextButton                   addClipButton_  { "Add Clip" };
 
     CallbackComponent                  mixerView_;
     juce::OwnedArray<MixerStrip>       trackStrips_;

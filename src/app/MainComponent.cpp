@@ -285,14 +285,22 @@ MainComponent::MainComponent()
 
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
 
+    // ---- edit tab: a header showing which track/clip is open, plus the piano roll ----
+    editingLabel_.setFont(juce::Font(juce::FontOptions(13.0f)));
+    editTab_.addAndMakeVisible(editingLabel_);
+    editTab_.addAndMakeVisible(pianoRoll_);
+    editTab_.onResized = [this] { layoutEditTab(); };
+
     // ---- arrange tab: a zoomable/scrollable timeline, click to seek ----
     arrangementViewport_.setViewedComponent(&arrangementView_, false);
     arrangeTab_.addAndMakeVisible(arrangementViewport_);
 
     zoomInButton_.onClick  = [this] { arrangementView_.setZoom(arrangementView_.zoom() * 1.25f); };
     zoomOutButton_.onClick = [this] { arrangementView_.setZoom(arrangementView_.zoom() / 1.25f); };
+    addClipButton_.onClick = [this] { addClipToSelectedTrack(); };
     arrangeTab_.addAndMakeVisible(zoomInButton_);
     arrangeTab_.addAndMakeVisible(zoomOutButton_);
+    arrangeTab_.addAndMakeVisible(addClipButton_);
     arrangeTab_.onResized = [this] { layoutArrangeTab(); };
 
     arrangementView_.onSeek = [this](double beat)
@@ -300,6 +308,11 @@ MainComponent::MainComponent()
         const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 48000.0;
         uiTempoMap_.setSampleRate(sampleRate);
         post(Cmd::Seek, (double) uiTempoMap_.samplesFromPpq(juce::jmax(0.0, beat)));
+    };
+
+    arrangementView_.onClipSelected = [this](int trackIndex, int clipIndex)
+    {
+        selectTrackAndClip(trackIndex, clipIndex);
     };
 
     arrangementView_.onClipMoved = [this](int trackIndex, int clipIndex, double newStartBeats)
@@ -314,12 +327,12 @@ MainComponent::MainComponent()
         });
 
         arrangementView_.setSong(history_.current());
-        syncEngineTracks(); // push the updated clip start to the engine (clip 0 only, for now)
+        syncEngineTracks(); // pushes every track's whole clip list, including this move
     };
 
     const auto tabBg = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
     tabs_.addTab("Arrange", tabBg, &arrangeTab_, false);
-    tabs_.addTab("Edit", tabBg, &pianoRoll_, false);
+    tabs_.addTab("Edit", tabBg, &editTab_, false);
     tabs_.addTab("Mixer", tabBg, &mixerView_, false);
     tabs_.setCurrentTabIndex(1); // start on the note editor
     rightPane_.addAndMakeVisible(tabs_);
@@ -331,10 +344,12 @@ MainComponent::MainComponent()
     engine_.setArmedTrack(0);
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
     updateDelayControls();
     updateFilterControls();
     updateReverbControls();
+    updateEditingLabel();
     updateSendBusControls();
 
     engine_.deviceManager().addChangeListener(this);
@@ -452,16 +467,22 @@ const engine::Pattern& MainComponent::currentPattern() const
     if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
         return empty;
     const auto& track = song.tracks[(size_t) selectedTrackIndex_];
-    return track.clips.empty() ? empty : track.clips[0].pattern;
+    if (selectedClipIndex_ < 0 || selectedClipIndex_ >= (int) track.clips.size())
+        return empty;
+    return track.clips[(size_t) selectedClipIndex_].pattern;
 }
 
 void MainComponent::editPattern(const engine::Pattern& pattern)
 {
-    const int idx = selectedTrackIndex_;
-    history_.edit("Edit notes", [&pattern, idx](model::Song& s)
+    const int trackIdx = selectedTrackIndex_;
+    const int clipIdx  = selectedClipIndex_;
+    history_.edit("Edit notes", [&pattern, trackIdx, clipIdx](model::Song& s)
     {
-        if (idx >= 0 && idx < (int) s.tracks.size() && ! s.tracks[(size_t) idx].clips.empty())
-            s.tracks[(size_t) idx].clips[0].pattern = pattern;
+        if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+            return;
+        auto& clips = s.tracks[(size_t) trackIdx].clips;
+        if (clipIdx >= 0 && clipIdx < (int) clips.size())
+            clips[(size_t) clipIdx].pattern = pattern;
     });
     syncEngineTracks(); // rebuilds every track's clip list, including this edit
 }
@@ -483,11 +504,58 @@ void MainComponent::addTrack()
     });
 
     selectedTrackIndex_ = trackCount() - 1;
+    selectedClipIndex_  = 0;
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
+    updateEditingLabel();
+}
+
+/** Adds a new clip to the currently selected track, positioned 2 beats after
+    its last existing clip (or at beat 0 if it has none), and selects it for
+    editing. */
+void MainComponent::addClipToSelectedTrack()
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const int trackIdx = selectedTrackIndex_;
+    int       newClipIndex = -1;
+
+    history_.edit("Add clip", [trackIdx, &newClipIndex](model::Song& s)
+    {
+        if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+            return;
+        auto& track = s.tracks[(size_t) trackIdx];
+
+        double nextStart = 0.0;
+        for (const auto& c : track.clips)
+            nextStart = juce::jmax(nextStart, c.startBeats + c.lengthBeats);
+        if (! track.clips.empty())
+            nextStart += 2.0; // a small gap after the last clip
+
+        model::Clip clip;
+        clip.id                  = model::allocateId(s);
+        clip.type                = model::ClipType::Instrument;
+        clip.startBeats          = nextStart;
+        clip.lengthBeats         = 4.0;
+        clip.pattern.lengthBeats = 4.0;
+        track.clips.push_back(clip);
+        newClipIndex = (int) track.clips.size() - 1;
+    });
+
+    if (newClipIndex < 0)
+        return;
+
+    selectedClipIndex_ = newClipIndex;
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+    updateEditingLabel();
 }
 
 void MainComponent::syncEngineTracks()
@@ -527,6 +595,26 @@ void MainComponent::syncEngineTracks()
 void MainComponent::refreshPianoRollForSelected()
 {
     pianoRoll_.setPattern(currentPattern());
+}
+
+void MainComponent::updateEditingLabel()
+{
+    const auto& song = history_.current();
+
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+    {
+        editingLabel_.setText("No track selected", juce::dontSendNotification);
+        return;
+    }
+
+    const auto& track = song.tracks[(size_t) selectedTrackIndex_];
+    const auto  name  = track.name.empty() ? ("Track " + juce::String(selectedTrackIndex_ + 1))
+                                           : juce::String(track.name);
+
+    juce::String text = "Editing: " + name;
+    if (! track.clips.empty())
+        text << "   |   Clip " << (selectedClipIndex_ + 1) << " of " << (int) track.clips.size();
+    editingLabel_.setText(text, juce::dontSendNotification);
 }
 
 void MainComponent::updateMixerStrips()
@@ -645,13 +733,23 @@ void MainComponent::setTrackSendLevel(int index, float level)
 
 void MainComponent::selectTrack(int index)
 {
-    if (index < 0 || index >= trackCount())
+    // A mixer-strip click doesn't know about specific clips, so it defaults to
+    // the track's first one.
+    selectTrackAndClip(index, 0);
+}
+
+void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
+{
+    if (trackIndex < 0 || trackIndex >= trackCount())
         return;
 
-    selectedTrackIndex_ = index;
+    selectedTrackIndex_ = trackIndex;
+    selectedClipIndex_  = clipIndex;
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     updateMixerStrips(); // refreshes the selection highlight
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+    updateEditingLabel();
 }
 
 void MainComponent::refreshFromModel()
@@ -659,15 +757,23 @@ void MainComponent::refreshFromModel()
     if (selectedTrackIndex_ >= trackCount())
         selectedTrackIndex_ = juce::jmax(0, trackCount() - 1);
 
+    const int clipCount = (selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount())
+                             ? (int) history_.current().tracks[(size_t) selectedTrackIndex_].clips.size()
+                             : 0;
+    if (selectedClipIndex_ >= clipCount)
+        selectedClipIndex_ = juce::jmax(0, clipCount - 1);
+
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
     updateDelayControls();
     updateFilterControls();
     updateReverbControls();
     updateSendBusControls();
+    updateEditingLabel();
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
@@ -877,6 +983,7 @@ void MainComponent::timerCallback()
     engine_.pump();
 
     addTrackButton.setEnabled(trackCount() < engine_.maxTracks());
+    addClipButton_.setEnabled(selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount());
 
     const double sampleRate = engine_.sampleRate();
     uiTempoMap_.setSampleRate(sampleRate > 0.0 ? sampleRate : 48000.0);
@@ -985,8 +1092,17 @@ void MainComponent::layoutArrangeTab()
     zoomOutButton_.setBounds(toolbar.removeFromLeft(28));
     toolbar.removeFromLeft(4);
     zoomInButton_.setBounds(toolbar.removeFromLeft(28));
+    toolbar.removeFromLeft(12);
+    addClipButton_.setBounds(toolbar.removeFromLeft(90));
 
     arrangementViewport_.setBounds(area);
+}
+
+void MainComponent::layoutEditTab()
+{
+    auto area = editTab_.getLocalBounds();
+    editingLabel_.setBounds(area.removeFromTop(22).reduced(6, 0));
+    pianoRoll_.setBounds(area);
 }
 
 void MainComponent::layoutMixerView()

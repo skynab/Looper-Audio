@@ -28,10 +28,13 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > start (today's validated "plays until Stop" behaviour, so every existing project is unaffected);
 > real length gating only kicks in once a track has more than one clip. Verified by the bounce tool
 > (silence in the gap between two clips and after the last one, each clip sounding only in its own
-> window). There's no UI yet to add a second clip to a track — that, plus per-clip piano-roll editing,
-> is the natural next increment. Deferred to validate live: audio recording, disk streaming. Next:
-> multi-clip UI + per-clip editing, more automation targets, more send-bus effect types. See the full
-> roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> window). That engine capability now has a UI: an **Add Clip** button in the Arrange tab adds a new
+> clip to the selected track (positioned after the last one); clicking any clip in the timeline both
+> arms its track and opens that specific clip in the piano roll (highlighted in the timeline, and named
+> in a header above the piano roll — "Editing: Track X | Clip N of M" — so it's always clear which
+> clip you're editing). Deferred to validate live: audio recording, disk streaming. Next: more
+> automation targets, more send-bus effect types, clip renaming/deleting. See the full roadmap in
+> [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

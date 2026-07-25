@@ -31,6 +31,7 @@ class ArrangementView final : public juce::Component
 public:
     std::function<void(double)> onSeek; // beat position clicked
     std::function<void(int trackIndex, int clipIndex, double newStartBeats)> onClipMoved;
+    std::function<void(int trackIndex, int clipIndex)> onClipSelected; // fired on press, before any drag
 
     void setSong(const model::Song& song)
     {
@@ -56,6 +57,17 @@ public:
     }
 
     float zoom() const noexcept { return geometry_.zoom; }
+
+    /** Highlights the clip currently open in the piano roll. */
+    void setSelectedClip(int trackIndex, int clipIndex)
+    {
+        if (selectedTrackForEdit_ != trackIndex || selectedClipForEdit_ != clipIndex)
+        {
+            selectedTrackForEdit_ = trackIndex;
+            selectedClipForEdit_  = clipIndex;
+            repaint();
+        }
+    }
 
     void paint(juce::Graphics& g) override
     {
@@ -102,17 +114,18 @@ public:
 
             for (int c = 0; c < (int) track.clips.size(); ++c)
             {
-                const auto&  clip        = track.clips[(size_t) c];
-                const bool   isBeingMoved = dragging_ && i == dragTrackIndex_ && c == dragClipIndex_;
-                const double startBeats  = isBeingMoved ? dragPreviewStart_ : clip.startBeats;
+                const auto&  clip          = track.clips[(size_t) c];
+                const bool   isBeingMoved   = dragging_ && i == dragTrackIndex_ && c == dragClipIndex_;
+                const bool   isEditSelected = i == selectedTrackForEdit_ && c == selectedClipForEdit_;
+                const double startBeats     = isBeingMoved ? dragPreviewStart_ : clip.startBeats;
 
                 const float cx = geometry_.xForBeat(startBeats);
                 const float cw = juce::jmax(2.0f, (float) clip.lengthBeats * ppb);
                 const juce::Rectangle<float> r(cx, y + 3.0f, cw, geometry_.laneHeight - 6.0f);
                 g.setColour(isBeingMoved ? juce::Colour(0xff5aad64) : juce::Colour(0xff3a7d44));
                 g.fillRoundedRectangle(r, 3.0f);
-                g.setColour(juce::Colours::black.withAlpha(0.3f));
-                g.drawRoundedRectangle(r, 3.0f, 1.0f);
+                g.setColour(isEditSelected ? juce::Colours::cyan.withAlpha(0.9f) : juce::Colours::black.withAlpha(0.3f));
+                g.drawRoundedRectangle(r, 3.0f, isEditSelected ? 2.0f : 1.0f);
             }
         }
 
@@ -140,6 +153,9 @@ public:
             dragGrabBeat_      = geometry_.beatForX(e.position.x);
             dragOriginalStart_ = song_.tracks[(size_t) trackIndex].clips[(size_t) clipIndex].startBeats;
             dragPreviewStart_  = dragOriginalStart_;
+
+            if (onClipSelected)
+                onClipSelected(trackIndex, clipIndex);
             return;
         }
 
@@ -166,7 +182,10 @@ public:
             return;
 
         dragging_ = false;
-        if (onClipMoved)
+
+        // Only fire for an actual move — a plain click-to-select (no drag)
+        // would otherwise create a harmless but noisy no-op undo step.
+        if (onClipMoved && std::abs(dragPreviewStart_ - dragOriginalStart_) > 1.0e-9)
             onClipMoved(dragTrackIndex_, dragClipIndex_, dragPreviewStart_);
         repaint();
     }
@@ -237,6 +256,9 @@ private:
     double dragGrabBeat_      = 0.0; // beat under the mouse at grab
     double dragOriginalStart_ = 0.0; // the clip's startBeats at grab
     double dragPreviewStart_  = 0.0; // live preview while dragging
+
+    int selectedTrackForEdit_ = -1;
+    int selectedClipForEdit_  = -1;
 };
 
 } // namespace looper
