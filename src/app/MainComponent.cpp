@@ -4,6 +4,7 @@
 #include "engine/OfflineRenderer.h"
 #include "model/Serialization.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -1169,10 +1170,30 @@ void MainComponent::bounceProject()
 
         const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 44100.0;
         const double bpm        = song.bpm;
-        auto         buffer     = engine::OfflineRenderer::render(patterns, gains, solos, clipStarts, sends,
-                                                                  song.sendBus.enabled, song.sendBus.roomSize,
-                                                                  song.sendBus.damping, song.sendBus.returnLevel,
-                                                                  bpm, sampleRate, 8.0);
+
+        // Sample-accurate per-track gain automation: only wire the callback up
+        // when at least one track actually has a lane, so a project with none
+        // renders through the exact same (untouched) fast path as before this
+        // existed — no behaviour change for the common case.
+        const bool anyTrackAutomated = std::any_of(song.tracks.begin(), song.tracks.end(),
+                                                   [](const model::Track& t) { return ! t.gainAutomation.empty(); });
+
+        engine::OfflineRenderer::GainAutomationFn gainAutomationFn;
+        if (anyTrackAutomated)
+        {
+            gainAutomationFn = [&song](int trackIndex, double beat, float staticGainDb) -> float
+            {
+                if (trackIndex < 0 || (size_t) trackIndex >= song.tracks.size())
+                    return staticGainDb;
+                const auto& lane = song.tracks[(size_t) trackIndex].gainAutomation;
+                return lane.empty() ? staticGainDb : lane.valueAt(beat, staticGainDb);
+            };
+        }
+
+        auto buffer = engine::OfflineRenderer::render(patterns, gains, solos, clipStarts, sends,
+                                                       song.sendBus.enabled, song.sendBus.roomSize,
+                                                       song.sendBus.damping, song.sendBus.returnLevel,
+                                                       bpm, sampleRate, 8.0, 512, gainAutomationFn);
 
         if (song.filter.enabled)
         {

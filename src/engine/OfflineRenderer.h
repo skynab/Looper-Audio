@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -25,13 +26,32 @@ namespace looper::engine
 class OfflineRenderer
 {
 public:
+    /** Given a track index and a beat position, returns that track's gain in dB
+        at that beat (the last argument is the track's static gainDb, to return
+        as a fallback for tracks with no automation of their own). Deliberately
+        JUCE- and model-independent (the engine layer doesn't know what
+        "automation" is) — the caller supplies a lambda that reads whatever
+        automation representation it uses, e.g. model::AutomationLane::valueAt.
+        Pass a default-constructed (empty) one to skip this entirely — every
+        track then uses its static gainsDb for the whole render, exactly as
+        before this parameter existed. */
+    using GainAutomationFn = std::function<float(int trackIndex, double beat, float staticGainDb)>;
+
     /** Renders one instrument track per pattern, at the given per-track gains (dB),
         solo flags, clip start offsets (beats — the track stays silent until the
         transport reaches this point, then plays and loops indefinitely), and
         pre-fader send levels (0..1) into a shared send-bus reverb (always fully
         wet; returnGain scales the wet return before it's summed into the mix).
         Solo follows the same "solo overrides, mute always wins" rule as the live
-        engine. */
+        engine.
+
+        If @p gainAutomation is set, each track is rendered in isolation at unity
+        gain and folded into the mix with a sample-accurate gain curve from the
+        callback instead of InstrumentTrack's flat per-block gain — this is the
+        only way to get sample-accurate *per-track* automation, since (unlike
+        master automation) it can't be applied as a single post-render multiply
+        once tracks are already summed. Leaving it unset keeps the original,
+        untouched fast path (a plain per-track render() straight into the mix). */
     static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
                                            const std::vector<float>&   gainsDb,
                                            const std::vector<bool>&    soloFlags,
@@ -44,7 +64,8 @@ public:
                                            double bpm,
                                            double sampleRate,
                                            double numSeconds,
-                                           int    blockSize = 512)
+                                           int    blockSize = 512,
+                                           GainAutomationFn gainAutomation = {})
     {
         const int totalSamples = (int) std::ceil(numSeconds * sampleRate);
         juce::AudioBuffer<float> output(2, std::max(1, totalSamples));
@@ -88,7 +109,10 @@ public:
 
         juce::AudioBuffer<float> block(2, blockSize);
         juce::AudioBuffer<float> sendBus(2, blockSize);
+        juce::AudioBuffer<float> trackTemp; // only sized/used when gainAutomation is set
         juce::MidiBuffer         noLiveMidi;
+
+        const double samplesPerBeat = bpm > 0.0 ? sampleRate * 60.0 / bpm : 0.0;
 
         int64_t playhead = 0;
         for (int pos = 0; pos < totalSamples; pos += blockSize)
@@ -106,8 +130,39 @@ public:
             ctx.transport.playheadSamples = playhead;
             ctx.transport.bpm             = bpm;
 
-            for (auto& track : tracks)
-                track->render(block, sendBus, noLiveMidi, ctx, false, anySolo);
+            if (! gainAutomation)
+            {
+                for (auto& track : tracks)
+                    track->render(block, sendBus, noLiveMidi, ctx, false, anySolo);
+            }
+            else
+            {
+                trackTemp.setSize(2, n, false, false, true);
+                for (size_t t = 0; t < tracks.size(); ++t)
+                {
+                    auto&       track       = tracks[t];
+                    const float staticGainDb = track->gainDb.load();
+
+                    // Render this track alone at unity gain (the send bus still
+                    // gets its usual, gain-independent pre-fader copy from
+                    // inside render()) so we can fold it into the mix ourselves
+                    // with a sample-accurate curve instead of one flat gain.
+                    trackTemp.clear();
+                    track->gainDb.store(0.0f);
+                    track->render(trackTemp, sendBus, noLiveMidi, ctx, false, anySolo);
+                    track->gainDb.store(staticGainDb);
+
+                    const int channels = juce::jmin(block.getNumChannels(), trackTemp.getNumChannels());
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const double beat = samplesPerBeat > 0.0 ? (double) (playhead + i) / samplesPerBeat : 0.0;
+                        const float  g    = juce::Decibels::decibelsToGain(
+                                                gainAutomation((int) t, beat, staticGainDb));
+                        for (int ch = 0; ch < channels; ++ch)
+                            block.getWritePointer(ch)[i] += trackTemp.getReadPointer(ch)[i] * g;
+                    }
+                }
+            }
 
             if (sendBusEnabled)
             {

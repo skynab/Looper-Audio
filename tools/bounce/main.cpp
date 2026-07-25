@@ -264,6 +264,55 @@ int main(int argc, char** argv)
     const float rmsSecondHalf   = automated.getRMSLevel(0, half, automated.getNumSamples() - half);
     const bool  automationFades = rmsFirstHalf < rmsSecondHalf;
 
+    // Per-track automation check: unlike the master-gain trick above (a plain
+    // post-render multiply, since master gain applies uniformly to the whole
+    // mix), per-track automation can't be applied after tracks are already
+    // summed — this exercises the real OfflineRenderer::render(gainAutomation)
+    // path. Track 1 (arp) gets a -40 dB -> 0 dB fade; track 2 (bass) gets none.
+    looper::model::AutomationLane arpAutomation;
+    arpAutomation.addPoint(0.0, -40.0f);
+    arpAutomation.addPoint(bpm / 60.0 * seconds, 0.0f);
+    looper::model::AutomationLane noAutomation; // empty: bass keeps its static gain
+
+    const std::vector<looper::model::AutomationLane> perTrackLanes { arpAutomation, noAutomation };
+    OfflineRenderer::GainAutomationFn perTrackGainFn =
+        [&perTrackLanes](int trackIndex, double beat, float staticGainDb) -> float
+    {
+        if (trackIndex < 0 || (size_t) trackIndex >= perTrackLanes.size())
+            return staticGainDb;
+        const auto& trackLane = perTrackLanes[(size_t) trackIndex];
+        return trackLane.empty() ? staticGainDb : trackLane.valueAt(beat, staticGainDb);
+    };
+
+    // Isolate each track (the other silenced at -100 dB) so the comparison
+    // below reflects one track's automation state, not the fixed two-track mix.
+    const auto arpAloneAutomated  = OfflineRenderer::render({ arp, bass }, { 0.0f, -100.0f }, std::vector<bool>{},
+                                                            std::vector<double>{}, std::vector<float>{},
+                                                            false, 0.5f, 0.5f, 0.0f,
+                                                            bpm, sampleRate, seconds, 512, perTrackGainFn);
+    const auto bassAloneNoAuto    = OfflineRenderer::render({ arp, bass }, { -100.0f, 0.0f }, std::vector<bool>{},
+                                                            std::vector<double>{}, std::vector<float>{},
+                                                            false, 0.5f, 0.5f, 0.0f,
+                                                            bpm, sampleRate, seconds, 512, perTrackGainFn);
+
+    const int   halfArp             = arpAloneAutomated.getNumSamples() / 2;
+    const float rmsArpFirstHalf     = arpAloneAutomated.getRMSLevel(0, 0, halfArp);
+    const float rmsArpSecondHalf    = arpAloneAutomated.getRMSLevel(0, halfArp, arpAloneAutomated.getNumSamples() - halfArp);
+    const bool  perTrackAutoFades   = rmsArpFirstHalf < rmsArpSecondHalf;
+
+    const int   halfBass            = bassAloneNoAuto.getNumSamples() / 2;
+    const float rmsBassFirstHalf    = bassAloneNoAuto.getRMSLevel(0, 0, halfBass);
+    const float rmsBassSecondHalf   = bassAloneNoAuto.getRMSLevel(0, halfBass, bassAloneNoAuto.getNumSamples() - halfBass);
+    // A loose tolerance: two loop iterations of the same pattern aren't
+    // perfectly identical (envelope/voice state carries small differences
+    // across the loop boundary), but a real automation leak would show up as
+    // a multiple, not ~10-15% — the arp check above swings 10x for contrast.
+    const bool  nonAutomatedStable  = rmsBassSecondHalf > 0.01f
+                                    && std::abs(rmsBassSecondHalf - rmsBassFirstHalf)
+                                           < 0.25f * std::max(rmsBassFirstHalf, rmsBassSecondHalf);
+
+    const bool perTrackAutomationWorks = perTrackAutoFades && nonAutomatedStable;
+
     // The written file is the wet (delayed) mix.
     if (! OfflineRenderer::writeWav(out, wet, sampleRate))
     {
@@ -281,6 +330,7 @@ int main(int argc, char** argv)
               << "  filterAtten=" << (filterAttenuates ? 1 : 0)
               << "  reverbChanged=" << (reverbChanged ? 1 : 0)
               << "  automationFades=" << (automationFades ? 1 : 0)
+              << "  perTrackAutomationWorks=" << (perTrackAutomationWorks ? 1 : 0)
               << "  soloMatchesArpOnly=" << (soloMatchesArpOnly ? 1 : 0)
               << "  clipStartGates=" << (clipStartGates ? 1 : 0)
               << "  sendBusChanged=" << (sendBusChanged ? 1 : 0)
@@ -290,15 +340,18 @@ int main(int argc, char** argv)
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
     // signal, a low-pass that attenuates, a reverb that changes the signal, a
-    // gain ramp that fades in, solo correctly silencing the other track, a clip
-    // start that gates playback, a send bus that changes the output, two clips
-    // on one track each sounding only in their own window, a decoded audio clip
-    // playing back through a track, and the recorder's capture/handoff logic
-    // (fed synthetic input, since there's no live mic here) together confirm
+    // gain ramp that fades in, a sample-accurate per-track automation curve
+    // that fades one track while leaving an unautomated sibling stable, solo
+    // correctly silencing the other track, a clip start that gates playback, a
+    // send bus that changes the output, two clips on one track each sounding
+    // only in their own window, a decoded audio clip playing back through a
+    // track, and the recorder's capture/handoff logic (fed synthetic input,
+    // since there's no live mic here) together confirm
     // the full render/gain/fx/automation/solo/clip/send-bus/audio/record path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
+                 && perTrackAutomationWorks
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && multiClipGates
                  && audioTrackWorks && recorderWorks;
     return ok ? 0 : 2;

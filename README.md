@@ -97,6 +97,21 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > `.mp4` (video+audio muxed) is deliberately out of scope for now, since extracting its audio needs a
 > demuxer this pass didn't add. Try both drags live, and see [`docs/PLAN.md`](docs/PLAN.md) for the
 > full design writeups (including the alternatives considered and why).
+>
+> **Bounce/export now honours per-track gain automation, sample-accurately** — the deferred item
+> from when per-track automation first landed. Unlike master-gain automation (already exported by a
+> single post-render multiply, since it applies uniformly to the whole mix), per-track automation
+> can't be bolted on after tracks are already summed — `OfflineRenderer::render()` gained an optional
+> `GainAutomationFn` callback; when set, each track renders in isolation at unity gain and gets folded
+> into the mix with a sample-accurate curve instead of one flat per-block gain. The callback is
+> JUCE/model-independent (engine code still doesn't know what "automation" is — `MainComponent`
+> supplies a lambda reading `AutomationLane::valueAt`), and is only wired up when a project actually
+> has a per-track lane, so a project with none renders through the exact same untouched fast path as
+> before — verified by the bounce tool's new `perTrackAutomationWorks` check (one track fades
+> sample-accurately while an unautomated sibling stays stable in the same render) alongside every
+> existing check, including `rmsDry=0.149266`, unchanged. Next: more send-bus effect types,
+> multi-clip audio tracks, persisting the dockable-workspace layout, and user-editable file-browser
+> bookmarks. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 
