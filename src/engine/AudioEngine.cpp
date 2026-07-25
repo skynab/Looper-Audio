@@ -89,6 +89,12 @@ bool AudioEngine::loadAudioFileForTrack(int index, const juce::File& file, doubl
     return true;
 }
 
+void AudioEngine::setTrackAudioClipStartBeats(int index, double beats)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].audioPlayer.setClipStartBeats(beats);
+}
+
 void AudioEngine::setActiveTrackCount(int count)
 {
     const int clamped = juce::jlimit(0, kMaxTracks, count);

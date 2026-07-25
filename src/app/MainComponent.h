@@ -2,7 +2,9 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <array>
 #include <memory>
+#include <string>
 
 #include "engine/AudioEngine.h"
 #include "engine/TempoMap.h"
@@ -70,6 +72,7 @@ private:
     void                   openProject();
     void                   bounceProject();
     void                   showAudioSettings();
+    void                   importAudioToNewTrack();
     void                   addTrack();
     void                   syncEngineTracks();
     void                   refreshPianoRollForSelected();
@@ -98,6 +101,10 @@ private:
     int                         selectedTrackIndex_ = 0;
     int                         selectedClipIndex_  = 0;
     bool                        recordAutomation_   = false;
+
+    // Which audio file path is currently decoded into each engine track slot,
+    // so syncEngineTracks() only re-decodes when the path actually changes.
+    std::array<std::string, engine::AudioEngine::kMaxTracks> loadedTrackAudioFile_;
 
     juce::MenuBarComponent          menuBar_;
 

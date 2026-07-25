@@ -55,6 +55,9 @@ public:
         false if the file can't be read. */
     bool loadAudioFileForTrack(int index, const juce::File& file, double clipStartBeats);
 
+    /** Repositions a track's already-loaded audio clip without re-decoding it. */
+    void setTrackAudioClipStartBeats(int index, double beats);
+
     // ---- multi-track control (message thread) ----
     int  maxTracks() const noexcept { return kMaxTracks; }
     void setActiveTrackCount(int count);

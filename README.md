@@ -41,12 +41,14 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > the exact same per-track gain/mute/solo/send pipeline synth content already goes through, with the
 > same clip-start gating as MIDI clips (silent until its start beat, no looping — audio clips are
 > one-shots, unlike patterns). Verified by the bounce tool: a decoded clip plays back non-silently,
-> −6 dB halves its amplitude, and it's silent before its start beat and sounding after. There's no UI
-> yet to get an audio file onto a track this way (recording, or an "Import Audio to Track" action, are
-> both natural next steps that now have a real foundation to land on) — this turn was the engine half.
-> Deferred to validate live: audio recording (needs a real input device), disk streaming. Next:
-> record/import-to-track UI, more automation targets, more send-bus effect types. See the full roadmap
-> in [`docs/PLAN.md`](docs/PLAN.md).
+> −6 dB halves its amplitude, and it's silent before its start beat and sounding after. That capability
+> now has a UI too: **File > Import Audio to Track...** decodes a file onto a brand-new Audio track as
+> its one clip, so — unlike the older "Import Audio..." preview, which only ever fed a single
+> disconnected global player — it actually plays back as part of the mix, with its own gain/mute/solo/
+> send on its mixer strip like any other track. Deferred to validate live: audio recording (needs a
+> real input device), disk streaming. Next: microphone recording (the engine foundation is now in
+> place), more automation targets, more send-bus effect types. See the full roadmap in
+> [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

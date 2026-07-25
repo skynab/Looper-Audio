@@ -383,6 +383,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(3, "Save Project...");
         menu.addSeparator();
         menu.addItem(4, "Import Audio...");
+        menu.addItem(7, "Import Audio to Track...");
         menu.addItem(5, "Bounce to WAV...");
         menu.addSeparator();
         menu.addItem(6, "Audio Settings...");
@@ -405,9 +406,10 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 1:  newProject(); break;
         case 2:  openProject(); break;
         case 3:  saveProject(); break;
-        case 4:  chooseFile(); break; // import audio
+        case 4:  chooseFile(); break; // import audio (preview player)
         case 5:  bounceProject(); break;
         case 6:  showAudioSettings(); break;
+        case 7:  importAudioToNewTrack(); break;
         case 10: history_.undo(); refreshFromModel(); break;
         case 11: history_.redo(); refreshFromModel(); break;
         case 12: pianoRoll_.clear(); break;
@@ -584,6 +586,36 @@ void MainComponent::syncEngineTracks()
         }
         engine_.setTrackClips(i, slots);
 
+        // Audio clip -> the track's own audio-clip player. Only the first
+        // audio-type clip on a track is used (one audio clip per track, v1 —
+        // matches "Import Audio to Track", the only way to create one today).
+        std::string audioFile;
+        double      audioStartBeats = 0.0;
+        for (const auto& clip : track.clips)
+        {
+            if (clip.type == model::ClipType::Audio && ! clip.audioFile.empty())
+            {
+                audioFile       = clip.audioFile;
+                audioStartBeats = clip.startBeats;
+                break;
+            }
+        }
+        if (! audioFile.empty())
+        {
+            if (audioFile != loadedTrackAudioFile_[(size_t) i])
+            {
+                // Path changed (or first load): decode it. Expensive, so only
+                // done when necessary, not on every document edit.
+                loadedTrackAudioFile_[(size_t) i] = audioFile;
+                engine_.loadAudioFileForTrack(i, juce::File(audioFile), audioStartBeats);
+            }
+            else
+            {
+                // Same file already decoded — just reposition it (e.g. after a drag).
+                engine_.setTrackAudioClipStartBeats(i, audioStartBeats);
+            }
+        }
+
         engine_.setTrackMuted(i, track.muted);
         engine_.setTrackSolo(i, track.solo);
         engine_.setTrackGainDb(i, track.gainDb);
@@ -613,7 +645,13 @@ void MainComponent::updateEditingLabel()
 
     juce::String text = "Editing: " + name;
     if (! track.clips.empty())
+    {
         text << "   |   Clip " << (selectedClipIndex_ + 1) << " of " << (int) track.clips.size();
+
+        if (selectedClipIndex_ >= 0 && selectedClipIndex_ < (int) track.clips.size()
+            && track.clips[(size_t) selectedClipIndex_].type == model::ClipType::Audio)
+            text << "  (audio clip — not MIDI-editable)";
+    }
     editingLabel_.setText(text, juce::dontSendNotification);
 }
 
@@ -819,6 +857,62 @@ void MainComponent::chooseFile()
                               juce::dontSendNotification);
         else
             clipLabel.setText("Could not load: " + file.getFileName(), juce::dontSendNotification);
+    });
+}
+
+/** Imports an audio file onto a brand-new Audio track (as its one clip, at
+    beat 0), so it actually plays back as part of the mix — unlike "Import
+    Audio..." above, which only feeds the disconnected global preview player. */
+void MainComponent::importAudioToNewTrack()
+{
+    if (trackCount() >= engine_.maxTracks())
+    {
+        clipLabel.setText("Track limit reached", juce::dontSendNotification);
+        return;
+    }
+
+    chooser_ = std::make_unique<juce::FileChooser>("Import audio to a new track", juce::File{},
+                                                   "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3");
+    const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+
+    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    {
+        const auto file = fc.getResult();
+        if (file == juce::File{})
+            return;
+
+        const auto path = file.getFullPathName().toStdString();
+        int        newTrackIndex = -1;
+
+        history_.edit("Import audio track", [&path, &newTrackIndex](model::Song& s)
+        {
+            const auto name = "Audio " + juce::String((int) s.tracks.size() + 1);
+            model::addTrack(s, model::TrackType::Audio, name.toStdString());
+
+            model::Clip clip;
+            clip.id          = model::allocateId(s);
+            clip.type        = model::ClipType::Audio;
+            clip.startBeats  = 0.0;
+            clip.lengthBeats = 4.0; // display size only; audio clips don't loop/gate on length yet
+            clip.audioFile   = path;
+            s.tracks.back().clips.push_back(clip);
+
+            newTrackIndex = (int) s.tracks.size() - 1;
+        });
+
+        if (newTrackIndex < 0)
+            return;
+
+        selectedTrackIndex_ = newTrackIndex;
+        selectedClipIndex_  = 0;
+        syncEngineTracks();
+        engine_.setArmedTrack(selectedTrackIndex_);
+        refreshPianoRollForSelected();
+        arrangementView_.setSong(history_.current());
+        arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+        updateMixerStrips();
+        updateEditingLabel();
+        clipLabel.setText("Imported: " + file.getFileName() + "  (new track)", juce::dontSendNotification);
     });
 }
 
