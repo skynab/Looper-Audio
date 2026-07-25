@@ -5,6 +5,7 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include "engine/AudioFilePlayerNode.h"
 #include "engine/ProcessContext.h"
 #include "engine/Sequencer.h"
 #include "engine/SynthInstrumentNode.h"
@@ -12,8 +13,13 @@
 namespace looper::engine
 {
 /**
-    One instrument track: a synth driven by its own sequencer, with a per-track
-    gain, mute, solo, pre-fader send, and post-gain peak metering.
+    One mixer channel: a synth driven by its own sequencer, *and* an audio-clip
+    player, both summed into the same per-track gain, mute, solo, pre-fader
+    send, and post-gain peak metering. A track only uses whichever of the two
+    it's been given content for — an Instrument-type track gets a pattern, an
+    Audio-type track gets a decoded clip via audioPlayer — but both paths always
+    exist on every pool slot, so there's no track-type branching in the engine
+    itself.
 
     Tracks live in a fixed, pre-allocated pool inside the engine, so
     activating/deactivating a track is just an atomic flag — there is no real-time
@@ -36,6 +42,7 @@ struct InstrumentTrack
 {
     SynthInstrumentNode      synth;
     Sequencer                sequencer;
+    AudioFilePlayerNode      audioPlayer;
     std::atomic<bool>        active     { false };
     std::atomic<bool>        muted      { false };
     std::atomic<bool>        solo       { false };
@@ -48,6 +55,7 @@ struct InstrumentTrack
     void prepare(double sampleRate, int blockSize)
     {
         synth.prepare(sampleRate, blockSize);
+        audioPlayer.prepare(sampleRate, blockSize);
         trackMidi.ensureSize(2048);
         scratch.setSize(2, juce::jmax(1, blockSize));
     }
@@ -88,6 +96,7 @@ struct InstrumentTrack
         scratch.setSize(2, juce::jmax(1, numSamples), false, false, true);
         scratch.clear();
         synth.process(scratch, trackMidi, context);
+        audioPlayer.process(scratch, trackMidi, context); // adds in; midi is ignored
 
         const float gain     = juce::Decibels::decibelsToGain(gainDb.load(std::memory_order_relaxed));
         const float send     = sendLevel.load(std::memory_order_relaxed);

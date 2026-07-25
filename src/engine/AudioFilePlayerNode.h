@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+
 #include "engine/ClipData.h"
 #include "engine/Interpolation.h"
 #include "engine/Node.h"
@@ -8,12 +10,12 @@
 namespace looper::engine
 {
 /**
-    Plays an in-RAM audio clip, slaved to the transport.
-
-    The clip sits at timeline position 0, so its read position is derived from the
-    transport playhead every block — which makes seeking and looping follow for
-    free. File/device sample-rate differences are corrected with linear
-    interpolation.
+    Plays an in-RAM audio clip, slaved to the transport, starting at a given
+    clip-start offset (in beats) on the timeline — the same "delays when it
+    begins" gating Sequencer applies to MIDI clips. Playback does not loop: once
+    the file's samples run out it stays silent (the usual behaviour for a
+    one-shot audio clip, unlike a looping MIDI pattern). File/device sample-rate
+    differences are corrected with linear interpolation.
 
     Clip hand-off is lock-free and allocation-free on the audio thread:
       - message thread decodes a file into a ClipData and submits the pointer,
@@ -44,6 +46,8 @@ public:
             delete clip;
     }
 
+    void setClipStartBeats(double beats) { clipStartBeats_.store(beats, std::memory_order_relaxed); }
+
     /** Frees clips the audio thread has retired. Call periodically from the message thread. */
     void collectRetiredClips()
     {
@@ -63,7 +67,8 @@ public:
             current_ = incoming;
         }
 
-        if (current_ == nullptr || ! context.transport.playing || deviceSampleRate_ <= 0.0)
+        if (current_ == nullptr || ! context.transport.playing || deviceSampleRate_ <= 0.0
+            || context.transport.bpm <= 0.0)
             return;
 
         const double ratio      = current_->sourceSampleRate > 0.0
@@ -74,7 +79,17 @@ public:
         const int    outChans   = buffer.getNumChannels();
         const int    numSamples = buffer.getNumSamples();
 
-        double position = (double) context.transport.playheadSamples * ratio;
+        // Gate on the clip's start beat, exactly like Sequencer's clip-start
+        // gating: silent until the transport reaches it, in device-sample
+        // terms, then converted to a file-local (possibly resampled) position.
+        const double samplesPerBeat        = context.sampleRate * 60.0 / context.transport.bpm;
+        const double clipStartDeviceSample = clipStartBeats_.load(std::memory_order_relaxed) * samplesPerBeat;
+        const double localDeviceSample     = (double) context.transport.playheadSamples - clipStartDeviceSample;
+
+        if (localDeviceSample + (double) numSamples <= 0.0)
+            return; // the whole block is before this clip starts
+
+        double position = localDeviceSample * ratio;
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -95,6 +110,7 @@ public:
 private:
     double    deviceSampleRate_ = 0.0;
     ClipData* current_          = nullptr;      // audio-thread owned
+    std::atomic<double> clipStartBeats_ { 0.0 };
 
     rt::SpscRingBuffer<ClipData*> inbox_   { 16 }; // message -> audio
     rt::SpscRingBuffer<ClipData*> reclaim_ { 32 }; // audio -> message

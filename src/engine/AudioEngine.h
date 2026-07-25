@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <juce_audio_devices/juce_audio_devices.h>
@@ -45,8 +46,14 @@ public:
 
     void postCommand(const EngineCommand& command) noexcept { commandQueue_.push(command); }
 
-    /** Decode an audio file into RAM and hand it to the file-player node. Message thread. */
+    /** Decode an audio file into RAM and hand it to the global preview player
+        (used by the File > Import Audio quick-preview). Message thread. */
     bool loadAudioFile(const juce::File& file);
+
+    /** Decode an audio file into RAM and hand it to a track's own audio-clip
+        player, starting at the given clip-start beat. Message thread. Returns
+        false if the file can't be read. */
+    bool loadAudioFileForTrack(int index, const juce::File& file, double clipStartBeats);
 
     // ---- multi-track control (message thread) ----
     int  maxTracks() const noexcept { return kMaxTracks; }
@@ -116,6 +123,8 @@ public:
 
 private:
     void drainCommandQueue() noexcept;
+    /** Decodes @p file fully into RAM. Returns nullptr if it can't be read. Message thread. */
+    std::unique_ptr<ClipData> decodeAudioFile(const juce::File& file);
 
     juce::AudioDeviceManager          deviceManager_;
     juce::AudioFormatManager          formatManager_;

@@ -32,9 +32,21 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > clip to the selected track (positioned after the last one); clicking any clip in the timeline both
 > arms its track and opens that specific clip in the piano roll (highlighted in the timeline, and named
 > in a header above the piano roll — "Editing: Track X | Clip N of M" — so it's always clear which
-> clip you're editing). Deferred to validate live: audio recording, disk streaming. Next: more
-> automation targets, more send-bus effect types, clip renaming/deleting. See the full roadmap in
-> [`docs/PLAN.md`](docs/PLAN.md).
+> clip you're editing).
+>
+> While scoping audio **recording**, found and fixed another silent gap of the same shape: the
+> document model has supported `TrackType::Audio` tracks with a `Clip.audioFile` since Phase 3a, but
+> the engine only ever played back the single globally-loaded preview file ("Import Audio...") —
+> per-track audio clips did nothing. Every pool slot now also owns an audio-clip player, summed into
+> the exact same per-track gain/mute/solo/send pipeline synth content already goes through, with the
+> same clip-start gating as MIDI clips (silent until its start beat, no looping — audio clips are
+> one-shots, unlike patterns). Verified by the bounce tool: a decoded clip plays back non-silently,
+> −6 dB halves its amplitude, and it's silent before its start beat and sounding after. There's no UI
+> yet to get an audio file onto a track this way (recording, or an "Import Audio to Track" action, are
+> both natural next steps that now have a real foundation to land on) — this turn was the engine half.
+> Deferred to validate live: audio recording (needs a real input device), disk streaming. Next:
+> record/import-to-track UI, more automation targets, more send-bus effect types. See the full roadmap
+> in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

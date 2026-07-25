@@ -37,16 +37,16 @@ void AudioEngine::handleIncomingMidiMessage(juce::MidiInput* /*source*/, const j
     midiCollector_.addMessageToQueue(message);
 }
 
-bool AudioEngine::loadAudioFile(const juce::File& file)
+std::unique_ptr<ClipData> AudioEngine::decodeAudioFile(const juce::File& file)
 {
     std::unique_ptr<juce::AudioFormatReader> reader(formatManager_.createReaderFor(file));
     if (reader == nullptr)
-        return false;
+        return nullptr;
 
     const int length = (int) juce::jmin<juce::int64>(reader->lengthInSamples,
                                                      (juce::int64) std::numeric_limits<int>::max());
     if (length <= 0)
-        return false;
+        return nullptr;
 
     const int numChannels = juce::jmax(1, (int) reader->numChannels);
 
@@ -56,12 +56,36 @@ bool AudioEngine::loadAudioFile(const juce::File& file)
     clip->sourceSampleRate = reader->sampleRate;
     clip->numChannels      = numChannels;
     clip->lengthSamples    = length;
+    return clip;
+}
+
+bool AudioEngine::loadAudioFile(const juce::File& file)
+{
+    auto clip = decodeAudioFile(file);
+    if (clip == nullptr)
+        return false;
 
     loadedClipName_    = file.getFileName();
-    loadedClipSeconds_ = reader->sampleRate > 0.0 ? (double) length / reader->sampleRate : 0.0;
+    loadedClipSeconds_ = clip->sourceSampleRate > 0.0 ? (double) clip->lengthSamples / clip->sourceSampleRate : 0.0;
 
     filePlayer_.collectRetiredClips();
     filePlayer_.submitClip(clip.release());
+    return true;
+}
+
+bool AudioEngine::loadAudioFileForTrack(int index, const juce::File& file, double clipStartBeats)
+{
+    if (index < 0 || index >= kMaxTracks)
+        return false;
+
+    auto clip = decodeAudioFile(file);
+    if (clip == nullptr)
+        return false;
+
+    auto& track = tracks_[(size_t) index];
+    track.audioPlayer.setClipStartBeats(clipStartBeats);
+    track.audioPlayer.collectRetiredClips();
+    track.audioPlayer.submitClip(clip.release());
     return true;
 }
 
@@ -110,7 +134,10 @@ void AudioEngine::setArmedTrack(int index)
 void AudioEngine::pump() noexcept
 {
     for (auto& track : tracks_)
+    {
         track.sequencer.collectRetired();
+        track.audioPlayer.collectRetiredClips();
+    }
 
     filePlayer_.collectRetiredClips();
 }

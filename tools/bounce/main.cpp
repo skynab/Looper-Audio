@@ -3,6 +3,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/ClipData.h"
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
 #include "engine/FilterEffect.h"
@@ -93,6 +94,39 @@ int main(int argc, char** argv)
     const float rmsTail       = multiClip.getRMSLevel(0, 11 * halfSec, 1 * halfSec); // 5.5-6s: late in the tail
     const bool  multiClipGates = rmsClipA > 0.01f && rmsGap < 1.0e-5f
                               && rmsClipB > 0.01f && rmsTail < 1.0e-5f;
+
+    // Audio-clip-track check: a decoded audio clip (a plain 440 Hz tone, no
+    // synth involved) must play back through a track's audioPlayer, going
+    // through the exact same gain pipeline as synth content, with the same
+    // clip-start gating. This is the first time a per-track audio clip is
+    // actually audible — previously TrackType::Audio tracks were silently inert.
+    ClipData sineClip;
+    {
+        const int n = (int) (2.0 * sampleRate); // 2-second tone
+        sineClip.audio.setSize(1, n);
+        sineClip.sourceSampleRate = sampleRate;
+        sineClip.numChannels      = 1;
+        sineClip.lengthSamples    = n;
+        float* data = sineClip.audio.getWritePointer(0);
+        for (int i = 0; i < n; ++i)
+            data[i] = 0.5f * (float) std::sin(2.0 * juce::MathConstants<double>::pi * 440.0 * i / sampleRate);
+    }
+
+    const auto  audioFull       = OfflineRenderer::renderAudioClip(sineClip, 0.0, 0.0f, bpm, sampleRate, 4.0);
+    const auto  audioQuiet      = OfflineRenderer::renderAudioClip(sineClip, 0.0, -6.0f, bpm, sampleRate, 4.0);
+    const float rmsAudioFull    = audioFull.getRMSLevel(0, 0, audioFull.getNumSamples());
+    const float rmsAudioQuiet   = audioQuiet.getRMSLevel(0, 0, audioQuiet.getNumSamples());
+    const float audioGainRatio  = rmsAudioFull > 0.0f ? rmsAudioQuiet / rmsAudioFull : 0.0f;
+
+    // Same clip, started 2 beats in (1s at 120bpm): silent before, sounding after.
+    const auto  audioDelayed        = OfflineRenderer::renderAudioClip(sineClip, 2.0, 0.0f, bpm, sampleRate, 4.0);
+    const float rmsBeforeAudioStart = audioDelayed.getRMSLevel(0, 0, oneSecondSamples);
+    const float rmsAfterAudioStart  = audioDelayed.getRMSLevel(0, oneSecondSamples,
+                                                               audioDelayed.getNumSamples() - oneSecondSamples);
+
+    const bool audioTrackWorks = rmsAudioFull > 0.01f
+                              && audioGainRatio > 0.47f && audioGainRatio < 0.53f
+                              && rmsBeforeAudioStart < 1.0e-5f && rmsAfterAudioStart > 0.01f;
 
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
@@ -189,17 +223,20 @@ int main(int argc, char** argv)
               << "  soloMatchesArpOnly=" << (soloMatchesArpOnly ? 1 : 0)
               << "  clipStartGates=" << (clipStartGates ? 1 : 0)
               << "  sendBusChanged=" << (sendBusChanged ? 1 : 0)
-              << "  multiClipGates=" << (multiClipGates ? 1 : 0) << "\n";
+              << "  multiClipGates=" << (multiClipGates ? 1 : 0)
+              << "  audioTrackWorks=" << (audioTrackWorks ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
     // signal, a low-pass that attenuates, a reverb that changes the signal, a
     // gain ramp that fades in, solo correctly silencing the other track, a clip
-    // start that gates playback, a send bus that changes the output, and two
-    // clips on one track each sounding only in their own window together
-    // confirm the full render/gain/fx/automation/solo/clip/send-bus path.
+    // start that gates playback, a send bus that changes the output, two clips
+    // on one track each sounding only in their own window, and a decoded audio
+    // clip playing back through a track (with gain + clip-start gating) together
+    // confirm the full render/gain/fx/automation/solo/clip/send-bus/audio path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
-                 && soloMatchesArpOnly && clipStartGates && sendBusChanged && multiClipGates;
+                 && soloMatchesArpOnly && clipStartGates && sendBusChanged && multiClipGates
+                 && audioTrackWorks;
     return ok ? 0 : 2;
 }

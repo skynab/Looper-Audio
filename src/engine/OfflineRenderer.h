@@ -7,6 +7,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/ClipData.h"
 #include "engine/ClipSlot.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/Pattern.h"
@@ -182,6 +183,55 @@ public:
         InstrumentTrack track;
         track.prepare(sampleRate, blockSize);
         track.sequencer.submitClips(new std::vector<ClipSlot>(clips));
+
+        juce::AudioBuffer<float> block(2, blockSize);
+        juce::AudioBuffer<float> sendBus(2, blockSize);
+        juce::MidiBuffer         noLiveMidi;
+
+        int64_t playhead = 0;
+        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        {
+            const int n = std::min(blockSize, totalSamples - pos);
+            block.setSize(2, n, false, false, true);
+            block.clear();
+            sendBus.setSize(2, n, false, false, true);
+            sendBus.clear();
+
+            ProcessContext ctx;
+            ctx.sampleRate                = sampleRate;
+            ctx.numSamples                = n;
+            ctx.transport.playing         = true;
+            ctx.transport.playheadSamples = playhead;
+            ctx.transport.bpm             = bpm;
+
+            track.render(block, sendBus, noLiveMidi, ctx, false, false);
+
+            for (int ch = 0; ch < 2; ++ch)
+                output.copyFrom(ch, pos, block, ch, 0, n);
+
+            playhead += n;
+        }
+
+        return output;
+    }
+
+    /** Renders a single track's audio-clip player alone (bypassing patterns) at
+        the given gain and clip-start offset — for verifying that a decoded
+        audio clip plays back through the exact same per-track gain/send/peak
+        pipeline as synth content, with the same clip-start gating. */
+    static juce::AudioBuffer<float> renderAudioClip(const ClipData& clipData, double clipStartBeats,
+                                                    float gainDb, double bpm, double sampleRate,
+                                                    double numSeconds, int blockSize = 512)
+    {
+        const int totalSamples = (int) std::ceil(numSeconds * sampleRate);
+        juce::AudioBuffer<float> output(2, std::max(1, totalSamples));
+        output.clear();
+
+        InstrumentTrack track;
+        track.prepare(sampleRate, blockSize);
+        track.gainDb.store(gainDb);
+        track.audioPlayer.setClipStartBeats(clipStartBeats);
+        track.audioPlayer.submitClip(new ClipData(clipData));
 
         juce::AudioBuffer<float> block(2, blockSize);
         juce::AudioBuffer<float> sendBus(2, blockSize);
