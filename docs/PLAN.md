@@ -314,6 +314,68 @@ audio→UI FIFO for live meters/playhead).
 - Plan for **accessibility** (JUCE accessibility API), theming/scaling (HiDPI), and full keyboard
   control early — retrofitting these is painful.
 
+### Dockable workspace (implemented)
+
+The original shell was a fixed layout: a transport sidebar plus a single `juce::TabbedComponent`
+holding Arrange/Edit/Mixer as three tabs — only one of which could ever be visible, which made it
+impossible to watch levels on the mixer while editing the arrangement. Three designs were
+considered:
+
+- **(A) Full custom drag-anywhere docking** (VS Code / Qt Advanced Docking System style) — most
+  capable (arbitrary floating windows, live drop-zone previews, recursive splitting), but a large
+  standalone engineering effort with real visual-polish risk.
+- **(B) Generalize the existing split into an N-way region layout**, each region a tab group panels
+  can be dragged between — chosen. Satisfies "use arrangement and mixer at once" with much less
+  risk and no new dependency; the region layout is itself the foundation a fuller system (A) could
+  later add floating/recursive-splitting on top of.
+- **(C) A third-party JUCE docking library** — rejected for now; would need explicit sign-off given
+  this project's existing licensing-budget discipline (§3) around new dependencies.
+
+**What was built:** `src/app/DockRegion.h` — a self-contained tab-group component (custom
+paint/mouse handling, not a `TabbedComponent` subclass, to keep full control of the drag gesture).
+`MainComponent`'s workspace is now `leftPane_` (transport, unchanged) plus **two** `DockRegion`s
+side by side, separated by draggable dividers (`juce::StretchableLayoutManager`, now 5 items).
+Default layout: Arrange + Edit share region A, Mixer owns region B. Dragging a tab header onto the
+other region (`DragAndDropContainer`/`DragAndDropTarget`) moves that panel there via
+`MainComponent::movePanelBetweenRegions`. Layout is in-memory only — it resets to the default split
+on restart; persisting the user's chosen arrangement is a natural follow-up, not yet done.
+
+Verification: pure UI-shell change, zero engine/model impact — all unit tests and the bounce tool's
+full check suite (including the `rmsDry=0.149266` regression sentinel) are unchanged. The actual
+drag gesture and visual layout could not be verified headlessly and need a live try.
+
+### File-management pane (planned, not yet built)
+
+A left-side panel to browse and drag audio files (.wav and others) into the arrangement, docking
+into the same system above (it would be a third panel/region, or share a region via drag like any
+other panel).
+
+- **Browsing:** JUCE's built-in `juce::FileTreeComponent` (backed by `DirectoryContentsList` +
+  `TimeSliceThread`), filtered to audio extensions, rather than a custom file tree. A "Places"
+  quick-access list (default-bookmarking `~/Documents/Looper-Audio Recordings/`, the folder the
+  recording feature already creates) alongside raw filesystem browsing.
+- **Drag-out:** the browser becomes a `DragAndDropContainer` source (`startDragging()` with the file
+  path); `ArrangementView` gains `juce::DragAndDropTarget` (`isInterestedInDragSource` /
+  `itemDragEnter/Move/Exit` / `itemDropped`), reusing the existing `TimelineGeometry::beatForX` and
+  lane hit-testing (already in `findClipAt`) to compute the drop's target track + beat.
+- **Backend — no new engine work:** dropping a file calls the already-proven
+  `AudioEngine::loadAudioFileForTrack(int index, const juce::File&, double clipStartBeats)` plus the
+  same `history_.edit(...)` pattern `MainComponent::importAudioToNewTrack()` already uses. The
+  browser is a new front door onto existing, verified machinery.
+- **Preview/audition:** reuse the existing global preview player path (double-click → `engine_.loadAudioFile(file)`).
+- **Open format-scope question:** `juce::AudioFormatManager::registerBasicFormats()` covers
+  WAV/AIFF/FLAC/OGG/(platform-dependent MP3); on Apple platforms JUCE also registers
+  `CoreAudioFormat`, which likely already decodes audio-only `.m4a`/AAC via the OS's own codecs —
+  so audio-only M4A may work with zero extra code on macOS. Genuine **`.mp4` video** files
+  (video+audio muxed) need a demuxer to pull out the audio track, which `juce_audio_formats` alone
+  does not reliably provide — that needs platform-specific code (AVFoundation/`AVAssetReader` on
+  Apple) or a new dependency (e.g. FFmpeg) for cross-platform support. Default plan: support what
+  JUCE's formats already decode (audio containers, including audio-only M4A where the OS provides
+  it); treat true video-file audio extraction as an explicitly separate, harder follow-up unless
+  told otherwise.
+- Additive only — does not replace the existing **File > Import Audio to Track...** or
+  **File > Import Audio...** menu flows.
+
 ---
 
 ## 9. Built-in instruments & effects

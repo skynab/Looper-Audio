@@ -68,8 +68,21 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > deliberately deferred** (doing it right means rendering each track in isolation before the shared
 > send bus sums them, a bigger change than this pass warranted) — exporting a track with automation
 > currently uses its static gain, a safe fallback rather than wrong audio. Deferred to validate live:
-> recording itself, disk streaming. Next: sample-accurate per-track automation export, more send-bus
-> effect types, multi-clip audio tracks. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> recording itself, disk streaming.
+>
+> The app shell now has a real **dockable workspace** instead of a single fixed tab strip: the
+> right-hand area is two independent `DockRegion`s side by side (Arrange + Edit sharing one, Mixer in
+> its own), each a self-contained tab group with its own click-to-select and drag-a-tab-header-onto-
+> the-other-region-to-move-it behaviour (`src/app/DockRegion.h`), wired up by
+> `MainComponent::movePanelBetweenRegions`. Out of the box this means arrangement and mixer tools are
+> visible **at the same time** — the concrete complaint that motivated this — and any of the three
+> panels can be dragged into whichever region you'd rather have it in. This is a pure UI-shell
+> refactor (zero engine/model changes): all 50 unit tests pass unchanged and the bounce tool's full
+> check suite, including the `rmsDry=0.149266` regression sentinel, is bit-for-bit identical. What
+> can't be verified headlessly: the actual drag gesture and visual layout — try dragging a tab header
+> from one region onto the other. A **file-management pane** (browse/import audio, drag into the
+> arrangement) is planned as the next panel to plug into this same docking system; see
+> [`docs/PLAN.md`](docs/PLAN.md) for both plans in full.
 
 ## Tech stack
 

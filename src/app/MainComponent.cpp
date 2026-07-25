@@ -16,14 +16,30 @@ MainComponent::MainComponent()
     menuBar_.setModel(this);
     addAndMakeVisible(menuBar_);
 
-    // Two-pane workspace: a controls sidebar (left) and arrange/edit/mixer +
-    // keyboard (right), separated by a draggable divider.
+    // Dockable workspace: a transport sidebar, then two tab-group regions
+    // side by side, each separated by a draggable divider. Panels start out
+    // split across the two regions (see below) so arrangement and mixer
+    // tools are visible at the same time; dragging a tab onto the other
+    // region moves that panel there.
     addAndMakeVisible(leftPane_);
     addAndMakeVisible(paneResizer_);
-    addAndMakeVisible(rightPane_);
+    addAndMakeVisible(dockRegionA_);
+    addAndMakeVisible(paneResizer2_);
+    addAndMakeVisible(dockRegionB_);
     paneLayout_.setItemLayout(0, 220, 380, 260);   // left pane (transport): min/max/preferred
     paneLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed width
-    paneLayout_.setItemLayout(2, 400, -1.0, -1.0); // right pane (arrange/edit/mixer): takes the rest
+    paneLayout_.setItemLayout(2, 400, -1.0, -1.0); // dock region A (Arrange/Edit): flexible
+    paneLayout_.setItemLayout(3, 8, 8, 8);         // divider: fixed width
+    paneLayout_.setItemLayout(4, 260, 520, 340);   // dock region B (Mixer): min/max/preferred
+
+    dockRegionA_.onForeignPanelDropped = [this](const juce::String& name, DockRegion& target)
+    {
+        movePanelBetweenRegions(name, target);
+    };
+    dockRegionB_.onForeignPanelDropped = [this](const juce::String& name, DockRegion& target)
+    {
+        movePanelBetweenRegions(name, target);
+    };
 
     // ---- document: one instrument track holding the piano-roll pattern ----
     {
@@ -348,14 +364,15 @@ MainComponent::MainComponent()
         syncEngineTracks(); // pushes every track's whole clip list, including this move
     };
 
-    const auto tabBg = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
-    tabs_.addTab("Arrange", tabBg, &arrangeTab_, false);
-    tabs_.addTab("Edit", tabBg, &editTab_, false);
-    tabs_.addTab("Mixer", tabBg, &mixerView_, false);
-    tabs_.setCurrentTabIndex(1); // start on the note editor
-    rightPane_.addAndMakeVisible(tabs_);
+    // Default docking layout: Arrange + Edit share region A, Mixer gets its
+    // own region B — so mixer and arrangement tools are visible at once out
+    // of the box. Drag either tab's header onto the other region to move it.
+    dockRegionA_.addPanel("Arrange", arrangeTab_);
+    dockRegionA_.addPanel("Edit", editTab_);
+    dockRegionA_.showPanel("Edit"); // start on the note editor
+    dockRegionB_.addPanel("Mixer", mixerView_);
 
-    rightPane_.addAndMakeVisible(keyboard_);
+    addAndMakeVisible(keyboard_);
 
     // Mirror the initial document into the engine + UI.
     syncEngineTracks();
@@ -1275,14 +1292,16 @@ void MainComponent::resized()
     auto full = getLocalBounds();
     menuBar_.setBounds(full.removeFromTop(24));
 
-    juce::Component* panes[] = { &leftPane_, &paneResizer_, &rightPane_ };
-    paneLayout_.layOutComponents(panes, 3, full.getX(), full.getY(),
+    keyboard_.setBounds(full.removeFromBottom(64));
+    full.removeFromBottom(10);
+
+    juce::Component* panes[] = { &leftPane_, &paneResizer_, &dockRegionA_, &paneResizer2_, &dockRegionB_ };
+    paneLayout_.layOutComponents(panes, 5, full.getX(), full.getY(),
                                  full.getWidth(), full.getHeight(),
                                  false,  // side-by-side, not stacked
                                  true);  // and stretch each to the full height
 
     layoutLeftPane();
-    layoutRightPane();
 }
 
 void MainComponent::layoutLeftPane()
@@ -1306,14 +1325,21 @@ void MainComponent::layoutLeftPane()
     tempoSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
 }
 
-void MainComponent::layoutRightPane()
+void MainComponent::movePanelBetweenRegions(const juce::String& panelName, DockRegion& target)
 {
-    auto area = rightPane_.getLocalBounds();
+    DockRegion& source = dockRegionA_.hasPanel(panelName) ? dockRegionA_ : dockRegionB_;
+    if (&source == &target)
+        return;
 
-    keyboard_.setBounds(area.removeFromBottom(64));
-    area.removeFromBottom(10);
+    juce::Component* content = nullptr;
+    if (panelName == "Arrange")     content = &arrangeTab_;
+    else if (panelName == "Edit")   content = &editTab_;
+    else if (panelName == "Mixer")  content = &mixerView_;
+    if (content == nullptr)
+        return;
 
-    tabs_.setBounds(area);
+    source.removePanel(panelName);
+    target.addPanel(panelName, *content);
 }
 
 void MainComponent::layoutArrangeTab()

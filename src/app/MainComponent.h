@@ -12,6 +12,7 @@
 #include "model/Song.h"
 
 #include "ArrangementView.h"
+#include "DockRegion.h"
 #include "LevelMeter.h"
 #include "MixerStrip.h"
 #include "PianoRoll.h"
@@ -41,7 +42,8 @@ public:
 class MainComponent final : public juce::Component,
                             private juce::Timer,
                             private juce::ChangeListener,
-                            private juce::MenuBarModel
+                            private juce::MenuBarModel,
+                            public juce::DragAndDropContainer
 {
 public:
     MainComponent();
@@ -94,7 +96,7 @@ private:
     void                   addClipToSelectedTrack();
     void                   updateEditingLabel();
     void                   layoutLeftPane();
-    void                   layoutRightPane();
+    void                   movePanelBetweenRegions(const juce::String& panelName, DockRegion& target);
     void                   layoutMixerView();
     void                   layoutArrangeTab();
     void                   layoutEditTab();
@@ -113,11 +115,16 @@ private:
 
     juce::MenuBarComponent          menuBar_;
 
-    // Resizable two-pane workspace: a controls sidebar and an arrange/edit +
-    // keyboard pane, separated by a draggable divider.
-    juce::Component                 leftPane_, rightPane_;
-    juce::StretchableLayoutManager  paneLayout_;
-    juce::StretchableLayoutResizerBar paneResizer_ { &paneLayout_, 1, true };
+    // Resizable workspace: a transport sidebar, then two dockable regions
+    // (each a tab group) side by side, separated by draggable dividers. Panels
+    // (Arrange, Edit, Mixer) start out split across the two regions so
+    // arrangement and mixer tools are visible at once; dragging a region's tab
+    // header onto the other region moves that panel there.
+    juce::Component                   leftPane_;
+    DockRegion                        dockRegionA_, dockRegionB_;
+    juce::StretchableLayoutManager    paneLayout_;
+    juce::StretchableLayoutResizerBar paneResizer_  { &paneLayout_, 1, true };
+    juce::StretchableLayoutResizerBar paneResizer2_ { &paneLayout_, 3, true };
 
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };
@@ -158,7 +165,6 @@ private:
 
     CallbackComponent                  mixerView_;
     juce::OwnedArray<MixerStrip>       trackStrips_;
-    juce::TabbedComponent              tabs_ { juce::TabbedButtonBar::TabsAtTop };
     std::unique_ptr<juce::FileChooser> chooser_;
 
     engine::TempoMap uiTempoMap_;
