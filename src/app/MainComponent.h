@@ -2,7 +2,6 @@
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
-#include <array>
 #include <memory>
 #include <string>
 
@@ -76,7 +75,7 @@ private:
     void                   bounceProject();
     void                   showAudioSettings();
     void                   importAudioToNewTrack();
-    void                   importAudioFileAtBeat(const juce::File& file, double startBeats);
+    void                   importAudioFileAtBeat(const juce::File& file, double startBeats, int targetTrackIndex = -1);
     void                   previewAudioFile(const juce::File& file);
     void                   toggleRecording();
     void                   finishRecordingIfReady();
@@ -111,10 +110,6 @@ private:
     int                         selectedClipIndex_  = 0;
     bool                        recordAutomation_   = false;
     bool                        awaitingRecordedTake_ = false;
-
-    // Which audio file path is currently decoded into each engine track slot,
-    // so syncEngineTracks() only re-decodes when the path actually changes.
-    std::array<std::string, engine::AudioEngine::kMaxTracks> loadedTrackAudioFile_;
 
     juce::MenuBarComponent          menuBar_;
 

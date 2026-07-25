@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -11,6 +12,7 @@
 
 #include "rt/SpscRingBuffer.h"
 
+#include "engine/AudioClipSlot.h"
 #include "engine/AudioFilePlayerNode.h"
 #include "engine/AudioRecorder.h"
 #include "engine/ClipSlot.h"
@@ -25,6 +27,17 @@
 
 namespace looper::engine
 {
+/** One audio clip to load onto a track: a file plus its
+    [startBeats, startBeats + lengthBeats) window — the AudioEngine-facing
+    equivalent of ClipSlot, taking a file instead of already-decoded data.
+    See AudioEngine::setTrackAudioClips. */
+struct AudioClipSpec
+{
+    juce::File file;
+    double     startBeats  = 0.0;
+    double     lengthBeats = 0.0;
+};
+
 /**
     The headless audio engine. It owns the audio device and is the device
     callback. Instrument tracks live in a fixed pre-allocated pool, so the UI
@@ -51,13 +64,22 @@ public:
         (used by the File > Import Audio quick-preview). Message thread. */
     bool loadAudioFile(const juce::File& file);
 
-    /** Decode an audio file into RAM and hand it to a track's own audio-clip
-        player, starting at the given clip-start beat. Message thread. Returns
-        false if the file can't be read. */
-    bool loadAudioFileForTrack(int index, const juce::File& file, double clipStartBeats);
+    /** Reads just @p file's header to get its duration — cheap (no sample
+        decode), unlike loadAudioFile/setTrackAudioClips. Returns 0.0 if the
+        file can't be read. Used to size a new clip to its actual duration
+        rather than a fixed guess. Message thread. */
+    double probeDurationSeconds(const juce::File& file);
 
-    /** Repositions a track's already-loaded audio clip without re-decoding it. */
-    void setTrackAudioClipStartBeats(int index, double beats);
+    /** Replaces a track's whole audio-clip list, decoding any file not
+        already cached (see decodeOrGetCached — decoded audio is cached by
+        path, so calling this again with the same files, even on other
+        tracks, never re-decodes them). Each clip plays only within its own
+        [startBeats, startBeats + lengthBeats) window, same rule as
+        setTrackClips (MIDI); give a single-clip track an effectively
+        unbounded lengthBeats for the original "plays once from its start, no
+        other gating" behaviour. Message thread. Returns false if any clip's
+        file couldn't be read (the others still load). */
+    bool setTrackAudioClips(int index, const std::vector<AudioClipSpec>& clips);
 
     // ---- recording (message thread) ----
     /** Arms the recorder. Returns false (and arms nothing) if the current
@@ -142,6 +164,11 @@ private:
     void drainCommandQueue() noexcept;
     /** Decodes @p file fully into RAM. Returns nullptr if it can't be read. Message thread. */
     std::unique_ptr<ClipData> decodeAudioFile(const juce::File& file);
+    /** As above, but cached by absolute path — repeated calls (even from
+        different tracks) reuse the same decoded ClipData instead of
+        re-reading the file. Message thread only; the cache is never touched
+        from the audio thread. */
+    std::shared_ptr<ClipData> decodeOrGetCached(const juce::File& file);
 
     juce::AudioDeviceManager          deviceManager_;
     juce::AudioFormatManager          formatManager_;
@@ -173,6 +200,10 @@ private:
 
     juce::String loadedClipName_;
     double       loadedClipSeconds_ = 0.0;
+
+    // Decoded-audio cache, keyed by absolute path (message thread only) — see
+    // decodeOrGetCached.
+    std::map<juce::String, std::shared_ptr<ClipData>> audioDecodeCache_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)
 };

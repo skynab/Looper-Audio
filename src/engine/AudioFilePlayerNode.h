@@ -1,8 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <vector>
 
-#include "engine/ClipData.h"
+#include "engine/AudioClipSlot.h"
 #include "engine/Interpolation.h"
 #include "engine/Node.h"
 #include "rt/SpscRingBuffer.h"
@@ -10,28 +11,36 @@
 namespace looper::engine
 {
 /**
-    Plays an in-RAM audio clip, slaved to the transport, starting at a given
-    clip-start offset (in beats) on the timeline — the same "delays when it
-    begins" gating Sequencer applies to MIDI clips. Playback does not loop: once
-    the file's samples run out it stays silent (the usual behaviour for a
-    one-shot audio clip, unlike a looping MIDI pattern). File/device sample-rate
-    differences are corrected with linear interpolation.
+    Plays a track's audio clips, slaved to the transport: each clip plays only
+    within its own [startBeats, startBeats + lengthBeats) window (silence
+    outside every clip's window), the same clip-list scheduling Sequencer
+    applies to MIDI clips. Unlike a MIDI pattern, a clip never loops within
+    its window — once the file's samples run out it stays silent for the
+    rest of that window. File/device sample-rate differences are corrected
+    with linear interpolation.
 
-    Clip hand-off is lock-free and allocation-free on the audio thread:
-      - message thread decodes a file into a ClipData and submits the pointer,
-      - the audio thread swaps it in and returns the retired clip via a second
-        FIFO for the message thread to delete.
+    Clip-list hand-off is lock-free and allocation-free on the audio thread:
+      - the message thread builds a whole new clip list and submits the
+        pointer (see AudioEngine::setTrackAudioClips, which also caches
+        decoded audio by file path so resubmitting doesn't mean re-decoding),
+      - the audio thread swaps it in and returns the retired list through a
+        second FIFO for the message thread to delete. The audio thread only
+        ever reads a slot's ClipData through a raw pointer (never copies the
+        shared_ptr), so it never touches the refcount — deletion, including
+        of any ClipData a retired list was the last owner of, happens only on
+        the message thread via collectRetiredClips().
 */
 class AudioFilePlayerNode final : public Node
 {
 public:
+    using ClipList = std::vector<AudioClipSlot>;
+
     ~AudioFilePlayerNode() override
     {
-        // Audio is stopped by the time the node is destroyed: safe to free here.
         collectRetiredClips();
         delete current_;
 
-        ClipData* straggler = nullptr;
+        ClipList* straggler = nullptr;
         while (inbox_.pop(straggler))
             delete straggler;
     }
@@ -39,19 +48,27 @@ public:
     void prepare(double sampleRate, int /*maxBlockSize*/) override { deviceSampleRate_ = sampleRate; }
 
     // ---- message thread ----
-    /** Hands ownership of @p clip to the audio thread. Deletes it here if the inbox is full. */
-    void submitClip(ClipData* clip)
+    /** Hands ownership of @p clips (a whole new clip list for this track) to the audio thread. */
+    void submitClips(ClipList* clips)
     {
-        if (! inbox_.push(clip))
-            delete clip;
+        if (! inbox_.push(clips))
+            delete clips;
     }
 
-    void setClipStartBeats(double beats) { clipStartBeats_.store(beats, std::memory_order_relaxed); }
+    /** Convenience for the common single-clip case (e.g. the global preview
+        player, which never needs more than one clip): plays once from
+        @p clipStartBeats with no other window gating. */
+    void submitSingleClip(ClipData* clip, double clipStartBeats = 0.0)
+    {
+        auto* clips = new ClipList();
+        clips->push_back({ std::shared_ptr<ClipData>(clip), clipStartBeats, 1.0e9 });
+        submitClips(clips);
+    }
 
     /** Frees clips the audio thread has retired. Call periodically from the message thread. */
     void collectRetiredClips()
     {
-        ClipData* retired = nullptr;
+        ClipList* retired = nullptr;
         while (reclaim_.pop(retired))
             delete retired;
     }
@@ -59,7 +76,7 @@ public:
     // ---- audio thread ----
     void process(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midi*/, const ProcessContext& context) override
     {
-        ClipData* incoming = nullptr;
+        ClipList* incoming = nullptr;
         while (inbox_.pop(incoming))
         {
             if (current_ != nullptr)
@@ -67,29 +84,50 @@ public:
             current_ = incoming;
         }
 
-        if (current_ == nullptr || ! context.transport.playing || deviceSampleRate_ <= 0.0
-            || context.transport.bpm <= 0.0)
+        if (current_ == nullptr || current_->empty() || ! context.transport.playing
+            || deviceSampleRate_ <= 0.0 || context.transport.bpm <= 0.0)
             return;
 
-        const double ratio      = current_->sourceSampleRate > 0.0
-                                      ? current_->sourceSampleRate / deviceSampleRate_
+        const double  samplesPerBeat = context.sampleRate * 60.0 / context.transport.bpm;
+        const int     numSamples     = context.numSamples;
+        const int64_t playhead       = context.transport.playheadSamples;
+
+        // Find the clip whose window overlaps this block — same
+        // block-granularity selection rule as Sequencer::renderBlock (clips
+        // are expected not to overlap; the first match wins).
+        int    foundIndex = -1;
+        double localStart = 0.0;
+
+        for (int i = 0; i < (int) current_->size(); ++i)
+        {
+            const auto& slot              = (*current_)[(size_t) i];
+            const double clipStartSample  = slot.startBeats * samplesPerBeat;
+            const double clipLengthSample = slot.lengthBeats * samplesPerBeat;
+            const double local            = (double) playhead - clipStartSample;
+
+            if (local + (double) numSamples > 0.0 && local < clipLengthSample)
+            {
+                foundIndex = i;
+                localStart = local;
+                break;
+            }
+        }
+
+        if (foundIndex < 0)
+            return; // between clips, or before/after every clip's window
+
+        const auto* clip = current_->at((size_t) foundIndex).clipData.get();
+        if (clip == nullptr)
+            return;
+
+        const double ratio      = clip->sourceSampleRate > 0.0
+                                      ? clip->sourceSampleRate / deviceSampleRate_
                                       : 1.0;
-        const int    length     = current_->lengthSamples;
-        const int    fileChans  = current_->numChannels;
+        const int    length     = clip->lengthSamples;
+        const int    fileChans  = clip->numChannels;
         const int    outChans   = buffer.getNumChannels();
-        const int    numSamples = buffer.getNumSamples();
 
-        // Gate on the clip's start beat, exactly like Sequencer's clip-start
-        // gating: silent until the transport reaches it, in device-sample
-        // terms, then converted to a file-local (possibly resampled) position.
-        const double samplesPerBeat        = context.sampleRate * 60.0 / context.transport.bpm;
-        const double clipStartDeviceSample = clipStartBeats_.load(std::memory_order_relaxed) * samplesPerBeat;
-        const double localDeviceSample     = (double) context.transport.playheadSamples - clipStartDeviceSample;
-
-        if (localDeviceSample + (double) numSamples <= 0.0)
-            return; // the whole block is before this clip starts
-
-        double position = localDeviceSample * ratio;
+        double position = localStart * ratio;
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -98,7 +136,7 @@ public:
                 for (int ch = 0; ch < outChans; ++ch)
                 {
                     const int    srcCh  = juce::jmin(ch, fileChans - 1);
-                    const float* srcPtr = current_->audio.getReadPointer(srcCh);
+                    const float* srcPtr = clip->audio.getReadPointer(srcCh);
                     buffer.getWritePointer(ch)[i] += sampleLinear(srcPtr, length, position);
                 }
             }
@@ -109,11 +147,10 @@ public:
 
 private:
     double    deviceSampleRate_ = 0.0;
-    ClipData* current_          = nullptr;      // audio-thread owned
-    std::atomic<double> clipStartBeats_ { 0.0 };
+    ClipList* current_          = nullptr; // audio-thread owned
 
-    rt::SpscRingBuffer<ClipData*> inbox_   { 16 }; // message -> audio
-    rt::SpscRingBuffer<ClipData*> reclaim_ { 32 }; // audio -> message
+    rt::SpscRingBuffer<ClipList*> inbox_   { 16 }; // message -> audio
+    rt::SpscRingBuffer<ClipList*> reclaim_ { 32 }; // audio -> message
 };
 
 } // namespace looper::engine

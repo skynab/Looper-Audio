@@ -30,8 +30,9 @@ namespace looper
     (identified by sourceComponent being a juce::FileTreeComponent, not by the
     drag's description string — DockRegion uses that string for its own
     panel-regrouping drags, so type is the unambiguous signal). Dropping a
-    file fires onFileDropped with the beat under the drop point; the owner
-    imports it as a new audio track's clip there.
+    file fires onFileDropped with the beat under the drop point and the track
+    lane it landed on (-1 if it landed outside every lane); the owner adds it
+    to that track if it's an audio track, or otherwise creates a new one.
 */
 class ArrangementView final : public juce::Component,
                               public juce::DragAndDropTarget
@@ -40,7 +41,7 @@ public:
     std::function<void(double)> onSeek; // beat position clicked
     std::function<void(int trackIndex, int clipIndex, double newStartBeats)> onClipMoved;
     std::function<void(int trackIndex, int clipIndex)> onClipSelected; // fired on press, before any drag
-    std::function<void(const juce::File& file, double dropBeat)> onFileDropped;
+    std::function<void(const juce::File& file, double dropBeat, int trackIndex)> onFileDropped;
 
     void setSong(const model::Song& song)
     {
@@ -243,10 +244,21 @@ public:
 
         const auto file = fileTree->getSelectedFile(0);
         if (file != juce::File{} && onFileDropped)
-            onFileDropped(file, geometry_.beatForX((float) details.localPosition.x));
+            onFileDropped(file, geometry_.beatForX((float) details.localPosition.x),
+                         trackIndexForY((float) details.localPosition.y));
     }
 
 private:
+    /** The track lane @p y falls in, or -1 if it's above the first lane
+        (the ruler) or below the last one. */
+    int trackIndexForY(float y) const
+    {
+        if (y < geometry_.rulerHeight)
+            return -1;
+        const int idx = (int) ((y - geometry_.rulerHeight) / geometry_.laneHeight);
+        return (idx >= 0 && idx < (int) song_.tracks.size()) ? idx : -1;
+    }
+
     /** Finds the clip under @p pos, if any (searching by lane, then by clip rect). */
     bool findClipAt(juce::Point<float> pos, int& trackIndexOut, int& clipIndexOut) const
     {

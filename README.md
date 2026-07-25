@@ -109,9 +109,28 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > has a per-track lane, so a project with none renders through the exact same untouched fast path as
 > before — verified by the bounce tool's new `perTrackAutomationWorks` check (one track fades
 > sample-accurately while an unautomated sibling stays stable in the same render) alongside every
-> existing check, including `rmsDry=0.149266`, unchanged. Next: more send-bus effect types,
-> multi-clip audio tracks, persisting the dockable-workspace layout, and user-editable file-browser
-> bookmarks. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> existing check, including `rmsDry=0.149266`, unchanged.
+>
+> **Audio tracks now genuinely support multiple clips**, closing the same "engine already modelled
+> N clips, UI/engine wiring only ever used one" gap multi-clip MIDI closed earlier — except this time
+> it was the *audio-clip player* that only ever played clip zero. `AudioFilePlayerNode` was rewritten
+> around a clip-*list* (mirroring `Sequencer`'s `ClipList`, same lock-free swap pattern) instead of a
+> single clip: each clip plays only within its own `[startBeats, startBeats+lengthBeats)` window —
+> real gating, silence between clips — the instant a track has more than one; a track's sole clip
+> still gets an unbounded window (today's "plays once from its start" behaviour, unaffected).
+> `AudioEngine::setTrackAudioClips` replaces the old single-file API and **caches decoded audio by
+> file path**, so re-submitting a track's whole clip list on every edit (the same unconditional
+> pattern MIDI clips already used) never re-decodes a file it's already loaded — even a file shared
+> across tracks. The feature is reachable, not just internal plumbing: dropping a file from the
+> file-browser pane onto an *existing* audio track's lane now adds a clip there (sized to the file's
+> real duration, not a fixed guess) instead of always creating a new track; dropping anywhere else
+> still creates one, as before. Verified by a new `multiClipAudioGates` bounce-tool check (two audio
+> clips on one track, each sounding only in its own window) alongside every existing check — including
+> `rmsDry=0.149266` and `audioTrackWorks` (the original single-clip path), both unchanged, confirming
+> the rewrite didn't disturb the case every existing project already relies on.
+>
+> Next: more send-bus effect types, persisting the dockable-workspace layout, and user-editable
+> file-browser bookmarks. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

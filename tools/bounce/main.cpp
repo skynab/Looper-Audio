@@ -1,9 +1,11 @@
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <vector>
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/AudioClipSlot.h"
 #include "engine/AudioRecorder.h"
 #include "engine/ClipData.h"
 #include "engine/ClipSlot.h"
@@ -189,6 +191,29 @@ int main(int argc, char** argv)
                               && audioGainRatio > 0.47f && audioGainRatio < 0.53f
                               && rmsBeforeAudioStart < 1.0e-5f && rmsAfterAudioStart > 0.01f;
 
+    // Multi-clip audio check: two clips on one track (0-4 beats, then 6-10
+    // beats, a 2-beat gap, nothing after) must sound only inside each clip's
+    // own window — the audio equivalent of multiClipGates above, exercising
+    // AudioFilePlayerNode's clip-list scheduling for the first time (a track
+    // with one audio clip has always had an unbounded window; this is the
+    // first genuine per-clip audio length gating). Audio has no envelope
+    // tail (unlike the synth), so it can go silent right at each boundary.
+    AudioClipSlot audioClipA;
+    audioClipA.clipData    = std::make_shared<ClipData>(sineClip);
+    audioClipA.startBeats  = 0.0;
+    audioClipA.lengthBeats = 4.0;
+    AudioClipSlot audioClipB;
+    audioClipB.clipData    = std::make_shared<ClipData>(sineClip);
+    audioClipB.startBeats  = 6.0;
+    audioClipB.lengthBeats = 4.0;
+
+    const auto  multiAudioClip     = OfflineRenderer::renderAudioClips({ audioClipA, audioClipB },
+                                                                       0.0f, bpm, sampleRate, 6.0);
+    const float rmsAudioClipA      = multiAudioClip.getRMSLevel(0, 0 * halfSec, 4 * halfSec); // 0-2s: clip A
+    const float rmsAudioGap        = multiAudioClip.getRMSLevel(0, 5 * halfSec, 1 * halfSec); // 2.5-3s: the gap
+    const float rmsAudioClipB      = multiAudioClip.getRMSLevel(0, 6 * halfSec, 4 * halfSec); // 3-5s: clip B
+    const bool  multiClipAudioGates = rmsAudioClipA > 0.01f && rmsAudioGap < 1.0e-5f && rmsAudioClipB > 0.01f;
+
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
 
@@ -336,6 +361,7 @@ int main(int argc, char** argv)
               << "  sendBusChanged=" << (sendBusChanged ? 1 : 0)
               << "  multiClipGates=" << (multiClipGates ? 1 : 0)
               << "  audioTrackWorks=" << (audioTrackWorks ? 1 : 0)
+              << "  multiClipAudioGates=" << (multiClipAudioGates ? 1 : 0)
               << "  recorderWorks=" << (recorderWorks ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
@@ -343,16 +369,17 @@ int main(int argc, char** argv)
     // gain ramp that fades in, a sample-accurate per-track automation curve
     // that fades one track while leaving an unautomated sibling stable, solo
     // correctly silencing the other track, a clip start that gates playback, a
-    // send bus that changes the output, two clips on one track each sounding
-    // only in their own window, a decoded audio clip playing back through a
-    // track, and the recorder's capture/handoff logic (fed synthetic input,
-    // since there's no live mic here) together confirm
+    // send bus that changes the output, two MIDI clips on one track each
+    // sounding only in their own window, a decoded audio clip playing back
+    // through a track, two AUDIO clips on one track likewise each sounding
+    // only in their own window, and the recorder's capture/handoff logic (fed
+    // synthetic input, since there's no live mic here) together confirm
     // the full render/gain/fx/automation/solo/clip/send-bus/audio/record path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
                  && perTrackAutomationWorks
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && multiClipGates
-                 && audioTrackWorks && recorderWorks;
+                 && audioTrackWorks && multiClipAudioGates && recorderWorks;
     return ok ? 0 : 2;
 }

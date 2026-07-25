@@ -380,9 +380,9 @@ MainComponent::MainComponent()
     fileBrowser_.showDirectory(recordingsDirectory());
     fileBrowser_.onFilePreview = [this](const juce::File& file) { previewAudioFile(file); };
 
-    arrangementView_.onFileDropped = [this](const juce::File& file, double dropBeat)
+    arrangementView_.onFileDropped = [this](const juce::File& file, double dropBeat, int trackIndex)
     {
-        importAudioFileAtBeat(file, dropBeat);
+        importAudioFileAtBeat(file, dropBeat, trackIndex);
     };
 
     addAndMakeVisible(keyboard_);
@@ -634,35 +634,35 @@ void MainComponent::syncEngineTracks()
         }
         engine_.setTrackClips(i, slots);
 
-        // Audio clip -> the track's own audio-clip player. Only the first
-        // audio-type clip on a track is used (one audio clip per track, v1 —
-        // matches "Import Audio to Track", the only way to create one today).
-        std::string audioFile;
-        double      audioStartBeats = 0.0;
+        // Audio clips -> the track's own audio-clip player. Each Audio-type
+        // clip becomes one AudioClipSlot, gated to its own
+        // [startBeats, startBeats+lengthBeats) window exactly like the
+        // instrument clips above — a track's only audio clip keeps an
+        // unbounded window (plays once from its start, the original
+        // single-clip behaviour); real gating (silence between clips, and
+        // after the last one) only applies once a track has more than one.
+        // Unconditionally resubmitted every sync, same as instrument clips —
+        // cheap, since AudioEngine caches decoded audio by file path (see
+        // AudioEngine::setTrackAudioClips), so this never re-decodes a file
+        // it's already loaded, even across tracks that share one.
+        const int numAudioClips = (int) std::count_if(track.clips.begin(), track.clips.end(),
+                                                       [](const model::Clip& c)
+                                                       { return c.type == model::ClipType::Audio && ! c.audioFile.empty(); });
+
+        std::vector<engine::AudioClipSpec> audioSpecs;
         for (const auto& clip : track.clips)
         {
-            if (clip.type == model::ClipType::Audio && ! clip.audioFile.empty())
-            {
-                audioFile       = clip.audioFile;
-                audioStartBeats = clip.startBeats;
-                break;
-            }
+            if (clip.type != model::ClipType::Audio || clip.audioFile.empty())
+                continue;
+
+            engine::AudioClipSpec spec;
+            spec.file        = juce::File(clip.audioFile);
+            spec.startBeats  = clip.startBeats;
+            spec.lengthBeats = numAudioClips == 1 ? 1.0e9 : clip.lengthBeats;
+            audioSpecs.push_back(spec);
         }
-        if (! audioFile.empty())
-        {
-            if (audioFile != loadedTrackAudioFile_[(size_t) i])
-            {
-                // Path changed (or first load): decode it. Expensive, so only
-                // done when necessary, not on every document edit.
-                loadedTrackAudioFile_[(size_t) i] = audioFile;
-                engine_.loadAudioFileForTrack(i, juce::File(audioFile), audioStartBeats);
-            }
-            else
-            {
-                // Same file already decoded — just reposition it (e.g. after a drag).
-                engine_.setTrackAudioClipStartBeats(i, audioStartBeats);
-            }
-        }
+        if (! audioSpecs.empty())
+            engine_.setTrackAudioClips(i, audioSpecs);
 
         engine_.setTrackMuted(i, track.muted);
         engine_.setTrackSolo(i, track.solo);
@@ -949,22 +949,65 @@ void MainComponent::importAudioToNewTrack()
     });
 }
 
-/** Imports a file onto a brand-new Audio track (as its one clip, starting at
-    @p startBeats) — the shared machinery behind both "Import Audio to
-    Track..." (always beat 0) and dragging a file from the file-browser pane
-    onto the arrangement (beat = wherever it was dropped). */
-void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBeats)
+/** Imports a file as an audio clip starting at @p startBeats — the shared
+    machinery behind "Import Audio to Track..." (always beat 0, always a new
+    track), and dragging a file from the file-browser pane onto the
+    arrangement (beat = wherever it was dropped; @p targetTrackIndex = the
+    track lane it landed on, or -1 for empty space below the tracks).
+
+    Dropping onto an existing Audio-type track adds a clip there instead of
+    creating a new track — the track keeps its single-clip unbounded window
+    if it still only has one clip, or gets real per-clip length gating (see
+    AudioFilePlayerNode) the moment it has more than one, exactly like
+    instrument clips. Any other drop target (empty space, or a non-Audio
+    track) creates a brand-new Audio track instead, as it always has. */
+void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBeats, int targetTrackIndex)
 {
+    const auto& song = history_.current();
+    const bool  addToExistingTrack = targetTrackIndex >= 0 && targetTrackIndex < (int) song.tracks.size()
+                                   && song.tracks[(size_t) targetTrackIndex].type == model::TrackType::Audio;
+
+    // Size the clip to the file's real duration rather than a fixed guess —
+    // display-only for a track's sole clip (unbounded window regardless), but
+    // functionally gates playback the moment a track has more than one clip,
+    // so guessing wrong there would audibly truncate the clip.
+    const double durationSeconds = engine_.probeDurationSeconds(file);
+    const double lengthBeats     = durationSeconds > 0.0 ? durationSeconds * song.bpm / 60.0 : 4.0;
+    const auto   path            = file.getFullPathName().toStdString();
+
+    if (addToExistingTrack)
+    {
+        int newClipIndex = -1;
+        history_.edit("Add audio clip", [targetTrackIndex, &path, startBeats, lengthBeats, &newClipIndex](model::Song& s)
+        {
+            auto& track = s.tracks[(size_t) targetTrackIndex];
+
+            model::Clip clip;
+            clip.id          = model::allocateId(s);
+            clip.type        = model::ClipType::Audio;
+            clip.startBeats  = juce::jmax(0.0, startBeats);
+            clip.lengthBeats = lengthBeats;
+            clip.audioFile   = path;
+            track.clips.push_back(clip);
+
+            newClipIndex = (int) track.clips.size() - 1;
+        });
+
+        syncEngineTracks();
+        selectTrackAndClip(targetTrackIndex, newClipIndex);
+        arrangementView_.setSong(history_.current());
+        clipLabel.setText("Imported: " + file.getFileName() + "  (added clip)", juce::dontSendNotification);
+        return;
+    }
+
     if (trackCount() >= engine_.maxTracks())
     {
         clipLabel.setText("Track limit reached", juce::dontSendNotification);
         return;
     }
 
-    const auto path = file.getFullPathName().toStdString();
-    int        newTrackIndex = -1;
-
-    history_.edit("Import audio track", [&path, &newTrackIndex, startBeats](model::Song& s)
+    int newTrackIndex = -1;
+    history_.edit("Import audio track", [&path, &newTrackIndex, startBeats, lengthBeats](model::Song& s)
     {
         const auto name = "Audio " + juce::String((int) s.tracks.size() + 1);
         model::addTrack(s, model::TrackType::Audio, name.toStdString());
@@ -973,7 +1016,7 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
         clip.id          = model::allocateId(s);
         clip.type        = model::ClipType::Audio;
         clip.startBeats  = juce::jmax(0.0, startBeats);
-        clip.lengthBeats = 4.0; // display size only; audio clips don't loop/gate on length yet
+        clip.lengthBeats = lengthBeats;
         clip.audioFile   = path;
         s.tracks.back().clips.push_back(clip);
 

@@ -67,6 +67,14 @@ std::unique_ptr<ClipData> AudioEngine::decodeAudioFile(const juce::File& file)
     return clip;
 }
 
+double AudioEngine::probeDurationSeconds(const juce::File& file)
+{
+    std::unique_ptr<juce::AudioFormatReader> reader(formatManager_.createReaderFor(file));
+    if (reader == nullptr || reader->sampleRate <= 0.0)
+        return 0.0;
+    return (double) reader->lengthInSamples / reader->sampleRate;
+}
+
 bool AudioEngine::loadAudioFile(const juce::File& file)
 {
     auto clip = decodeAudioFile(file);
@@ -77,30 +85,50 @@ bool AudioEngine::loadAudioFile(const juce::File& file)
     loadedClipSeconds_ = clip->sourceSampleRate > 0.0 ? (double) clip->lengthSamples / clip->sourceSampleRate : 0.0;
 
     filePlayer_.collectRetiredClips();
-    filePlayer_.submitClip(clip.release());
+    filePlayer_.submitSingleClip(clip.release());
     return true;
 }
 
-bool AudioEngine::loadAudioFileForTrack(int index, const juce::File& file, double clipStartBeats)
+std::shared_ptr<ClipData> AudioEngine::decodeOrGetCached(const juce::File& file)
+{
+    const auto path = file.getFullPathName();
+    auto       it   = audioDecodeCache_.find(path);
+    if (it != audioDecodeCache_.end())
+        return it->second;
+
+    auto decoded = decodeAudioFile(file);
+    if (decoded == nullptr)
+        return nullptr;
+
+    std::shared_ptr<ClipData> shared(decoded.release());
+    audioDecodeCache_[path] = shared;
+    return shared;
+}
+
+bool AudioEngine::setTrackAudioClips(int index, const std::vector<AudioClipSpec>& clips)
 {
     if (index < 0 || index >= kMaxTracks)
         return false;
 
-    auto clip = decodeAudioFile(file);
-    if (clip == nullptr)
-        return false;
+    auto* slots = new std::vector<AudioClipSlot>();
+    slots->reserve(clips.size());
+    bool allOk = true;
+
+    for (const auto& spec : clips)
+    {
+        auto decoded = decodeOrGetCached(spec.file);
+        if (decoded == nullptr)
+        {
+            allOk = false;
+            continue; // skip this clip; the others still load
+        }
+        slots->push_back({ decoded, spec.startBeats, spec.lengthBeats });
+    }
 
     auto& track = tracks_[(size_t) index];
-    track.audioPlayer.setClipStartBeats(clipStartBeats);
     track.audioPlayer.collectRetiredClips();
-    track.audioPlayer.submitClip(clip.release());
-    return true;
-}
-
-void AudioEngine::setTrackAudioClipStartBeats(int index, double beats)
-{
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].audioPlayer.setClipStartBeats(beats);
+    track.audioPlayer.submitClips(slots);
+    return allOk;
 }
 
 bool AudioEngine::beginRecording()

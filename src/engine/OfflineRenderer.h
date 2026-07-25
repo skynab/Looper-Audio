@@ -8,6 +8,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/AudioClipSlot.h"
 #include "engine/ClipData.h"
 #include "engine/ClipSlot.h"
 #include "engine/InstrumentTrack.h"
@@ -285,8 +286,57 @@ public:
         InstrumentTrack track;
         track.prepare(sampleRate, blockSize);
         track.gainDb.store(gainDb);
-        track.audioPlayer.setClipStartBeats(clipStartBeats);
-        track.audioPlayer.submitClip(new ClipData(clipData));
+        track.audioPlayer.submitSingleClip(new ClipData(clipData), clipStartBeats);
+
+        juce::AudioBuffer<float> block(2, blockSize);
+        juce::AudioBuffer<float> sendBus(2, blockSize);
+        juce::MidiBuffer         noLiveMidi;
+
+        int64_t playhead = 0;
+        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        {
+            const int n = std::min(blockSize, totalSamples - pos);
+            block.setSize(2, n, false, false, true);
+            block.clear();
+            sendBus.setSize(2, n, false, false, true);
+            sendBus.clear();
+
+            ProcessContext ctx;
+            ctx.sampleRate                = sampleRate;
+            ctx.numSamples                = n;
+            ctx.transport.playing         = true;
+            ctx.transport.playheadSamples = playhead;
+            ctx.transport.bpm             = bpm;
+
+            track.render(block, sendBus, noLiveMidi, ctx, false, false);
+
+            for (int ch = 0; ch < 2; ++ch)
+                output.copyFrom(ch, pos, block, ch, 0, n);
+
+            playhead += n;
+        }
+
+        return output;
+    }
+
+    /** Renders a single track's audio-clip player from an explicit list of
+        AudioClipSlots — for verifying genuine multi-clip-per-track audio
+        scheduling (silence between clips, each clip's own length gating when
+        it ends even if the file has more samples left). renderAudioClip()
+        above still models the single-clip case (unbounded length, no gating
+        other than clip-start) — the only case the current UI can create. */
+    static juce::AudioBuffer<float> renderAudioClips(const std::vector<AudioClipSlot>& clips,
+                                                     float gainDb, double bpm, double sampleRate,
+                                                     double numSeconds, int blockSize = 512)
+    {
+        const int totalSamples = (int) std::ceil(numSeconds * sampleRate);
+        juce::AudioBuffer<float> output(2, std::max(1, totalSamples));
+        output.clear();
+
+        InstrumentTrack track;
+        track.prepare(sampleRate, blockSize);
+        track.gainDb.store(gainDb);
+        track.audioPlayer.submitClips(new std::vector<AudioClipSlot>(clips));
 
         juce::AudioBuffer<float> block(2, blockSize);
         juce::AudioBuffer<float> sendBus(2, blockSize);
