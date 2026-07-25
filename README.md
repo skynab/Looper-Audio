@@ -11,7 +11,13 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > workspace** with a draggable divider, plus a **Mixer tab** — a channel strip per track (fader,
 > level meter, mute, solo, click to select/arm) and a master strip carrying the effects chain. Solo
 > follows the standard "solo overrides, mute always wins" rule, verified headlessly by the bounce
-> tool. Deferred to validate live: audio recording, disk streaming. Next: sends/returns, more
+> tool. The Arrange tab is now a real timeline: zoomable/scrollable (a `Viewport` over a
+> content-sized `ArrangementView`) with **click-to-seek** on the ruler/lanes; the beat↔pixel
+> geometry is unit-tested headless. Dragging clips to reposition them is intentionally not
+> implemented yet — the engine doesn't use a clip's timeline position for playback scheduling (each
+> track's pattern always loops from the origin), so dragging would only be cosmetic; making clip
+> position actually gate playback is a separate future engine change. Deferred to validate live:
+> audio recording, disk streaming. Next: sends/returns, clip-position-aware playback, more
 > automation targets. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack

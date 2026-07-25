@@ -241,8 +241,25 @@ MainComponent::MainComponent()
 
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
 
+    // ---- arrange tab: a zoomable/scrollable timeline, click to seek ----
+    arrangementViewport_.setViewedComponent(&arrangementView_, false);
+    arrangeTab_.addAndMakeVisible(arrangementViewport_);
+
+    zoomInButton_.onClick  = [this] { arrangementView_.setZoom(arrangementView_.zoom() * 1.25f); };
+    zoomOutButton_.onClick = [this] { arrangementView_.setZoom(arrangementView_.zoom() / 1.25f); };
+    arrangeTab_.addAndMakeVisible(zoomInButton_);
+    arrangeTab_.addAndMakeVisible(zoomOutButton_);
+    arrangeTab_.onResized = [this] { layoutArrangeTab(); };
+
+    arrangementView_.onSeek = [this](double beat)
+    {
+        const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 48000.0;
+        uiTempoMap_.setSampleRate(sampleRate);
+        post(Cmd::Seek, (double) uiTempoMap_.samplesFromPpq(juce::jmax(0.0, beat)));
+    };
+
     const auto tabBg = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
-    tabs_.addTab("Arrange", tabBg, &arrangementView_, false);
+    tabs_.addTab("Arrange", tabBg, &arrangeTab_, false);
     tabs_.addTab("Edit", tabBg, &pianoRoll_, false);
     tabs_.addTab("Mixer", tabBg, &mixerView_, false);
     tabs_.setCurrentTabIndex(1); // start on the note editor
@@ -847,6 +864,18 @@ void MainComponent::layoutRightPane()
     area.removeFromBottom(10);
 
     tabs_.setBounds(area);
+}
+
+void MainComponent::layoutArrangeTab()
+{
+    auto area = arrangeTab_.getLocalBounds();
+
+    auto toolbar = area.removeFromTop(28).reduced(4, 2);
+    zoomOutButton_.setBounds(toolbar.removeFromLeft(28));
+    toolbar.removeFromLeft(4);
+    zoomInButton_.setBounds(toolbar.removeFromLeft(28));
+
+    arrangementViewport_.setBounds(area);
 }
 
 void MainComponent::layoutMixerView()

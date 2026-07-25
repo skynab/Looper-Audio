@@ -84,6 +84,7 @@ private:
     void                   layoutLeftPane();
     void                   layoutRightPane();
     void                   layoutMixerView();
+    void                   layoutArrangeTab();
     int                    trackCount() const;
 
     engine::AudioEngine         engine_;
@@ -122,7 +123,13 @@ private:
                                                    juce::MidiKeyboardComponent::horizontalKeyboard };
     LevelMeter                         meter_;
     PianoRoll                          pianoRoll_;
+
+    CallbackComponent                  arrangeTab_;
+    juce::Viewport                     arrangementViewport_;
     ArrangementView                    arrangementView_;
+    juce::TextButton                   zoomInButton_  { "+" };
+    juce::TextButton                   zoomOutButton_ { "-" };
+
     CallbackComponent                  mixerView_;
     juce::OwnedArray<MixerStrip>       trackStrips_;
     juce::TabbedComponent              tabs_ { juce::TabbedButtonBar::TabsAtTop };

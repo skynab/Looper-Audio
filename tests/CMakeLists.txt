@@ -14,7 +14,8 @@ add_executable(looper_tests
   model/HistoryTests.cpp
   model/SongTests.cpp
   model/SerializationTests.cpp
-  model/AutomationLaneTests.cpp)
+  model/AutomationLaneTests.cpp
+  app/TimelineGeometryTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE
