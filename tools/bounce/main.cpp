@@ -1,8 +1,10 @@
 #include <cmath>
 #include <iostream>
+#include <vector>
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/AudioRecorder.h"
 #include "engine/ClipData.h"
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
@@ -16,6 +18,65 @@
 int main(int argc, char** argv)
 {
     using namespace looper::engine;
+
+    // AudioRecorder check: feeds synthetic "input" directly into process() —
+    // there's no live microphone in this headless verification, so this can
+    // only confirm the capture + armed/finished handoff logic is correct
+    // bit-for-bit, not that real hardware input reaches the callback.
+    bool recorderWorks = false;
+    {
+        const double recSampleRate = 44100.0;
+        const int    blockSize     = 512;
+
+        std::vector<float> inputBlock((size_t) blockSize);
+        for (int i = 0; i < blockSize; ++i)
+            inputBlock[(size_t) i] = (float) i / (float) blockSize; // a ramp, easy to verify exactly
+        const float* channelPtrs[1] = { inputBlock.data() };
+
+        AudioRecorder recorder;
+        recorder.prepare(recSampleRate, 1, 1.0); // 1 s capacity, mono
+
+        // Not armed yet: must not capture, even while "playing".
+        recorder.process(channelPtrs, 1, blockSize, true);
+        const bool capturesNothingWhenDisarmed = recorder.recordedSampleCount() == 0;
+
+        // Arm and record 3 blocks while playing.
+        recorder.arm();
+        recorder.process(channelPtrs, 1, blockSize, true);
+        recorder.process(channelPtrs, 1, blockSize, true);
+        recorder.process(channelPtrs, 1, blockSize, true);
+        const bool capturedThreeBlocks       = recorder.recordedSampleCount() == blockSize * 3;
+        const bool notFinishedWhileRecording = ! recorder.isFinished();
+
+        // Disarm; the *next* process() call is what finalizes the take (and is
+        // itself not captured, since it's already disarmed by then).
+        recorder.disarm();
+        recorder.process(channelPtrs, 1, blockSize, true);
+        const bool finishedAfterDisarm        = recorder.isFinished();
+        const bool lengthUnchangedAfterDisarm = recorder.takeLength() == blockSize * 3;
+
+        bool contentMatches = true;
+        const float* captured = recorder.takeBuffer().getReadPointer(0);
+        for (int block = 0; block < 3 && contentMatches; ++block)
+            for (int i = 0; i < blockSize; ++i)
+                if (std::abs(captured[block * blockSize + i] - inputBlock[(size_t) i]) > 1.0e-7f)
+                    contentMatches = false;
+
+        // Capacity check: recording longer than the prepared capacity must cap
+        // safely (no overflow/crash), keeping only what fits.
+        AudioRecorder capRecorder;
+        capRecorder.prepare(recSampleRate, 1, 0.001); // ~44 samples of capacity
+        capRecorder.arm();
+        capRecorder.process(channelPtrs, 1, blockSize, true);
+        capRecorder.process(channelPtrs, 1, blockSize, true);
+        capRecorder.disarm();
+        capRecorder.process(channelPtrs, 1, blockSize, true);
+        const bool capacityCapped = capRecorder.isFinished()
+                                 && capRecorder.takeLength() > 0 && capRecorder.takeLength() <= 45;
+
+        recorderWorks = capturesNothingWhenDisarmed && capturedThreeBlocks && notFinishedWhileRecording
+                     && finishedAfterDisarm && lengthUnchangedAfterDisarm && contentMatches && capacityCapped;
+    }
 
     const double bpm        = 120.0;
     const double sampleRate = 44100.0;
@@ -224,19 +285,21 @@ int main(int argc, char** argv)
               << "  clipStartGates=" << (clipStartGates ? 1 : 0)
               << "  sendBusChanged=" << (sendBusChanged ? 1 : 0)
               << "  multiClipGates=" << (multiClipGates ? 1 : 0)
-              << "  audioTrackWorks=" << (audioTrackWorks ? 1 : 0) << "\n";
+              << "  audioTrackWorks=" << (audioTrackWorks ? 1 : 0)
+              << "  recorderWorks=" << (recorderWorks ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
     // signal, a low-pass that attenuates, a reverb that changes the signal, a
     // gain ramp that fades in, solo correctly silencing the other track, a clip
     // start that gates playback, a send bus that changes the output, two clips
-    // on one track each sounding only in their own window, and a decoded audio
-    // clip playing back through a track (with gain + clip-start gating) together
-    // confirm the full render/gain/fx/automation/solo/clip/send-bus/audio path.
+    // on one track each sounding only in their own window, a decoded audio clip
+    // playing back through a track, and the recorder's capture/handoff logic
+    // (fed synthetic input, since there's no live mic here) together confirm
+    // the full render/gain/fx/automation/solo/clip/send-bus/audio/record path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && multiClipGates
-                 && audioTrackWorks;
+                 && audioTrackWorks && recorderWorks;
     return ok ? 0 : 2;
 }

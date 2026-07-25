@@ -73,6 +73,10 @@ private:
     void                   bounceProject();
     void                   showAudioSettings();
     void                   importAudioToNewTrack();
+    void                   toggleRecording();
+    void                   finishRecordingIfReady();
+    juce::File             recordingsDirectory() const;
+    void                   selectNewlyAddedTrack(int newTrackIndex);
     void                   addTrack();
     void                   syncEngineTracks();
     void                   refreshPianoRollForSelected();
@@ -101,6 +105,7 @@ private:
     int                         selectedTrackIndex_ = 0;
     int                         selectedClipIndex_  = 0;
     bool                        recordAutomation_   = false;
+    bool                        awaitingRecordedTake_ = false;
 
     // Which audio file path is currently decoded into each engine track slot,
     // so syncEngineTracks() only re-decodes when the path actually changes.
@@ -116,6 +121,7 @@ private:
 
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };
+    juce::TextButton   recordButton   { "Record" };
     juce::TextButton   addTrackButton { "Add Track" };
     juce::ToggleButton loopButton      { "Loop" };
 

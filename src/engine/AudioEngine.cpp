@@ -8,11 +8,19 @@
 
 namespace looper::engine
 {
+namespace
+{
+    // Recorder buffer capacity: a v1 limit (RAM-only, no disk streaming yet).
+    constexpr double kMaxRecordSeconds = 180.0;
+}
+
 AudioEngine::AudioEngine()
 {
     formatManager_.registerBasicFormats();
 
-    deviceManager_.initialiseWithDefaultDevices(0, 2);
+    // Request up to 2 input channels too (for recording); JUCE falls back to
+    // however many the device actually has, including zero.
+    deviceManager_.initialiseWithDefaultDevices(2, 2);
     deviceManager_.addAudioCallback(this);
 
     // Route every available MIDI input into the collector.
@@ -95,6 +103,16 @@ void AudioEngine::setTrackAudioClipStartBeats(int index, double beats)
         tracks_[(size_t) index].audioPlayer.setClipStartBeats(beats);
 }
 
+bool AudioEngine::beginRecording()
+{
+    auto* device = deviceManager_.getCurrentAudioDevice();
+    if (device == nullptr || device->getActiveInputChannels().countNumberOfSetBits() == 0)
+        return false;
+
+    recorder_.arm();
+    return true;
+}
+
 void AudioEngine::setActiveTrackCount(int count)
 {
     const int clamped = juce::jlimit(0, kMaxTracks, count);
@@ -165,8 +183,8 @@ void AudioEngine::drainCommandQueue() noexcept
     }
 }
 
-void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputChannelData*/,
-                                                   int /*numInputChannels*/,
+void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChannelData,
+                                                   int numInputChannels,
                                                    float* const* outputChannelData,
                                                    int numOutputChannels,
                                                    int numSamples,
@@ -186,6 +204,8 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputCh
     context.sampleRate = sampleRate_.load(std::memory_order_relaxed);
     context.numSamples = numSamples;
     context.transport  = transport_.snapshot();
+
+    recorder_.process(inputChannelData, numInputChannels, numSamples, context.transport.playing);
 
     bool anySolo = false;
     for (auto& track : tracks_)
@@ -243,6 +263,8 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     sendBusReverb_.prepare(sampleRate, blockSize);
     sendBusReverb_.setEnabled(true); // always on internally; sendBusEnabled_ gates the mix-back
     sendBusReverb_.setMix(1.0f);     // a return bus is always fully wet
+
+    recorder_.prepare(sampleRate, 2, kMaxRecordSeconds);
 }
 
 void AudioEngine::audioDeviceStopped()

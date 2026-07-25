@@ -45,10 +45,21 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > now has a UI too: **File > Import Audio to Track...** decodes a file onto a brand-new Audio track as
 > its one clip, so — unlike the older "Import Audio..." preview, which only ever fed a single
 > disconnected global player — it actually plays back as part of the mix, with its own gain/mute/solo/
-> send on its mixer strip like any other track. Deferred to validate live: audio recording (needs a
-> real input device), disk streaming. Next: microphone recording (the engine foundation is now in
-> place), more automation targets, more send-bus effect types. See the full roadmap in
-> [`docs/PLAN.md`](docs/PLAN.md).
+> send on its mixer strip like any other track.
+>
+> **Microphone recording** now works, built on that same audio-track path: hit **Record** (requests
+> up to 2 input channels from the device), it starts the transport and captures input into a
+> pre-allocated take buffer (RT-safe hand-off — the audio thread is the only writer, the message
+> thread only reads after the audio thread itself confirms the take is finished, so there's no window
+> where both touch the buffer); hit **Record**/**Stop** again and the take is written to a WAV in
+> `~/Documents/Looper-Audio Recordings/` and added as a new Audio track, ready to play back like any
+> other. Verified as far as headlessly possible: fed synthetic input directly into the capture logic
+> and confirmed exact sample-for-sample capture, correct armed/finished state transitions, and safe
+> capping when a take exceeds its buffer (a 3-minute-per-take v1 limit — no disk streaming yet). What
+> can't be verified without you: whether your Mac's actual microphone reaches the callback — that's
+> the one thing left to try live. Deferred to validate live: **recording itself** (see above), disk
+> streaming. Next: more automation targets, more send-bus effect types, multi-clip audio tracks. See
+> the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

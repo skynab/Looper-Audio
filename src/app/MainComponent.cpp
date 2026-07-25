@@ -39,14 +39,24 @@ MainComponent::MainComponent()
 
     // ---- transport ----
     playButton.onClick = [this] { post(Cmd::SetPlaying, 1.0); };
-    stopButton.onClick = [this] { post(Cmd::SetPlaying, 0.0); post(Cmd::Seek, 0.0); };
+    stopButton.onClick = [this]
+    {
+        post(Cmd::SetPlaying, 0.0);
+        post(Cmd::Seek, 0.0);
+        if (awaitingRecordedTake_)
+            engine_.stopRecording(); // the transport stopping alone would also
+                                     // end the take, but this makes it explicit
+    };
     loopButton.onClick = [this]
     {
         post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
         updateLoopRegion();
     };
+    recordButton.onClick = [this] { toggleRecording(); };
+    recordButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::red);
     leftPane_.addAndMakeVisible(playButton);
     leftPane_.addAndMakeVisible(stopButton);
+    leftPane_.addAndMakeVisible(recordButton);
     leftPane_.addAndMakeVisible(loopButton);
 
     // ---- sliders ----
@@ -900,20 +910,108 @@ void MainComponent::importAudioToNewTrack()
             newTrackIndex = (int) s.tracks.size() - 1;
         });
 
-        if (newTrackIndex < 0)
-            return;
-
-        selectedTrackIndex_ = newTrackIndex;
-        selectedClipIndex_  = 0;
-        syncEngineTracks();
-        engine_.setArmedTrack(selectedTrackIndex_);
-        refreshPianoRollForSelected();
-        arrangementView_.setSong(history_.current());
-        arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
-        updateMixerStrips();
-        updateEditingLabel();
+        selectNewlyAddedTrack(newTrackIndex);
         clipLabel.setText("Imported: " + file.getFileName() + "  (new track)", juce::dontSendNotification);
     });
+}
+
+void MainComponent::selectNewlyAddedTrack(int newTrackIndex)
+{
+    if (newTrackIndex < 0)
+        return;
+
+    selectedTrackIndex_ = newTrackIndex;
+    selectedClipIndex_  = 0;
+    syncEngineTracks();
+    engine_.setArmedTrack(selectedTrackIndex_);
+    refreshPianoRollForSelected();
+    arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+    updateMixerStrips();
+    updateEditingLabel();
+}
+
+/** Toggles between arming/starting a take and stopping it. The take doesn't
+    finish and turn into a track until finishRecordingIfReady() observes the
+    engine has confirmed the buffer is safe to read (polled from the timer). */
+void MainComponent::toggleRecording()
+{
+    if (! awaitingRecordedTake_)
+    {
+        if (! engine_.beginRecording())
+        {
+            clipLabel.setText("No audio input device available", juce::dontSendNotification);
+            return;
+        }
+
+        awaitingRecordedTake_ = true;
+        recordButton.setButtonText("Stop Rec");
+        recordButton.setToggleState(true, juce::dontSendNotification);
+        post(Cmd::SetPlaying, 1.0);
+    }
+    else
+    {
+        engine_.stopRecording();
+        post(Cmd::SetPlaying, 0.0);
+        recordButton.setButtonText("Record");
+        recordButton.setToggleState(false, juce::dontSendNotification);
+    }
+}
+
+void MainComponent::finishRecordingIfReady()
+{
+    if (! awaitingRecordedTake_ || ! engine_.isRecordingFinished())
+        return;
+    awaitingRecordedTake_ = false;
+
+    const int length = engine_.recordedTakeLength();
+    if (length <= 0)
+    {
+        clipLabel.setText("Recording was empty (no input captured)", juce::dontSendNotification);
+        return;
+    }
+
+    const auto& takeBuffer = engine_.recordedTakeBuffer();
+    juce::AudioBuffer<float> trimmed(takeBuffer.getNumChannels(), length);
+    for (int ch = 0; ch < takeBuffer.getNumChannels(); ++ch)
+        trimmed.copyFrom(ch, 0, takeBuffer, ch, 0, length);
+
+    const auto file = recordingsDirectory().getNonexistentChildFile("Recording", ".wav");
+    if (! engine::OfflineRenderer::writeWav(file, trimmed, engine_.sampleRate()))
+    {
+        clipLabel.setText("Failed to write recording", juce::dontSendNotification);
+        return;
+    }
+
+    const auto path = file.getFullPathName().toStdString();
+    int        newTrackIndex = -1;
+
+    history_.edit("Record audio", [&path, &newTrackIndex](model::Song& s)
+    {
+        const auto name = "Recording " + juce::String((int) s.tracks.size() + 1);
+        model::addTrack(s, model::TrackType::Audio, name.toStdString());
+
+        model::Clip clip;
+        clip.id          = model::allocateId(s);
+        clip.type        = model::ClipType::Audio;
+        clip.startBeats  = 0.0;
+        clip.lengthBeats = 4.0;
+        clip.audioFile   = path;
+        s.tracks.back().clips.push_back(clip);
+
+        newTrackIndex = (int) s.tracks.size() - 1;
+    });
+
+    selectNewlyAddedTrack(newTrackIndex);
+    clipLabel.setText("Recorded: " + file.getFileName(), juce::dontSendNotification);
+}
+
+juce::File MainComponent::recordingsDirectory() const
+{
+    auto dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                  .getChildFile("Looper-Audio Recordings");
+    dir.createDirectory();
+    return dir;
 }
 
 void MainComponent::saveProject()
@@ -1075,6 +1173,7 @@ void MainComponent::updateLoopRegion()
 void MainComponent::timerCallback()
 {
     engine_.pump();
+    finishRecordingIfReady();
 
     addTrackButton.setEnabled(trackCount() < engine_.maxTracks());
     addClipButton_.setEnabled(selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount());
@@ -1159,6 +1258,8 @@ void MainComponent::layoutLeftPane()
     stopButton.setBounds(row1.removeFromLeft(70));
     row1.removeFromLeft(12);
     loopButton.setBounds(row1.removeFromLeft(60));
+    row1.removeFromLeft(12);
+    recordButton.setBounds(row1.removeFromLeft(80));
     area.removeFromTop(8);
 
     positionLabel.setBounds(area.removeFromTop(28));

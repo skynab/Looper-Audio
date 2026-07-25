@@ -12,6 +12,7 @@
 #include "rt/SpscRingBuffer.h"
 
 #include "engine/AudioFilePlayerNode.h"
+#include "engine/AudioRecorder.h"
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
 #include "engine/FilterEffect.h"
@@ -57,6 +58,19 @@ public:
 
     /** Repositions a track's already-loaded audio clip without re-decoding it. */
     void setTrackAudioClipStartBeats(int index, double beats);
+
+    // ---- recording (message thread) ----
+    /** Arms the recorder. Returns false (and arms nothing) if the current
+        audio device has no active input channels. Capturing only actually
+        happens while the transport is playing. */
+    bool beginRecording();
+    /** Stops capturing; the take becomes readable once isRecordingFinished(). */
+    void stopRecording() { recorder_.disarm(); }
+    bool isRecordingFinished() const noexcept { return recorder_.isFinished(); }
+    int  recordedSampleCount() const noexcept { return recorder_.recordedSampleCount(); }
+    /** Valid only after isRecordingFinished() is observed true. */
+    const juce::AudioBuffer<float>& recordedTakeBuffer() const noexcept { return recorder_.takeBuffer(); }
+    int recordedTakeLength() const noexcept { return recorder_.takeLength(); }
 
     // ---- multi-track control (message thread) ----
     int  maxTracks() const noexcept { return kMaxTracks; }
@@ -154,6 +168,8 @@ private:
     std::atomic<float>       sendReturnGain_ { 0.0f };
 
     std::atomic<double> sampleRate_ { 0.0 };
+
+    AudioRecorder recorder_;
 
     juce::String loadedClipName_;
     double       loadedClipSeconds_ = 0.0;
