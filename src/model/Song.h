@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "model/AutomationLane.h"
 #include "model/Effects.h"
 #include "model/Track.h"
 
@@ -25,6 +26,7 @@ struct Song
     FilterSettings     filter;
     DelaySettings      delay;
     ReverbSettings     reverb;
+    AutomationLane     masterGainDb; // master gain automation (dB over beats)
 
     bool operator==(const Song&) const = default;
 };

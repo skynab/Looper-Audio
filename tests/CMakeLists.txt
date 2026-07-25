@@ -13,7 +13,8 @@ add_executable(looper_tests
   engine/ReverbTests.cpp
   model/HistoryTests.cpp
   model/SongTests.cpp
-  model/SerializationTests.cpp)
+  model/SerializationTests.cpp
+  model/AutomationLaneTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE

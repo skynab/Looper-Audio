@@ -7,6 +7,7 @@
 #include "engine/FilterEffect.h"
 #include "engine/OfflineRenderer.h"
 #include "engine/ReverbEffect.h"
+#include "model/AutomationLane.h"
 
 // Headless bounce: renders a demo arpeggio to a WAV so the synth + sequencer
 // audio path can be verified without an audio device. Also usable as a smoke test.
@@ -95,6 +96,29 @@ int main(int argc, char** argv)
     const float rmsReverbed  = reverbed.getRMSLevel(0, 0, reverbed.getNumSamples());
     const bool  reverbChanged = std::abs(rmsReverbed - rmsDry) > 1.0e-4f;
 
+    // Automation check: a -40 dB -> 0 dB master-gain ramp should fade the clip in.
+    juce::AudioBuffer<float> automated(buffer.getNumChannels(), buffer.getNumSamples());
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        automated.copyFrom(ch, 0, buffer, ch, 0, buffer.getNumSamples());
+
+    looper::model::AutomationLane lane;
+    lane.addPoint(0.0, -40.0f);
+    lane.addPoint(bpm / 60.0 * seconds, 0.0f);
+
+    const double samplesPerBeat = sampleRate * 60.0 / bpm;
+    for (int i = 0; i < automated.getNumSamples(); ++i)
+    {
+        const double beat = (double) i / samplesPerBeat;
+        const float  g    = juce::Decibels::decibelsToGain(lane.valueAt(beat, 0.0f));
+        for (int ch = 0; ch < automated.getNumChannels(); ++ch)
+            automated.getWritePointer(ch)[i] *= g;
+    }
+
+    const int   half            = automated.getNumSamples() / 2;
+    const float rmsFirstHalf    = automated.getRMSLevel(0, 0, half);
+    const float rmsSecondHalf   = automated.getRMSLevel(0, half, automated.getNumSamples() - half);
+    const bool  automationFades = rmsFirstHalf < rmsSecondHalf;
+
     // The written file is the wet (delayed) mix.
     if (! OfflineRenderer::writeWav(out, wet, sampleRate))
     {
@@ -110,13 +134,14 @@ int main(int argc, char** argv)
               << "  gainRatio(-6dB)=" << gainRatio
               << "  delayChanged=" << (delayChanged ? 1 : 0)
               << "  filterAtten=" << (filterAttenuates ? 1 : 0)
-              << "  reverbChanged=" << (reverbChanged ? 1 : 0) << "\n";
+              << "  reverbChanged=" << (reverbChanged ? 1 : 0)
+              << "  automationFades=" << (automationFades ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
-    // signal, a low-pass that attenuates, and a reverb that changes the signal
-    // together confirm the full render + gain + effects path.
+    // signal, a low-pass that attenuates, a reverb that changes the signal, and a
+    // gain ramp that fades in together confirm the full render/gain/fx/automation path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
-                 && delayChanged && filterAttenuates && reverbChanged;
+                 && delayChanged && filterAttenuates && reverbChanged && automationFades;
     return ok ? 0 : 2;
 }

@@ -37,7 +37,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 4\n";
+    out << "LOOPER 5\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -53,6 +53,9 @@ inline std::string serialize(const Song& song)
         << detail::num((double) song.reverb.roomSize) << " "
         << detail::num((double) song.reverb.damping) << " "
         << detail::num((double) song.reverb.mix) << "\n";
+    out << "AUTO " << song.masterGainDb.points().size() << "\n";
+    for (const auto& p : song.masterGainDb.points())
+        out << "APT " << detail::num(p.beat) << " " << detail::num((double) p.value) << "\n";
     out << "TRACKS " << song.tracks.size() << "\n";
 
     for (const auto& track : song.tracks)
@@ -143,6 +146,20 @@ inline bool deserialize(const std::string& text, Song& out)
         song.reverb.roomSize = (float) roomSize;
         song.reverb.damping  = (float) damping;
         song.reverb.mix      = (float) mix;
+    }
+
+    if (! readTagged("AUTO", rest)) return false;
+    {
+        const int pointCount = std::atoi(rest.c_str());
+        song.masterGainDb.clear();
+        for (int i = 0; i < pointCount; ++i)
+        {
+            if (! readTagged("APT", rest)) return false;
+            std::istringstream ps(rest);
+            double beat = 0.0, value = 0.0;
+            ps >> beat >> value;
+            song.masterGainDb.addPoint(beat, (float) value);
+        }
     }
 
     if (! readTagged("TRACKS", rest)) return false;

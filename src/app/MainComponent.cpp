@@ -83,7 +83,16 @@ MainComponent::MainComponent()
     masterSlider.setRange(-60.0, 6.0, 0.1);
     masterSlider.setValue(0.0, juce::dontSendNotification);
     masterSlider.setTextValueSuffix(" dB");
-    masterSlider.onValueChange = [this] { post(Cmd::SetMasterGainDb, masterSlider.getValue()); };
+    masterSlider.onValueChange = [this]
+    {
+        const float db = (float) masterSlider.getValue();
+        post(Cmd::SetMasterGainDb, db);
+        if (recordAutomation_ && engine_.isPlaying())
+        {
+            const double beat = uiTempoMap_.ppqFromSamples(engine_.playheadSamples());
+            history_.mutableCurrent().masterGainDb.addPoint(beat, db);
+        }
+    };
 
     addAndMakeVisible(tempoSlider);
     addAndMakeVisible(masterSlider);
@@ -217,6 +226,12 @@ MainComponent::MainComponent()
         engine_.setMasterReverbMix(v);
     };
     addAndMakeVisible(reverbMixSlider);
+
+    // ---- master-gain automation: arm, then move the master fader while playing ----
+    autoRecButton.onClick   = [this] { recordAutomation_ = autoRecButton.getToggleState(); };
+    autoClearButton.onClick = [this] { history_.mutableCurrent().masterGainDb.clear(); };
+    addAndMakeVisible(autoRecButton);
+    addAndMakeVisible(autoClearButton);
 
     positionLabel.setFont(juce::Font(juce::FontOptions(20.0f)));
     positionLabel.setText("Bar 1  Beat 1   |   0.00 s   |   STOPPED", juce::dontSendNotification);
@@ -602,6 +617,19 @@ void MainComponent::bounceProject()
             rv.process(buffer);
         }
 
+        if (! song.masterGainDb.empty())
+        {
+            const double samplesPerBeat = sampleRate * 60.0 / bpm;
+            const int    n              = buffer.getNumSamples();
+            for (int i = 0; i < n; ++i)
+            {
+                const double beat = samplesPerBeat > 0.0 ? (double) i / samplesPerBeat : 0.0;
+                const float  g    = juce::Decibels::decibelsToGain(song.masterGainDb.valueAt(beat, 0.0f));
+                for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                    buffer.getWritePointer(ch)[i] *= g;
+            }
+        }
+
         clipLabel.setText(engine::OfflineRenderer::writeWav(file, buffer, sampleRate)
                               ? "Bounced: " + file.getFileName()
                               : juce::String("Bounce failed"),
@@ -644,6 +672,15 @@ void MainComponent::timerCallback()
     meter_.setLevel(1, engine_.masterPeak(1));
 
     arrangementView_.setPlayheadBeats(uiTempoMap_.ppqFromSamples(playhead));
+
+    // Master-gain automation playback (coarse, message-thread; sample-accurate on export).
+    if (! recordAutomation_ && engine_.isPlaying() && ! history_.current().masterGainDb.empty())
+    {
+        const double beat = uiTempoMap_.ppqFromSamples(playhead);
+        const float  db   = history_.current().masterGainDb.valueAt(beat, (float) masterSlider.getValue());
+        post(Cmd::SetMasterGainDb, db);
+        masterSlider.setValue(db, juce::dontSendNotification);
+    }
 }
 
 void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
@@ -701,7 +738,13 @@ void MainComponent::resized()
 
     tempoSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
     area.removeFromTop(4);
-    masterSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
+
+    auto masterRow = area.removeFromTop(26);
+    autoRecButton.setBounds(masterRow.removeFromRight(76));
+    masterRow.removeFromRight(6);
+    autoClearButton.setBounds(masterRow.removeFromRight(76));
+    masterRow.removeFromRight(10);
+    masterSlider.setBounds(masterRow.withTrimmedLeft(64));
     area.removeFromTop(6);
 
     auto filterRow = area.removeFromTop(26);

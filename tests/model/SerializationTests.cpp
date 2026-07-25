@@ -23,6 +23,9 @@ static Song makeSampleSong()
     s.reverb.roomSize    = 0.7f;
     s.reverb.damping     = 0.4f;
     s.reverb.mix         = 0.25f;
+    s.masterGainDb.addPoint(0.0, -40.0f);
+    s.masterGainDb.addPoint(4.0, 0.0f);
+    s.masterGainDb.addPoint(8.0, -6.0f);
 
     const int synthId = addTrack(s, TrackType::Instrument, "Synth Lead").id; // name with a space
 

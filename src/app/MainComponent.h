@@ -62,6 +62,7 @@ private:
     engine::AudioEngine         engine_;
     model::History<model::Song> history_;
     int                         selectedTrackIndex_ = 0;
+    bool                        recordAutomation_   = false;
 
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };
@@ -86,6 +87,8 @@ private:
     juce::Slider       delayTimeSlider, delayFbSlider, delayMixSlider;
     juce::ToggleButton reverbButton { "Reverb" };
     juce::Slider       reverbRoomSlider, reverbDampSlider, reverbMixSlider;
+    juce::ToggleButton autoRecButton   { "Rec Auto" };
+    juce::TextButton   autoClearButton { "Clr Auto" };
     juce::Label        tempoLabel  { {}, "Tempo" };
     juce::Label        masterLabel { {}, "Master" };
     juce::Label  positionLabel, clipLabel;
