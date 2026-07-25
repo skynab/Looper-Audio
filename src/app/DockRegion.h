@@ -139,6 +139,16 @@ public:
 
     int numPanels() const { return (int) panels_.size(); }
 
+    /** The name of whichever panel is currently visible, or an empty string
+        if this region hosts none. Used to persist/restore the workspace
+        layout (see MainComponent::saveDockLayout). */
+    juce::String activePanelName() const
+    {
+        return (activeIndex_ >= 0 && activeIndex_ < (int) panels_.size())
+                   ? panels_[(size_t) activeIndex_].name
+                   : juce::String();
+    }
+
     void showPanel(const juce::String& name)
     {
         for (size_t i = 0; i < panels_.size(); ++i)

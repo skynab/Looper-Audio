@@ -6,13 +6,28 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <vector>
 
 namespace looper
 {
 using Cmd = engine::EngineCommand::Type;
 
+namespace
+{
+    juce::PropertiesFile::Options makeSettingsOptions()
+    {
+        juce::PropertiesFile::Options opts;
+        opts.applicationName     = "Looper-Audio";
+        opts.filenameSuffix      = ".settings";
+        opts.folderName          = "Looper-Audio";
+        opts.osxLibrarySubFolder = "Application Support";
+        return opts;
+    }
+}
+
 MainComponent::MainComponent()
+    : settings_(makeSettingsOptions())
 {
     menuBar_.setModel(this);
     addAndMakeVisible(menuBar_);
@@ -410,10 +425,27 @@ MainComponent::MainComponent()
     dockRegionA_.addPanel("Edit", editTab_);
     dockRegionA_.showPanel("Edit"); // start on the note editor
     dockRegionB_.addPanel("Mixer", mixerView_);
+    loadDockLayout(); // re-home panels per last session's saved layout, if any
 
     fileBrowser_.setRecordingsDirectory(recordingsDirectory());
     fileBrowser_.showDirectory(recordingsDirectory());
     fileBrowser_.onFilePreview = [this](const juce::File& file) { previewAudioFile(file); };
+
+    {
+        std::vector<juce::File> bookmarks;
+        for (const auto& line : juce::StringArray::fromLines(settings_.getValue("fileBrowserBookmarks")))
+            if (line.isNotEmpty())
+                bookmarks.push_back(juce::File(line));
+        fileBrowser_.setBookmarks(bookmarks);
+    }
+    fileBrowser_.onBookmarksChanged = [this]
+    {
+        juce::StringArray lines;
+        for (const auto& dir : fileBrowser_.bookmarks())
+            lines.add(dir.getFullPathName());
+        settings_.setValue("fileBrowserBookmarks", lines.joinIntoString("\n"));
+        settings_.saveIfNeeded();
+    };
 
     arrangementView_.onFileDropped = [this](const juce::File& file, double dropBeat, int trackIndex)
     {
@@ -445,6 +477,7 @@ MainComponent::MainComponent()
 
 MainComponent::~MainComponent()
 {
+    saveDockLayout();
     stopTimer();
     menuBar_.setModel(nullptr);
     engine_.deviceManager().removeChangeListener(this);
@@ -1494,6 +1527,71 @@ void MainComponent::movePanelBetweenRegions(const juce::String& panelName, DockR
 
     source->removePanel(panelName);
     target.addPanel(panelName, *content);
+    saveDockLayout();
+}
+
+// Every panel this workspace knows about, and the region it lives in by
+// default — used by both load and save so there's one place that lists them.
+namespace
+{
+    struct KnownPanel { const char* name; };
+    constexpr KnownPanel kKnownPanels[] = { { "Files" }, { "Arrange" }, { "Edit" }, { "Mixer" } };
+    constexpr const char* kRegionKeys[] = { "Files", "A", "B" };
+}
+
+void MainComponent::loadDockLayout()
+{
+    DockRegion* regionsByKey[] = { &dockRegionFiles_, &dockRegionA_, &dockRegionB_ };
+
+    juce::Component* contentFor[] = { &fileBrowser_, &arrangeTab_, &editTab_, &mixerView_ };
+
+    for (size_t i = 0; i < std::size(kKnownPanels); ++i)
+    {
+        const juce::String name       = kKnownPanels[i].name;
+        const auto          savedKey  = settings_.getValue("panelRegion_" + name);
+        if (savedKey.isEmpty())
+            continue; // nothing saved for this panel — leave it in its default region
+
+        for (size_t r = 0; r < std::size(kRegionKeys); ++r)
+        {
+            if (savedKey != kRegionKeys[r])
+                continue;
+            if (regionsByKey[r]->hasPanel(name))
+                break; // already there (matches the default) — nothing to do
+
+            for (auto* region : regionsByKey)
+                if (region->hasPanel(name))
+                    region->removePanel(name);
+            regionsByKey[r]->addPanel(name, *contentFor[i]);
+            break;
+        }
+    }
+
+    for (size_t r = 0; r < std::size(kRegionKeys); ++r)
+    {
+        const auto active = settings_.getValue(juce::String("activeInRegion_") + kRegionKeys[r]);
+        if (active.isNotEmpty() && regionsByKey[r]->hasPanel(active))
+            regionsByKey[r]->showPanel(active);
+    }
+}
+
+void MainComponent::saveDockLayout()
+{
+    DockRegion* regionsByKey[] = { &dockRegionFiles_, &dockRegionA_, &dockRegionB_ };
+
+    for (const auto& panel : kKnownPanels)
+        for (size_t r = 0; r < std::size(kRegionKeys); ++r)
+            if (regionsByKey[r]->hasPanel(panel.name))
+                settings_.setValue(juce::String("panelRegion_") + panel.name, kRegionKeys[r]);
+
+    for (size_t r = 0; r < std::size(kRegionKeys); ++r)
+    {
+        const auto active = regionsByKey[r]->activePanelName();
+        if (active.isNotEmpty())
+            settings_.setValue(juce::String("activeInRegion_") + kRegionKeys[r], active);
+    }
+
+    settings_.saveIfNeeded();
 }
 
 void MainComponent::layoutArrangeTab()

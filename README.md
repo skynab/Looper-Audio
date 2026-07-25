@@ -141,8 +141,21 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > (the delay-routed bus differs from both "bus off" and the existing reverb-routed bus) alongside
 > every existing check, including `rmsDry=0.149266`, unchanged.
 >
-> Next: persisting the dockable-workspace layout, and user-editable file-browser bookmarks. See the
-> full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
+> **The dockable workspace now remembers its layout, and the file browser has real bookmarks** —
+> the last two items on the list. Both are app-level preferences (not song data), stored in a
+> `juce::PropertiesFile` next to the app's other settings (separate from `.looper` project saves).
+> Moving a panel between dock regions, or quitting the app, writes each of the four panels' current
+> region and each region's active tab; on the next launch, every panel is asked "where were you
+> saved" and silently stays in its constructor-assigned default if there's no answer — a missing
+> settings file, a stale value, or a future panel added later all fail safe with no corruption
+> handling needed. The file browser's "Places" now has a **+** button (opens a folder picker) and
+> **right-click a bookmark to remove it**, alongside the existing Home/Recordings buttons; bookmarks
+> persist the same way. Neither can be verified headlessly — no engine/model impact, so all unit
+> tests and the full bounce-tool check suite are unchanged — try moving a panel or adding a bookmark,
+> then quitting and relaunching, to confirm both come back where you left them.
+>
+> That closes out every item from the docking-system and file-management-pane plans. See
+> [`docs/PLAN.md`](docs/PLAN.md) for the full roadmap and what's next.
 
 ## Tech stack
 

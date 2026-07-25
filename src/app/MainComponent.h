@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <juce_data_structures/juce_data_structures.h>
 
 #include <memory>
 #include <string>
@@ -100,6 +101,8 @@ private:
     void                   updateEditingLabel();
     void                   layoutLeftPane();
     void                   movePanelBetweenRegions(const juce::String& panelName, DockRegion& target);
+    void                   loadDockLayout();
+    void                   saveDockLayout();
     void                   layoutMixerView();
     void                   layoutArrangeTab();
     void                   layoutEditTab();
@@ -111,6 +114,11 @@ private:
     int                         selectedClipIndex_  = 0;
     bool                        recordAutomation_   = false;
     bool                        awaitingRecordedTake_ = false;
+
+    // App-level preferences (not project data): which panel lives in which
+    // dock region, and the file browser's user bookmarks. Saved on the
+    // panel-move/bookmark-change that produces them, not the project.
+    juce::PropertiesFile settings_;
 
     juce::MenuBarComponent          menuBar_;
 

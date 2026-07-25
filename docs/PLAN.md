@@ -338,12 +338,21 @@ paint/mouse handling, not a `TabbedComponent` subclass, to keep full control of 
 (`juce::StretchableLayoutManager`, now 7 items). Default layout: Files owns its own region,
 Arrange + Edit share region A, Mixer owns region B. Dragging a tab header onto another region
 (`DragAndDropContainer`/`DragAndDropTarget`) moves that panel there via
-`MainComponent::movePanelBetweenRegions`. Layout is in-memory only — it resets to the default split
-on restart; persisting the user's chosen arrangement is a natural follow-up, not yet done.
+`MainComponent::movePanelBetweenRegions`. **The layout now persists** across restarts: each of the
+four known panels' current region, plus which panel is active within each region, is written to an
+app-level `juce::PropertiesFile` (`~/Library/Application Support/Looper-Audio/` on macOS — separate
+from the `.looper` project file, since this is a workstation preference, not song data) on every
+panel move and on shutdown. Loading is defensive by construction rather than by validating a blob:
+it asks each of the four hardcoded panel names "which region were you saved in," and silently leaves
+a panel in its constructor-assigned default region if nothing (or something unrecognized) is found
+— so a missing settings file, a stale value, or a future panel that didn't exist when it was saved
+all fail safe rather than needing explicit corruption handling.
 
 Verification: pure UI-shell change, zero engine/model impact — all unit tests and the bounce tool's
-full check suite (including the `rmsDry=0.149266` regression sentinel) are unchanged. The actual
-drag gesture and visual layout could not be verified headlessly and need a live try.
+full check suite (including the `rmsDry=0.149266` regression sentinel) are unchanged. The drag
+gesture, visual layout, and — for persistence specifically — actually restarting the app to confirm
+a moved panel and the active tab come back where they were, could not be verified headlessly and
+need a live try.
 
 ### File-management pane (implemented)
 
@@ -352,10 +361,15 @@ arrangement, docking into the system above as its own default region (drag its t
 any other panel).
 
 - **Browsing:** JUCE's built-in `juce::FileTreeComponent` (backed by `DirectoryContentsList` +
-  `TimeSliceThread`), filtered to `*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3;*.m4a;*.mp4`. "Places" is
-  intentionally minimal for v1 — a **Home** button and a **Recordings** button (bookmarking
-  `MainComponent::recordingsDirectory()`, the folder the recording feature already creates) — not a
-  user-editable bookmark list; that's a natural follow-up, not done.
+  `TimeSliceThread`), filtered to `*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3;*.m4a;*.mp4`. "Places" has
+  two always-present buttons — **Home** and **Recordings** (bookmarking
+  `MainComponent::recordingsDirectory()`) — plus a **user-editable bookmark list**: a **+** button
+  opens a folder picker to add one, right-click a bookmark to remove it (`BookmarkButton`, a small
+  `TextButton` subclass that also reports `ModifierKeys::isPopupMenu()` clicks). Bookmarks persist
+  in the same app-level `juce::PropertiesFile` the dockable-workspace layout uses (joined with `\n`
+  via `StringArray::joinIntoString`/`fromLines`, since folder paths won't contain literal newlines)
+  — `FileBrowserPanel` only holds and displays the list; `MainComponent` owns saving/loading it,
+  same separation of concerns as the dock layout above.
 - **Drag-out:** implemented via type, not the drag's description string — `ArrangementView` (now
   also a `juce::DragAndDropTarget`) accepts a drag only when `SourceDetails::sourceComponent` is a
   `juce::FileTreeComponent`, reading the actual file back off it via `getSelectedFile(0)`, and
