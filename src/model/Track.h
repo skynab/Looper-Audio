@@ -20,6 +20,7 @@ struct Track
     TrackType         type   = TrackType::Instrument;
     float             gainDb = 0.0f;
     bool              muted  = false;
+    bool              solo   = false;
     std::vector<Clip> clips;
 
     bool operator==(const Track&) const = default;

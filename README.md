@@ -5,13 +5,14 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 
 > **Status: Phase 4 (mixer + effects) + app shell.** On top of Phases 1–3 (multi-track sequenced
 > synth + audio playback, transport/loop, a project document with undo/redo and `.looper` save/load,
-> offline WAV bounce): per-track **gain + mute**, a master **filter → delay → reverb** chain (all
-> unit-tested), and **master-gain automation** — all saved with the project. The UI now has a real
-> app shell: a **menu bar** (File: New/Open/Save/Import/Bounce/Audio Settings; Edit: Undo/Redo/Clear)
-> and a **resizable two-pane workspace** (controls sidebar | arrange/edit + keyboard) with a draggable
-> divider. Deferred to validate live: audio recording, disk streaming. Next: a proper mixer view
-> (channel strips), sends/returns, more automation targets. See the full roadmap in
-> [`docs/PLAN.md`](docs/PLAN.md).
+> offline WAV bounce): a master **filter → delay → reverb** chain (all unit-tested) and **master-gain
+> automation** — all saved with the project. The UI has a real app shell: a **menu bar** (File:
+> New/Open/Save/Import/Bounce/Audio Settings; Edit: Undo/Redo/Clear) and a **resizable two-pane
+> workspace** with a draggable divider, plus a **Mixer tab** — a channel strip per track (fader,
+> level meter, mute, solo, click to select/arm) and a master strip carrying the effects chain. Solo
+> follows the standard "solo overrides, mute always wins" rule, verified headlessly by the bounce
+> tool. Deferred to validate live: audio recording, disk streaming. Next: sends/returns, more
+> automation targets. See the full roadmap in [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Tech stack
 

@@ -51,6 +51,7 @@ public:
     void setActiveTrackCount(int count);
     void setTrackPattern(int index, const Pattern& pattern);
     void setTrackMuted(int index, bool muted);
+    void setTrackSolo(int index, bool solo);
     void setTrackGainDb(int index, float gainDb);
     void setArmedTrack(int index);
 
@@ -81,6 +82,10 @@ public:
     int64_t playheadSamples() const noexcept { return transport_.playheadForUI(); }
     double  sampleRate() const noexcept      { return sampleRate_.load(std::memory_order_relaxed); }
     float   masterPeak(int channel) const noexcept { return master_.peak(channel); }
+    float   trackPeak(int index, int channel) const noexcept
+    {
+        return (index >= 0 && index < kMaxTracks) ? tracks_[(size_t) index].peak(channel) : 0.0f;
+    }
 
     // ---- juce::AudioIODeviceCallback ----
     void audioDeviceIOCallbackWithContext(const float* const* inputChannelData,

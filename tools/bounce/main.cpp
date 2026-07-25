@@ -44,6 +44,14 @@ int main(int argc, char** argv)
     const float rmsQuiet  = quiet.getRMSLevel(0, 0, quiet.getNumSamples());
     const float gainRatio = rmsFull > 0.0f ? rmsQuiet / rmsFull : 0.0f;
 
+    // Solo check: soloing track 1 (arp) must fully silence track 2 (bass), even
+    // though bass is active and unmuted — the render should then match an
+    // arp-only render (rmsFull, computed above) rather than the full mix.
+    const auto  soloArp            = OfflineRenderer::render({ arp, bass }, { 0.0f, 0.0f }, { true, false },
+                                                             bpm, sampleRate, seconds);
+    const float rmsSoloArp         = soloArp.getRMSLevel(0, 0, soloArp.getNumSamples());
+    const bool  soloMatchesArpOnly = std::abs(rmsSoloArp - rmsFull) < 1.0e-4f;
+
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
 
@@ -135,13 +143,16 @@ int main(int argc, char** argv)
               << "  delayChanged=" << (delayChanged ? 1 : 0)
               << "  filterAtten=" << (filterAttenuates ? 1 : 0)
               << "  reverbChanged=" << (reverbChanged ? 1 : 0)
-              << "  automationFades=" << (automationFades ? 1 : 0) << "\n";
+              << "  automationFades=" << (automationFades ? 1 : 0)
+              << "  soloMatchesArpOnly=" << (soloMatchesArpOnly ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
-    // signal, a low-pass that attenuates, a reverb that changes the signal, and a
-    // gain ramp that fades in together confirm the full render/gain/fx/automation path.
+    // signal, a low-pass that attenuates, a reverb that changes the signal, a
+    // gain ramp that fades in, and solo correctly silencing the other track
+    // together confirm the full render/gain/fx/automation/solo path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
-                 && delayChanged && filterAttenuates && reverbChanged && automationFades;
+                 && delayChanged && filterAttenuates && reverbChanged && automationFades
+                 && soloMatchesArpOnly;
     return ok ? 0 : 2;
 }

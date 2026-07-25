@@ -44,6 +44,11 @@ static Song makeSampleSong()
     audioClip.audioFile = "takes/vocal 01.wav";
     addClip(s, voxId, audioClip);
 
+    // Set solo/mute by index (not the returned reference — a later addTrack can
+    // reallocate the vector and invalidate it).
+    s.tracks[0].solo  = true;
+    s.tracks[1].muted = true;
+
     return s;
 }
 

@@ -11,15 +11,30 @@
 
 #include "ArrangementView.h"
 #include "LevelMeter.h"
+#include "MixerStrip.h"
 #include "PianoRoll.h"
 
 namespace looper
 {
 /**
+    A generic tab-content component that forwards resized() to a callback. Used
+    for the mixer tab, whose children (channel strips, master strip) need
+    repositioning whenever JUCE assigns it new bounds — on the initial layout, a
+    window resize, or when the TabbedComponent switches to it.
+*/
+class CallbackComponent final : public juce::Component
+{
+public:
+    std::function<void()> onResized;
+    void resized() override { if (onResized) onResized(); }
+};
+
+/**
     Phase 3 UI. Owns the project document (a Song under an undo History) and a
     headless AudioEngine. The document may hold several instrument tracks; the
-    piano roll edits the selected one. All edits go through the history (undo/redo)
-    and are mirrored into the engine's fixed track pool.
+    piano roll edits the selected one, and the mixer tab shows a channel strip per
+    track. All edits go through the history (undo/redo) and are mirrored into the
+    engine's fixed track pool.
 */
 class MainComponent final : public juce::Component,
                             private juce::Timer,
@@ -57,16 +72,18 @@ private:
     void                   showAudioSettings();
     void                   addTrack();
     void                   syncEngineTracks();
-    void                   rebuildTrackSelector();
     void                   refreshPianoRollForSelected();
-    void                   updateTrackControls();
     void                   updateDelayControls();
     void                   updateFilterControls();
     void                   updateReverbControls();
-    void                   setSelectedTrackGain(float gainDb);
-    void                   setSelectedTrackMuted(bool muted);
+    void                   updateMixerStrips();
+    void                   setTrackGain(int index, float gainDb);
+    void                   setTrackMuted(int index, bool muted);
+    void                   setTrackSolo(int index, bool solo);
+    void                   selectTrack(int index);
     void                   layoutLeftPane();
     void                   layoutRightPane();
+    void                   layoutMixerView();
     int                    trackCount() const;
 
     engine::AudioEngine         engine_;
@@ -86,9 +103,6 @@ private:
     juce::TextButton   stopButton     { "Stop" };
     juce::TextButton   addTrackButton { "Add Track" };
     juce::ToggleButton loopButton      { "Loop" };
-    juce::ComboBox     trackSelector_;
-    juce::ToggleButton trackMuteButton { "Mute" };
-    juce::Slider       trackGainSlider;
 
     juce::Slider       tempoSlider, masterSlider;
     juce::ToggleButton filterButton { "Filter" };
@@ -109,6 +123,8 @@ private:
     LevelMeter                         meter_;
     PianoRoll                          pianoRoll_;
     ArrangementView                    arrangementView_;
+    CallbackComponent                  mixerView_;
+    juce::OwnedArray<MixerStrip>       trackStrips_;
     juce::TabbedComponent              tabs_ { juce::TabbedButtonBar::TabsAtTop };
     std::unique_ptr<juce::FileChooser> chooser_;
 

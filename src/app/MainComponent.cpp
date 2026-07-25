@@ -15,14 +15,14 @@ MainComponent::MainComponent()
     menuBar_.setModel(this);
     addAndMakeVisible(menuBar_);
 
-    // Two-pane workspace: a controls sidebar (left) and arrange/edit + keyboard
-    // (right), separated by a draggable divider.
+    // Two-pane workspace: a controls sidebar (left) and arrange/edit/mixer +
+    // keyboard (right), separated by a draggable divider.
     addAndMakeVisible(leftPane_);
     addAndMakeVisible(paneResizer_);
     addAndMakeVisible(rightPane_);
-    paneLayout_.setItemLayout(0, 340, 620, 420);   // left pane (controls): min/max/preferred
+    paneLayout_.setItemLayout(0, 220, 380, 260);   // left pane (transport): min/max/preferred
     paneLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed width
-    paneLayout_.setItemLayout(2, 300, -1.0, -1.0); // right pane (arrange/edit): takes the rest
+    paneLayout_.setItemLayout(2, 400, -1.0, -1.0); // right pane (arrange/edit/mixer): takes the rest
 
     // ---- document: one instrument track holding the piano-roll pattern ----
     {
@@ -44,32 +44,9 @@ MainComponent::MainComponent()
         post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
         updateLoopRegion();
     };
-    addTrackButton.onClick = [this] { addTrack(); };
-
-    for (auto* b : { &playButton, &stopButton, &addTrackButton })
-        leftPane_.addAndMakeVisible(b);
+    leftPane_.addAndMakeVisible(playButton);
+    leftPane_.addAndMakeVisible(stopButton);
     leftPane_.addAndMakeVisible(loopButton);
-
-    trackSelector_.onChange = [this]
-    {
-        const int id = trackSelector_.getSelectedId();
-        if (id <= 0)
-            return;
-        selectedTrackIndex_ = id - 1;
-        engine_.setArmedTrack(selectedTrackIndex_);
-        refreshPianoRollForSelected();
-        updateTrackControls();
-    };
-    leftPane_.addAndMakeVisible(trackSelector_);
-
-    trackMuteButton.onClick = [this] { setSelectedTrackMuted(trackMuteButton.getToggleState()); };
-    leftPane_.addAndMakeVisible(trackMuteButton);
-
-    trackGainSlider.setRange(-60.0, 6.0, 0.1);
-    trackGainSlider.setValue(0.0, juce::dontSendNotification);
-    trackGainSlider.setTextValueSuffix(" dB");
-    trackGainSlider.onValueChange = [this] { setSelectedTrackGain((float) trackGainSlider.getValue()); };
-    leftPane_.addAndMakeVisible(trackGainSlider);
 
     // ---- sliders ----
     tempoSlider.setRange(40.0, 240.0, 0.1);
@@ -81,6 +58,20 @@ MainComponent::MainComponent()
         post(Cmd::SetTempo, tempoSlider.getValue());
         updateLoopRegion();
     };
+    leftPane_.addAndMakeVisible(tempoSlider);
+    tempoLabel.attachToComponent(&tempoSlider, true);
+
+    positionLabel.setFont(juce::Font(juce::FontOptions(20.0f)));
+    positionLabel.setText("Bar 1  Beat 1   |   0.00 s   |   STOPPED", juce::dontSendNotification);
+    leftPane_.addAndMakeVisible(positionLabel);
+
+    clipLabel.setText("No clip loaded", juce::dontSendNotification);
+    leftPane_.addAndMakeVisible(clipLabel);
+
+    // ==== everything below lives in the Mixer tab ====
+
+    addTrackButton.onClick = [this] { addTrack(); };
+    mixerView_.addAndMakeVisible(addTrackButton);
 
     masterSlider.setRange(-60.0, 6.0, 0.1);
     masterSlider.setValue(0.0, juce::dontSendNotification);
@@ -95,10 +86,7 @@ MainComponent::MainComponent()
             history_.mutableCurrent().masterGainDb.addPoint(beat, db);
         }
     };
-
-    leftPane_.addAndMakeVisible(tempoSlider);
-    leftPane_.addAndMakeVisible(masterSlider);
-    tempoLabel.attachToComponent(&tempoSlider, true);
+    mixerView_.addAndMakeVisible(masterSlider);
     masterLabel.attachToComponent(&masterSlider, true);
 
     // ---- master filter (stored in the document) ----
@@ -108,7 +96,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.enabled = on;
         engine_.setMasterFilterEnabled(on);
     };
-    leftPane_.addAndMakeVisible(filterButton);
+    mixerView_.addAndMakeVisible(filterButton);
 
     filterModeBox_.addItem("Low-pass", 1);
     filterModeBox_.addItem("High-pass", 2);
@@ -120,7 +108,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.mode = mode;
         engine_.setMasterFilterMode(mode);
     };
-    leftPane_.addAndMakeVisible(filterModeBox_);
+    mixerView_.addAndMakeVisible(filterModeBox_);
 
     filterCutoffSlider.setRange(20.0, 18000.0, 1.0);
     filterCutoffSlider.setSkewFactorFromMidPoint(1000.0);
@@ -132,7 +120,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.cutoff = hz;
         engine_.setMasterFilterCutoff(hz);
     };
-    leftPane_.addAndMakeVisible(filterCutoffSlider);
+    mixerView_.addAndMakeVisible(filterCutoffSlider);
 
     filterResoSlider.setRange(0.1, 5.0, 0.01);
     filterResoSlider.setValue(0.707, juce::dontSendNotification);
@@ -143,7 +131,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.resonance = q;
         engine_.setMasterFilterResonance(q);
     };
-    leftPane_.addAndMakeVisible(filterResoSlider);
+    mixerView_.addAndMakeVisible(filterResoSlider);
 
     // ---- master delay (stored in the document, so it saves + restores) ----
     delayButton.onClick = [this]
@@ -152,7 +140,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.enabled = on;
         engine_.setMasterDelayEnabled(on);
     };
-    leftPane_.addAndMakeVisible(delayButton);
+    mixerView_.addAndMakeVisible(delayButton);
 
     delayTimeSlider.setRange(20.0, 1000.0, 1.0);
     delayTimeSlider.setValue(300.0, juce::dontSendNotification);
@@ -163,7 +151,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.timeMs = ms;
         engine_.setMasterDelayTimeMs(ms);
     };
-    leftPane_.addAndMakeVisible(delayTimeSlider);
+    mixerView_.addAndMakeVisible(delayTimeSlider);
 
     delayFbSlider.setRange(0.0, 95.0, 1.0);
     delayFbSlider.setValue(35.0, juce::dontSendNotification);
@@ -174,7 +162,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.feedback = fb;
         engine_.setMasterDelayFeedback(fb);
     };
-    leftPane_.addAndMakeVisible(delayFbSlider);
+    mixerView_.addAndMakeVisible(delayFbSlider);
 
     delayMixSlider.setRange(0.0, 100.0, 1.0);
     delayMixSlider.setValue(30.0, juce::dontSendNotification);
@@ -185,7 +173,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.mix = mix;
         engine_.setMasterDelayMix(mix);
     };
-    leftPane_.addAndMakeVisible(delayMixSlider);
+    mixerView_.addAndMakeVisible(delayMixSlider);
 
     // ---- master reverb (stored in the document) ----
     reverbButton.onClick = [this]
@@ -194,7 +182,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.enabled = on;
         engine_.setMasterReverbEnabled(on);
     };
-    leftPane_.addAndMakeVisible(reverbButton);
+    mixerView_.addAndMakeVisible(reverbButton);
 
     reverbRoomSlider.setRange(0.0, 100.0, 1.0);
     reverbRoomSlider.setValue(50.0, juce::dontSendNotification);
@@ -205,7 +193,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.roomSize = v;
         engine_.setMasterReverbRoomSize(v);
     };
-    leftPane_.addAndMakeVisible(reverbRoomSlider);
+    mixerView_.addAndMakeVisible(reverbRoomSlider);
 
     reverbDampSlider.setRange(0.0, 100.0, 1.0);
     reverbDampSlider.setValue(50.0, juce::dontSendNotification);
@@ -216,7 +204,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.damping = v;
         engine_.setMasterReverbDamping(v);
     };
-    leftPane_.addAndMakeVisible(reverbDampSlider);
+    mixerView_.addAndMakeVisible(reverbDampSlider);
 
     reverbMixSlider.setRange(0.0, 100.0, 1.0);
     reverbMixSlider.setValue(30.0, juce::dontSendNotification);
@@ -227,39 +215,47 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.mix = v;
         engine_.setMasterReverbMix(v);
     };
-    leftPane_.addAndMakeVisible(reverbMixSlider);
+    mixerView_.addAndMakeVisible(reverbMixSlider);
 
     // ---- master-gain automation: arm, then move the master fader while playing ----
     autoRecButton.onClick   = [this] { recordAutomation_ = autoRecButton.getToggleState(); };
     autoClearButton.onClick = [this] { history_.mutableCurrent().masterGainDb.clear(); };
-    leftPane_.addAndMakeVisible(autoRecButton);
-    leftPane_.addAndMakeVisible(autoClearButton);
+    mixerView_.addAndMakeVisible(autoRecButton);
+    mixerView_.addAndMakeVisible(autoClearButton);
 
-    positionLabel.setFont(juce::Font(juce::FontOptions(20.0f)));
-    positionLabel.setText("Bar 1  Beat 1   |   0.00 s   |   STOPPED", juce::dontSendNotification);
-    leftPane_.addAndMakeVisible(positionLabel);
+    mixerView_.addAndMakeVisible(meter_);
 
-    clipLabel.setText("No clip loaded", juce::dontSendNotification);
-    leftPane_.addAndMakeVisible(clipLabel);
+    // ---- per-track channel strips ----
+    for (int i = 0; i < engine_.maxTracks(); ++i)
+    {
+        auto* strip = new MixerStrip();
+        strip->onGainChange = [this, i](float db) { setTrackGain(i, db); };
+        strip->onMuteChange = [this, i](bool m)   { setTrackMuted(i, m); };
+        strip->onSoloChange = [this, i](bool s)   { setTrackSolo(i, s); };
+        strip->onSelect     = [this, i]           { selectTrack(i); };
+        trackStrips_.add(strip);
+        mixerView_.addAndMakeVisible(strip);
+    }
+
+    mixerView_.onResized = [this] { layoutMixerView(); };
 
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
 
     const auto tabBg = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
     tabs_.addTab("Arrange", tabBg, &arrangementView_, false);
     tabs_.addTab("Edit", tabBg, &pianoRoll_, false);
+    tabs_.addTab("Mixer", tabBg, &mixerView_, false);
     tabs_.setCurrentTabIndex(1); // start on the note editor
     rightPane_.addAndMakeVisible(tabs_);
 
-    leftPane_.addAndMakeVisible(meter_);
     rightPane_.addAndMakeVisible(keyboard_);
 
     // Mirror the initial document into the engine + UI.
-    rebuildTrackSelector();
     syncEngineTracks();
     engine_.setArmedTrack(0);
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
-    updateTrackControls();
+    updateMixerStrips();
     updateDelayControls();
     updateFilterControls();
     updateReverbControls();
@@ -410,12 +406,11 @@ void MainComponent::addTrack()
     });
 
     selectedTrackIndex_ = trackCount() - 1;
-    rebuildTrackSelector();
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
-    updateTrackControls();
+    updateMixerStrips();
 }
 
 void MainComponent::syncEngineTracks()
@@ -428,26 +423,10 @@ void MainComponent::syncEngineTracks()
         const auto& track = song.tracks[(size_t) i];
         engine_.setTrackPattern(i, track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
         engine_.setTrackMuted(i, track.muted);
+        engine_.setTrackSolo(i, track.solo);
         engine_.setTrackGainDb(i, track.gainDb);
     }
     engine_.setActiveTrackCount(n);
-}
-
-void MainComponent::rebuildTrackSelector()
-{
-    trackSelector_.clear(juce::dontSendNotification);
-
-    const auto& song = history_.current();
-    for (int i = 0; i < (int) song.tracks.size(); ++i)
-    {
-        const auto& name = song.tracks[(size_t) i].name;
-        trackSelector_.addItem(name.empty() ? ("Track " + juce::String(i + 1)) : juce::String(name), i + 1);
-    }
-
-    if (selectedTrackIndex_ >= (int) song.tracks.size())
-        selectedTrackIndex_ = juce::jmax(0, (int) song.tracks.size() - 1);
-
-    trackSelector_.setSelectedId(selectedTrackIndex_ + 1, juce::dontSendNotification);
 }
 
 void MainComponent::refreshPianoRollForSelected()
@@ -455,15 +434,28 @@ void MainComponent::refreshPianoRollForSelected()
     pianoRoll_.setPattern(currentPattern());
 }
 
-void MainComponent::updateTrackControls()
+void MainComponent::updateMixerStrips()
 {
     const auto& song = history_.current();
-    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
-        return;
 
-    const auto& track = song.tracks[(size_t) selectedTrackIndex_];
-    trackGainSlider.setValue(track.gainDb, juce::dontSendNotification);
-    trackMuteButton.setToggleState(track.muted, juce::dontSendNotification);
+    for (int i = 0; i < engine_.maxTracks(); ++i)
+    {
+        auto* strip  = trackStrips_[i];
+        const bool active = i < (int) song.tracks.size();
+        strip->setVisible(active);
+
+        if (active)
+        {
+            const auto& track = song.tracks[(size_t) i];
+            strip->setTrackName(track.name.empty() ? ("Track " + juce::String(i + 1)) : juce::String(track.name));
+            strip->setGainDb(track.gainDb);
+            strip->setMuted(track.muted);
+            strip->setSoloed(track.solo);
+        }
+        strip->setSelected(i == selectedTrackIndex_);
+    }
+
+    layoutMixerView();
 }
 
 void MainComponent::updateDelayControls()
@@ -508,23 +500,40 @@ void MainComponent::updateReverbControls()
     engine_.setMasterReverbMix(rv.mix);
 }
 
-void MainComponent::setSelectedTrackGain(float gainDb)
+void MainComponent::setTrackGain(int index, float gainDb)
 {
     // Live tweak: update the current document in place (not a separate undo step).
-    const int idx  = selectedTrackIndex_;
-    auto&     song = history_.mutableCurrent();
-    if (idx >= 0 && idx < (int) song.tracks.size())
-        song.tracks[(size_t) idx].gainDb = gainDb;
-    engine_.setTrackGainDb(idx, gainDb);
+    auto& song = history_.mutableCurrent();
+    if (index >= 0 && index < (int) song.tracks.size())
+        song.tracks[(size_t) index].gainDb = gainDb;
+    engine_.setTrackGainDb(index, gainDb);
 }
 
-void MainComponent::setSelectedTrackMuted(bool muted)
+void MainComponent::setTrackMuted(int index, bool muted)
 {
-    const int idx  = selectedTrackIndex_;
-    auto&     song = history_.mutableCurrent();
-    if (idx >= 0 && idx < (int) song.tracks.size())
-        song.tracks[(size_t) idx].muted = muted;
-    engine_.setTrackMuted(idx, muted);
+    auto& song = history_.mutableCurrent();
+    if (index >= 0 && index < (int) song.tracks.size())
+        song.tracks[(size_t) index].muted = muted;
+    engine_.setTrackMuted(index, muted);
+}
+
+void MainComponent::setTrackSolo(int index, bool solo)
+{
+    auto& song = history_.mutableCurrent();
+    if (index >= 0 && index < (int) song.tracks.size())
+        song.tracks[(size_t) index].solo = solo;
+    engine_.setTrackSolo(index, solo);
+}
+
+void MainComponent::selectTrack(int index)
+{
+    if (index < 0 || index >= trackCount())
+        return;
+
+    selectedTrackIndex_ = index;
+    engine_.setArmedTrack(selectedTrackIndex_);
+    refreshPianoRollForSelected();
+    updateMixerStrips(); // refreshes the selection highlight
 }
 
 void MainComponent::refreshFromModel()
@@ -532,12 +541,11 @@ void MainComponent::refreshFromModel()
     if (selectedTrackIndex_ >= trackCount())
         selectedTrackIndex_ = juce::jmax(0, trackCount() - 1);
 
-    rebuildTrackSelector();
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     arrangementView_.setSong(history_.current());
-    updateTrackControls();
+    updateMixerStrips();
     updateDelayControls();
     updateFilterControls();
     updateReverbControls();
@@ -654,20 +662,23 @@ void MainComponent::bounceProject()
         const auto& song = history_.current();
         std::vector<engine::Pattern> patterns;
         std::vector<float>           gains;
+        std::vector<bool>            solos;
         for (const auto& track : song.tracks)
         {
             patterns.push_back(track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
             gains.push_back(track.muted ? -100.0f : track.gainDb);
+            solos.push_back(track.solo);
         }
         if (patterns.empty())
         {
             patterns.push_back({});
             gains.push_back(0.0f);
+            solos.push_back(false);
         }
 
         const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 44100.0;
         const double bpm        = song.bpm;
-        auto         buffer     = engine::OfflineRenderer::render(patterns, gains, bpm, sampleRate, 8.0);
+        auto         buffer     = engine::OfflineRenderer::render(patterns, gains, solos, bpm, sampleRate, 8.0);
 
         if (song.filter.enabled)
         {
@@ -754,6 +765,13 @@ void MainComponent::timerCallback()
     meter_.setLevel(0, engine_.masterPeak(0));
     meter_.setLevel(1, engine_.masterPeak(1));
 
+    const int n = trackCount();
+    for (int i = 0; i < n; ++i)
+    {
+        trackStrips_[i]->setLevel(0, engine_.trackPeak(i, 0));
+        trackStrips_[i]->setLevel(1, engine_.trackPeak(i, 1));
+    }
+
     arrangementView_.setPlayheadBeats(uiTempoMap_.ppqFromSamples(playhead));
 
     // Master-gain automation playback (coarse, message-thread; sample-accurate on export).
@@ -819,60 +837,6 @@ void MainComponent::layoutLeftPane()
     area.removeFromTop(6);
 
     tempoSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
-    area.removeFromTop(4);
-
-    auto masterRow = area.removeFromTop(26);
-    autoRecButton.setBounds(masterRow.removeFromRight(76));
-    masterRow.removeFromRight(6);
-    autoClearButton.setBounds(masterRow.removeFromRight(76));
-    masterRow.removeFromRight(10);
-    masterSlider.setBounds(masterRow.withTrimmedLeft(64));
-    area.removeFromTop(6);
-
-    auto filterRow = area.removeFromTop(26);
-    filterButton.setBounds(filterRow.removeFromLeft(64));
-    filterRow.removeFromLeft(6);
-    filterModeBox_.setBounds(filterRow.removeFromLeft(104));
-    filterRow.removeFromLeft(8);
-    const int fw = juce::jmax(80, (filterRow.getWidth() - 8) / 2);
-    filterCutoffSlider.setBounds(filterRow.removeFromLeft(fw));
-    filterRow.removeFromLeft(8);
-    filterResoSlider.setBounds(filterRow);
-    area.removeFromTop(6);
-
-    auto delayRow = area.removeFromTop(26);
-    delayButton.setBounds(delayRow.removeFromLeft(70));
-    delayRow.removeFromLeft(8);
-    const int dw = juce::jmax(60, (delayRow.getWidth() - 16) / 3);
-    delayTimeSlider.setBounds(delayRow.removeFromLeft(dw));
-    delayRow.removeFromLeft(8);
-    delayFbSlider.setBounds(delayRow.removeFromLeft(dw));
-    delayRow.removeFromLeft(8);
-    delayMixSlider.setBounds(delayRow);
-    area.removeFromTop(6);
-
-    auto reverbRow = area.removeFromTop(26);
-    reverbButton.setBounds(reverbRow.removeFromLeft(70));
-    reverbRow.removeFromLeft(8);
-    const int rw = juce::jmax(60, (reverbRow.getWidth() - 16) / 3);
-    reverbRoomSlider.setBounds(reverbRow.removeFromLeft(rw));
-    reverbRow.removeFromLeft(8);
-    reverbDampSlider.setBounds(reverbRow.removeFromLeft(rw));
-    reverbRow.removeFromLeft(8);
-    reverbMixSlider.setBounds(reverbRow);
-    area.removeFromTop(8);
-
-    meter_.setBounds(area.removeFromTop(44));
-    area.removeFromTop(10);
-
-    auto trackRow = area.removeFromTop(28);
-    addTrackButton.setBounds(trackRow.removeFromLeft(90));
-    trackRow.removeFromLeft(8);
-    trackSelector_.setBounds(trackRow.removeFromLeft(150));
-    trackRow.removeFromLeft(12);
-    trackMuteButton.setBounds(trackRow.removeFromLeft(60));
-    trackRow.removeFromLeft(10);
-    trackGainSlider.setBounds(trackRow);
 }
 
 void MainComponent::layoutRightPane()
@@ -883,6 +847,80 @@ void MainComponent::layoutRightPane()
     area.removeFromBottom(10);
 
     tabs_.setBounds(area);
+}
+
+void MainComponent::layoutMixerView()
+{
+    auto area = mixerView_.getLocalBounds().reduced(10);
+    if (area.isEmpty())
+        return;
+
+    auto toolbar = area.removeFromTop(28);
+    addTrackButton.setBounds(toolbar.removeFromLeft(100));
+    area.removeFromTop(8);
+
+    // ---- master strip: master fader/automation, filter, delay, reverb, meter ----
+    auto masterArea = area.removeFromRight(300);
+    area.removeFromRight(12);
+
+    auto masterRow = masterArea.removeFromTop(26);
+    autoRecButton.setBounds(masterRow.removeFromRight(76));
+    masterRow.removeFromRight(6);
+    autoClearButton.setBounds(masterRow.removeFromRight(76));
+    masterRow.removeFromRight(10);
+    masterSlider.setBounds(masterRow.withTrimmedLeft(64));
+    masterArea.removeFromTop(6);
+
+    auto filterRow = masterArea.removeFromTop(26);
+    filterButton.setBounds(filterRow.removeFromLeft(64));
+    filterRow.removeFromLeft(6);
+    filterModeBox_.setBounds(filterRow.removeFromLeft(104));
+    filterRow.removeFromLeft(8);
+    const int fw = juce::jmax(60, (filterRow.getWidth() - 8) / 2);
+    filterCutoffSlider.setBounds(filterRow.removeFromLeft(fw));
+    filterRow.removeFromLeft(8);
+    filterResoSlider.setBounds(filterRow);
+    masterArea.removeFromTop(6);
+
+    auto delayRow = masterArea.removeFromTop(26);
+    delayButton.setBounds(delayRow.removeFromLeft(70));
+    delayRow.removeFromLeft(8);
+    const int dw = juce::jmax(50, (delayRow.getWidth() - 16) / 3);
+    delayTimeSlider.setBounds(delayRow.removeFromLeft(dw));
+    delayRow.removeFromLeft(8);
+    delayFbSlider.setBounds(delayRow.removeFromLeft(dw));
+    delayRow.removeFromLeft(8);
+    delayMixSlider.setBounds(delayRow);
+    masterArea.removeFromTop(6);
+
+    auto reverbRow = masterArea.removeFromTop(26);
+    reverbButton.setBounds(reverbRow.removeFromLeft(70));
+    reverbRow.removeFromLeft(8);
+    const int rw = juce::jmax(50, (reverbRow.getWidth() - 16) / 3);
+    reverbRoomSlider.setBounds(reverbRow.removeFromLeft(rw));
+    reverbRow.removeFromLeft(8);
+    reverbDampSlider.setBounds(reverbRow.removeFromLeft(rw));
+    reverbRow.removeFromLeft(8);
+    reverbMixSlider.setBounds(reverbRow);
+    masterArea.removeFromTop(8);
+
+    meter_.setBounds(masterArea.removeFromTop(44));
+
+    // ---- per-track channel strips, filling the remaining width ----
+    const int stripWidth = 96;
+    const int gap        = 6;
+    int       x          = area.getX();
+    const int n           = trackCount();
+
+    for (int i = 0; i < engine_.maxTracks(); ++i)
+    {
+        auto* strip = trackStrips_[i];
+        if (i < n)
+        {
+            strip->setBounds(x, area.getY(), stripWidth, area.getHeight());
+            x += stripWidth + gap;
+        }
+    }
 }
 
 } // namespace looper

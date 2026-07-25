@@ -22,9 +22,12 @@ namespace looper::engine
 class OfflineRenderer
 {
 public:
-    /** Renders one instrument track per pattern, at the given per-track gains (dB), summed. */
+    /** Renders one instrument track per pattern, at the given per-track gains (dB)
+        and solo flags, summed. Solo follows the same "solo overrides, mute always
+        wins" rule as the live engine. */
     static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
                                            const std::vector<float>&   gainsDb,
+                                           const std::vector<bool>&    soloFlags,
                                            double bpm,
                                            double sampleRate,
                                            double numSeconds,
@@ -42,8 +45,14 @@ public:
             track->sequencer.submitPattern(new Pattern(patterns[i]));
             if (i < gainsDb.size())
                 track->gainDb.store(gainsDb[i]);
+            if (i < soloFlags.size())
+                track->solo.store(soloFlags[i]);
             tracks.push_back(std::move(track));
         }
+
+        bool anySolo = false;
+        for (auto& track : tracks)
+            anySolo |= track->solo.load();
 
         juce::AudioBuffer<float> block(2, blockSize);
         juce::MidiBuffer         noLiveMidi;
@@ -63,7 +72,7 @@ public:
             ctx.transport.bpm             = bpm;
 
             for (auto& track : tracks)
-                track->render(block, noLiveMidi, ctx, false);
+                track->render(block, noLiveMidi, ctx, false, anySolo);
 
             for (int ch = 0; ch < 2; ++ch)
                 output.copyFrom(ch, pos, block, ch, 0, n);
@@ -74,7 +83,15 @@ public:
         return output;
     }
 
-    /** Convenience overload: patterns at unity gain. */
+    /** Convenience overload: no solo flags (no track is ever solo-silenced). */
+    static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns,
+                                           const std::vector<float>&   gainsDb,
+                                           double bpm, double sampleRate, double numSeconds, int blockSize = 512)
+    {
+        return render(patterns, gainsDb, std::vector<bool>{}, bpm, sampleRate, numSeconds, blockSize);
+    }
+
+    /** Convenience overload: patterns at unity gain, no solo. */
     static juce::AudioBuffer<float> render(const std::vector<Pattern>& patterns, double bpm,
                                            double sampleRate, double numSeconds, int blockSize = 512)
     {

@@ -84,6 +84,12 @@ void AudioEngine::setTrackMuted(int index, bool muted)
         tracks_[(size_t) index].muted.store(muted, std::memory_order_relaxed);
 }
 
+void AudioEngine::setTrackSolo(int index, bool solo)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].solo.store(solo, std::memory_order_relaxed);
+}
+
 void AudioEngine::setTrackGainDb(int index, float gainDb)
 {
     if (index >= 0 && index < kMaxTracks)
@@ -142,11 +148,15 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* /*inputCh
     context.numSamples = numSamples;
     context.transport  = transport_.snapshot();
 
+    bool anySolo = false;
+    for (auto& track : tracks_)
+        anySolo |= track.solo.load(std::memory_order_relaxed);
+
     const int armed = armedTrack_.load(std::memory_order_relaxed);
     for (int i = 0; i < kMaxTracks; ++i)
     {
         if (tracks_[(size_t) i].active.load(std::memory_order_relaxed))
-            tracks_[(size_t) i].render(output, incomingMidi_, context, i == armed);
+            tracks_[(size_t) i].render(output, incomingMidi_, context, i == armed, anySolo);
     }
 
     // The file player and master ignore the MIDI buffer.
