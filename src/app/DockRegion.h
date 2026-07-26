@@ -139,6 +139,28 @@ public:
 
     int numPanels() const { return (int) panels_.size(); }
 
+    /** Every panel name currently hosted here, in tab order. Used when
+        merging one region's panels into another (see
+        CenterSplitArea::unsplit). */
+    std::vector<juce::String> panelNames() const
+    {
+        std::vector<juce::String> names;
+        for (const auto& p : panels_)
+            names.push_back(p.name);
+        return names;
+    }
+
+    /** The content Component for @p name, or nullptr if this region doesn't
+        host it — lets a caller move a panel between regions without needing
+        its own separate name->Component lookup table. */
+    juce::Component* contentFor(const juce::String& name) const
+    {
+        for (const auto& p : panels_)
+            if (p.name == name)
+                return p.content;
+        return nullptr;
+    }
+
     /** The name of whichever panel is currently visible, or an empty string
         if this region hosts none. Used to persist/restore the workspace
         layout (see MainComponent::saveDockLayout). */

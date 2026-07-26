@@ -33,37 +33,36 @@ MainComponent::MainComponent()
     menuBar_.setModel(this);
     addAndMakeVisible(menuBar_);
 
-    // Dockable workspace: a Files region, a transport sidebar, then two more
-    // tab-group regions side by side, each separated by a draggable divider.
-    // Panels start out split across the regions (see below) so file
-    // management, arrangement, and mixer tools are all visible at the same
-    // time; dragging a tab onto another region moves that panel there.
-    mainWorkspaceArea_.addAndMakeVisible(dockRegionFiles_);
-    mainWorkspaceArea_.addAndMakeVisible(paneResizerFiles_);
-    mainWorkspaceArea_.addAndMakeVisible(dockRegionTransport_);
-    mainWorkspaceArea_.addAndMakeVisible(paneResizer_);
-    mainWorkspaceArea_.addAndMakeVisible(dockRegionA_);
-    mainWorkspaceArea_.addAndMakeVisible(paneResizer2_);
-    mainWorkspaceArea_.addAndMakeVisible(dockRegionB_);
-    mainWorkspaceArea_.onResized = [this] { layoutMainWorkspaceArea(); };
-    paneLayout_.setItemLayout(0, 180, 320, 220);   // dock region (Files): min/max/preferred
-    paneLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed width
-    paneLayout_.setItemLayout(2, 220, 380, 260);   // dock region (Transport): min/max/preferred
-    paneLayout_.setItemLayout(3, 8, 8, 8);         // divider: fixed width
-    paneLayout_.setItemLayout(4, 400, -1.0, -1.0); // dock region A (Tracks/Edit): flexible
-    paneLayout_.setItemLayout(5, 8, 8, 8);         // divider: fixed width
-    paneLayout_.setItemLayout(6, 260, 520, 340);   // dock region B (Mixer): min/max/preferred
+    // Dockable workspace: Left and Right sidebars span the full height;
+    // between them, a Center area — optionally split into two, see
+    // CenterSplitArea — sits above a Bottom strip inside middleColumn_.
+    // Right auto-hides (zero width) whenever it has no panels, see
+    // updateRightRegionVisibility(). Every region, including
+    // CenterSplitArea's two sub-regions, is a tab group wired into the same
+    // drag-a-tab-to-move-a-panel system.
+    middleColumn_.addAndMakeVisible(centerSplit_);
+    middleColumn_.addAndMakeVisible(middleResizer_);
+    middleColumn_.addAndMakeVisible(dockRegionBottom_);
+    middleColumn_.onResized = [this] { layoutMiddleColumn(); };
+    middleLayout_.setItemLayout(0, 200, -1.0, -1.0); // Center: flexible
+    middleLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed height
+    middleLayout_.setItemLayout(2, 90, 260, 110);    // Bottom: min/max/preferred
 
-    // Outer split: the horizontal row above, stacked over a region for the
-    // on-screen keyboard — same dockable system, just the other axis.
-    addAndMakeVisible(mainWorkspaceArea_);
-    addAndMakeVisible(outerResizer_);
-    addAndMakeVisible(dockRegionKeyboard_);
-    outerLayout_.setItemLayout(0, 300, -1.0, -1.0); // main workspace: flexible
-    outerLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed height
-    outerLayout_.setItemLayout(2, 90, 220, 110);    // dock region (Keyboard): min/max/preferred
+    addAndMakeVisible(dockRegionLeft_);
+    addAndMakeVisible(leftResizer_);
+    addAndMakeVisible(middleColumn_);
+    addAndMakeVisible(rightResizer_);
+    addAndMakeVisible(dockRegionRight_);
+    outerLayout_.setItemLayout(0, 180, 320, 220);   // Left: min/max/preferred
+    outerLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed width
+    outerLayout_.setItemLayout(2, 300, -1.0, -1.0); // middleColumn_: flexible
+    outerLayout_.setItemLayout(3, 8, 8, 8);         // divider: fixed width (hidden when Right is empty)
+    outerLayout_.setItemLayout(4, 0, 0, 0);         // Right: starts collapsed — empty by default
+    dockRegionRight_.setVisible(false);
+    rightResizer_.setVisible(false);
 
-    for (auto* region : { &dockRegionFiles_, &dockRegionTransport_, &dockRegionA_, &dockRegionB_, &dockRegionKeyboard_ })
+    for (auto* region : { &dockRegionLeft_, &centerSplit_.primary_, &centerSplit_.secondary_,
+                         &dockRegionBottom_, &dockRegionRight_ })
         region->onForeignPanelDropped = [this](const juce::String& name, DockRegion& target)
         {
             movePanelBetweenRegions(name, target);
@@ -458,19 +457,19 @@ MainComponent::MainComponent()
         syncEngineTracks(); // pushes every track's whole clip list, including this move
     };
 
-    // Default docking layout: Files, Transport, and Keyboard each get their
-    // own region; Tracks + Edit share region A; Mixer gets its own region B
-    // — so file management, transport, mixer, and track tools are all
-    // visible at once out of the box. Drag any tab's header onto another
-    // region to move it there instead.
-    dockRegionFiles_.addPanel("Files", fileBrowser_);
-    dockRegionTransport_.addPanel("Transport", leftPane_);
-    dockRegionA_.addPanel("Tracks", arrangeTab_);
-    dockRegionA_.addPanel("Keys", editTab_);
-    dockRegionA_.showPanel("Keys"); // start on the note editor
-    dockRegionB_.addPanel("Mixer", mixerView_);
-    dockRegionKeyboard_.addPanel("Keyboard", keyboard_);
-    loadDockLayout(); // re-home panels per last session's saved layout, if any
+    // Default docking layout: Left = Files; Center = Tracks/Keys/Mixer
+    // together; Bottom = Transport/Keyboard together; Right starts empty
+    // (and hidden — see updateRightRegionVisibility). Drag any tab's header
+    // onto another region — including the Center's own second half, once
+    // split via the View menu — to move it there instead.
+    dockRegionLeft_.addPanel("Files", fileBrowser_);
+    centerSplit_.primary_.addPanel("Tracks", arrangeTab_);
+    centerSplit_.primary_.addPanel("Keys", editTab_);
+    centerSplit_.primary_.addPanel("Mixer", mixerView_);
+    centerSplit_.primary_.showPanel("Keys"); // start on the note editor
+    dockRegionBottom_.addPanel("Transport", leftPane_);
+    dockRegionBottom_.addPanel("Keyboard", keyboard_);
+    loadDockLayout(); // re-home panels per last session's saved layout, if any (also updates Right's visibility)
 
     fileBrowser_.setRecordingsDirectory(recordingsDirectory());
     fileBrowser_.showDirectory(recordingsDirectory());
@@ -544,7 +543,7 @@ MainComponent::~MainComponent()
 
 juce::StringArray MainComponent::getMenuBarNames()
 {
-    return { "File", "Edit" };
+    return { "File", "Edit", "View" };
 }
 
 juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce::String&)
@@ -574,6 +573,12 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addSeparator();
         menu.addItem(12, "Clear Notes");
     }
+    else if (topLevelMenuIndex == 2) // View
+    {
+        menu.addItem(14, "Split Center Left/Right", ! centerSplit_.isSplit());
+        menu.addItem(15, "Split Center Top/Bottom", ! centerSplit_.isSplit());
+        menu.addItem(16, "Unsplit Center", centerSplit_.isSplit());
+    }
 
     return menu;
 }
@@ -595,6 +600,9 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 11: history_.redo(); refreshFromModel(); break;
         case 12: pianoRoll_.clear(); break;
         case 13: setProjectRootFolderDialog(); break;
+        case 14: centerSplit_.splitLeftRight(); saveDockLayout(); break;
+        case 15: centerSplit_.splitTopBottom(); saveDockLayout(); break;
+        case 16: centerSplit_.unsplit();        saveDockLayout(); break;
         default: break;
     }
 }
@@ -1726,26 +1734,26 @@ void MainComponent::resized()
     auto full = getLocalBounds();
     menuBar_.setBounds(full.removeFromTop(24));
 
-    // Outer split: the horizontal dock-region row, stacked over the
-    // Keyboard region. mainWorkspaceArea_'s own onResized runs the inner
-    // horizontal layout (see layoutMainWorkspaceArea) once it has bounds.
-    juce::Component* outerItems[] = { &mainWorkspaceArea_, &outerResizer_, &dockRegionKeyboard_ };
-    outerLayout_.layOutComponents(outerItems, 3, full.getX(), full.getY(),
+    // Outer split: Left | middleColumn_ | Right, side by side. middleColumn_'s
+    // own onResized runs the inner vertical layout (see layoutMiddleColumn)
+    // once it has bounds; CenterSplitArea (inside it) lays out its own
+    // optional split the same way, one level further in.
+    juce::Component* outerItems[] = { &dockRegionLeft_, &leftResizer_, &middleColumn_, &rightResizer_, &dockRegionRight_ };
+    outerLayout_.layOutComponents(outerItems, 5, full.getX(), full.getY(),
                                   full.getWidth(), full.getHeight(),
-                                  true,  // stacked vertically
-                                  true); // and stretch each to the full width
+                                  false, // side-by-side, not stacked
+                                  true); // and stretch each to the full height
 }
 
-void MainComponent::layoutMainWorkspaceArea()
+void MainComponent::layoutMiddleColumn()
 {
-    auto area = mainWorkspaceArea_.getLocalBounds();
+    auto area = middleColumn_.getLocalBounds();
 
-    juce::Component* panes[] = { &dockRegionFiles_, &paneResizerFiles_, &dockRegionTransport_, &paneResizer_,
-                                &dockRegionA_,      &paneResizer2_,     &dockRegionB_ };
-    paneLayout_.layOutComponents(panes, 7, area.getX(), area.getY(),
-                                 area.getWidth(), area.getHeight(),
-                                 false,  // side-by-side, not stacked
-                                 true);  // and stretch each to the full height
+    juce::Component* items[] = { &centerSplit_, &middleResizer_, &dockRegionBottom_ };
+    middleLayout_.layOutComponents(items, 3, area.getX(), area.getY(),
+                                   area.getWidth(), area.getHeight(),
+                                   true,  // stacked vertically: Center over Bottom
+                                   true); // and stretch each to the full width
 }
 
 void MainComponent::layoutLeftPane()
@@ -1772,7 +1780,8 @@ void MainComponent::layoutLeftPane()
 void MainComponent::movePanelBetweenRegions(const juce::String& panelName, DockRegion& target)
 {
     DockRegion* source = nullptr;
-    for (auto* region : { &dockRegionFiles_, &dockRegionTransport_, &dockRegionA_, &dockRegionB_, &dockRegionKeyboard_ })
+    for (auto* region : { &dockRegionLeft_, &centerSplit_.primary_, &centerSplit_.secondary_,
+                         &dockRegionBottom_, &dockRegionRight_ })
         if (region->hasPanel(panelName))
             source = region;
     if (source == nullptr || source == &target)
@@ -1790,6 +1799,7 @@ void MainComponent::movePanelBetweenRegions(const juce::String& panelName, DockR
 
     source->removePanel(panelName);
     target.addPanel(panelName, *content);
+    updateRightRegionVisibility();
     saveDockLayout();
 }
 
@@ -1800,13 +1810,20 @@ namespace
     struct KnownPanel { const char* name; };
     constexpr KnownPanel kKnownPanels[] =
         { { "Files" }, { "Transport" }, { "Tracks" }, { "Keys" }, { "Mixer" }, { "Keyboard" } };
-    constexpr const char* kRegionKeys[] = { "Files", "Transport", "A", "B", "Keyboard" };
+    constexpr const char* kRegionKeys[] = { "Left", "CenterPrimary", "CenterSecondary", "Bottom", "Right" };
 }
 
 void MainComponent::loadDockLayout()
 {
-    DockRegion* regionsByKey[] = { &dockRegionFiles_, &dockRegionTransport_, &dockRegionA_, &dockRegionB_,
-                                   &dockRegionKeyboard_ };
+    // Restore the Center split *before* placing panels — CenterSecondary
+    // only exists as a valid drop target once the split it belongs to has
+    // actually been applied.
+    const auto splitState = settings_.getValue("centerSplit", "none");
+    if (splitState == "vertical")        centerSplit_.splitTopBottom();
+    else if (splitState == "horizontal") centerSplit_.splitLeftRight();
+
+    DockRegion* regionsByKey[] = { &dockRegionLeft_, &centerSplit_.primary_, &centerSplit_.secondary_,
+                                   &dockRegionBottom_, &dockRegionRight_ };
 
     juce::Component* contentFor[] = { &fileBrowser_, &leftPane_, &arrangeTab_, &editTab_, &mixerView_, &keyboard_ };
 
@@ -1838,12 +1855,17 @@ void MainComponent::loadDockLayout()
         if (active.isNotEmpty() && regionsByKey[r]->hasPanel(active))
             regionsByKey[r]->showPanel(active);
     }
+
+    updateRightRegionVisibility();
 }
 
 void MainComponent::saveDockLayout()
 {
-    DockRegion* regionsByKey[] = { &dockRegionFiles_, &dockRegionTransport_, &dockRegionA_, &dockRegionB_,
-                                   &dockRegionKeyboard_ };
+    DockRegion* regionsByKey[] = { &dockRegionLeft_, &centerSplit_.primary_, &centerSplit_.secondary_,
+                                   &dockRegionBottom_, &dockRegionRight_ };
+
+    settings_.setValue("centerSplit", ! centerSplit_.isSplit() ? "none"
+                                     : centerSplit_.isStackedVertically() ? "vertical" : "horizontal");
 
     for (const auto& panel : kKnownPanels)
         for (size_t r = 0; r < std::size(kRegionKeys); ++r)
@@ -1858,6 +1880,20 @@ void MainComponent::saveDockLayout()
     }
 
     settings_.saveIfNeeded();
+}
+
+/** The Right region starts empty and stays collapsed (zero width, divider
+    hidden) until something is dragged into it, then reverts to collapsed
+    again the moment it's emptied out — called after every panel move and
+    after restoring a saved layout, since either can change whether it's
+    empty. */
+void MainComponent::updateRightRegionVisibility()
+{
+    const bool hasPanels = dockRegionRight_.numPanels() > 0;
+    outerLayout_.setItemLayout(4, hasPanels ? 180 : 0, hasPanels ? 420 : 0, hasPanels ? 260 : 0);
+    dockRegionRight_.setVisible(hasPanels);
+    rightResizer_.setVisible(hasPanels);
+    resized();
 }
 
 void MainComponent::layoutArrangeTab()

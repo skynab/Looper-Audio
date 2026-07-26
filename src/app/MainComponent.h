@@ -12,6 +12,7 @@
 #include "model/Song.h"
 
 #include "ArrangementView.h"
+#include "CenterSplitArea.h"
 #include "DockRegion.h"
 #include "DrumKitEditor.h"
 #include "FileBrowserPanel.h"
@@ -107,8 +108,9 @@ private:
     void                   addClipToSelectedTrack();
     void                   updateEditingLabel();
     void                   layoutLeftPane();
-    void                   layoutMainWorkspaceArea();
+    void                   layoutMiddleColumn();
     void                   movePanelBetweenRegions(const juce::String& panelName, DockRegion& target);
+    void                   updateRightRegionVisibility();
     void                   loadDockLayout();
     void                   saveDockLayout();
     void                   layoutMixerView();
@@ -131,25 +133,28 @@ private:
 
     juce::MenuBarComponent          menuBar_;
 
-    // Resizable workspace: a horizontal row of dockable regions (Files,
-    // Transport, two more side by side) inside mainWorkspaceArea_, with a
-    // fifth region for the on-screen keyboard stacked below it — every
-    // region a tab group, separated by draggable dividers. Panels (Files,
-    // Transport, Arrange, Edit, Mixer, Keyboard) start out split across the
-    // regions so every tool is visible at once; dragging a tab header onto
-    // another region moves that panel there, regardless of which of the
-    // two splits (horizontal row or the outer vertical one) it's in.
-    DockRegion                        dockRegionFiles_, dockRegionTransport_, dockRegionA_, dockRegionB_;
-    DockRegion                        dockRegionKeyboard_;
-    FileBrowserPanel                  fileBrowser_;
-    CallbackComponent                 leftPane_;
-    CallbackComponent                 mainWorkspaceArea_; // holds the horizontal row above
-    juce::StretchableLayoutManager    paneLayout_;         // the horizontal row
-    juce::StretchableLayoutResizerBar paneResizerFiles_ { &paneLayout_, 1, true };
-    juce::StretchableLayoutResizerBar paneResizer_      { &paneLayout_, 3, true };
-    juce::StretchableLayoutResizerBar paneResizer2_     { &paneLayout_, 5, true };
-    juce::StretchableLayoutManager    outerLayout_; // vertical: mainWorkspaceArea_ over dockRegionKeyboard_
-    juce::StretchableLayoutResizerBar outerResizer_ { &outerLayout_, 1, false };
+    // Resizable workspace: Left and Right sidebars span the full height;
+    // between them, a Center area (optionally split in two — see
+    // CenterSplitArea) sits above a Bottom strip. Right auto-hides (zero
+    // width) whenever it has no panels — see updateRightRegionVisibility().
+    // Every region is a tab group; dragging a tab header onto another
+    // region (including CenterSplitArea's two sub-regions) moves it there.
+    // Defaults: Left = Files, Center = Tracks/Keys/Mixer, Bottom =
+    // Transport/Keyboard, Right = empty.
+    DockRegion         dockRegionLeft_;
+    CenterSplitArea    centerSplit_;
+    DockRegion         dockRegionBottom_;
+    DockRegion         dockRegionRight_;
+    FileBrowserPanel   fileBrowser_;
+    CallbackComponent  leftPane_; // the transport controls (Play/Stop/...), a panel like any other
+
+    CallbackComponent middleColumn_; // holds centerSplit_ stacked over dockRegionBottom_
+    juce::StretchableLayoutManager    middleLayout_;
+    juce::StretchableLayoutResizerBar middleResizer_ { &middleLayout_, 1, false };
+
+    juce::StretchableLayoutManager    outerLayout_; // Left | middleColumn_ | Right
+    juce::StretchableLayoutResizerBar leftResizer_  { &outerLayout_, 1, true };
+    juce::StretchableLayoutResizerBar rightResizer_ { &outerLayout_, 3, true };
 
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };
