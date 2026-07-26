@@ -45,6 +45,8 @@ inline Track& addTrack(Song& song, TrackType type, std::string name)
     track.id   = allocateId(song);
     track.type = type;
     track.name = std::move(name);
+    if (type == TrackType::Drum)
+        track.drumKit = makeDefaultDrumKit();
     song.tracks.push_back(std::move(track));
     return song.tracks.back();
 }

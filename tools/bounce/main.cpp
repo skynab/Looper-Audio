@@ -10,6 +10,7 @@
 #include "engine/ClipData.h"
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
+#include "engine/DrumKitNode.h"
 #include "engine/FilterEffect.h"
 #include "engine/MidiFileIO.h"
 #include "engine/OfflineRenderer.h"
@@ -278,6 +279,52 @@ int main(int argc, char** argv)
         }
     }
 
+    // Drum-kit check: a kick+snare pattern (kick on beats 0/2, snare on
+    // beats 1/3, at 120bpm = 0.5s/beat) driven through DrumKitNode via the
+    // normal sequencer path — each hit plays its full one-shot sample
+    // regardless of the note's own lengthBeats (note-off is ignored unless
+    // it's a hard stop; see DrumSampleVoice::stopNote), and an unassigned
+    // pad (Hat, note 42, triggered but given no sample) must stay silent.
+    ClipData drumHit;
+    {
+        const int n = (int) (0.15 * sampleRate); // short one-shot, well under the 0.5s gap between hits
+        drumHit.audio.setSize(1, n);
+        drumHit.sourceSampleRate = sampleRate;
+        drumHit.numChannels      = 1;
+        drumHit.lengthSamples    = n;
+        float* data = drumHit.audio.getWritePointer(0);
+        for (int i = 0; i < n; ++i)
+            data[i] = 0.6f * (float) std::sin(2.0 * juce::MathConstants<double>::pi * 220.0 * i / sampleRate);
+    }
+
+    Pattern drumPattern;
+    drumPattern.lengthBeats = 4.0;
+    drumPattern.notes.push_back({ 0.0, 0.1, 36, 1.0f }); // kick, beat 0
+    drumPattern.notes.push_back({ 1.0, 0.1, 38, 1.0f }); // snare, beat 1
+    drumPattern.notes.push_back({ 2.0, 0.1, 36, 1.0f }); // kick, beat 2
+    drumPattern.notes.push_back({ 3.0, 0.1, 38, 1.0f }); // snare, beat 3
+    drumPattern.notes.push_back({ 0.5, 0.1, 42, 1.0f }); // hat, no sample assigned — must stay silent
+
+    std::vector<DrumPadAssignment> drumPads;
+    drumPads.push_back({ 36, std::make_shared<ClipData>(drumHit) });
+    drumPads.push_back({ 38, std::make_shared<ClipData>(drumHit) });
+    drumPads.push_back({ 42, nullptr }); // deliberately unassigned
+
+    const auto  drumBuffer = OfflineRenderer::renderDrumPattern(drumPads, drumPattern, bpm, sampleRate, 2.0);
+    const int   shortWin   = (int) (0.1 * sampleRate);
+    const float rmsKick1   = drumBuffer.getRMSLevel(0, 0, shortWin);
+    const float rmsSnare1  = drumBuffer.getRMSLevel(0, (int) (0.5 * sampleRate), shortWin);
+    const float rmsKick2   = drumBuffer.getRMSLevel(0, (int) (1.0 * sampleRate), shortWin);
+    const float rmsSnare2  = drumBuffer.getRMSLevel(0, (int) (1.5 * sampleRate), shortWin);
+    // Past kick1's 0.15s tone but before snare1 (0.5s), and overlapping
+    // where the unassigned hat note fires (0.25s) — silence here confirms
+    // both "the hit ended" and "the unassigned pad produced nothing".
+    const float rmsGapAndHat = drumBuffer.getRMSLevel(0, (int) (0.3 * sampleRate), shortWin);
+
+    const bool drumKitWorks = rmsKick1 > 0.01f && rmsSnare1 > 0.01f
+                          && rmsKick2 > 0.01f && rmsSnare2 > 0.01f
+                          && rmsGapAndHat < 1.0e-5f;
+
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
 
@@ -428,6 +475,7 @@ int main(int argc, char** argv)
               << "  audioTrackWorks=" << (audioTrackWorks ? 1 : 0)
               << "  multiClipAudioGates=" << (multiClipAudioGates ? 1 : 0)
               << "  midiRoundTripWorks=" << (midiRoundTripWorks ? 1 : 0)
+              << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
               << "  recorderWorks=" << (recorderWorks ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
@@ -439,15 +487,17 @@ int main(int argc, char** argv)
     // MIDI clips on one track each sounding only in their own window, a
     // decoded audio clip playing back through a track, two AUDIO clips on one
     // track likewise each sounding only in their own window, a MIDI file
-    // export/import round trip that preserves tempo and every note, and the
-    // recorder's capture/handoff logic (fed synthetic input, since there's no
-    // live mic here) together confirm
-    // the full render/gain/fx/automation/solo/clip/send-bus/audio/midi/record path.
+    // export/import round trip that preserves tempo and every note, a drum
+    // kit playing the right pad's one-shot sample at the right times while
+    // an unassigned pad stays silent, and the recorder's capture/handoff
+    // logic (fed synthetic input, since there's no live mic here) together
+    // confirm
+    // the full render/gain/fx/automation/solo/clip/send-bus/audio/midi/drum/record path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
                  && perTrackAutomationWorks
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
-                 && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && recorderWorks;
+                 && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks && recorderWorks;
     return ok ? 0 : 2;
 }

@@ -8,19 +8,21 @@
 
 #include "engine/MidiNote.h"
 #include "engine/Pattern.h"
+#include "model/DrumKit.h"
 
 #include "PianoRollGeometry.h"
 
 namespace looper
 {
 /**
-    A minimal piano roll: a step grid of pitch rows x time steps, with a
-    left-hand gutter naming each row's pitch (e.g. "C4"), the same way
-    ArrangementView names each of its lanes. Clicking a cell toggles a
-    one-step note. Edits fire onChange with the whole pattern, which the
+    A minimal piano roll: a step grid of rows x time steps, with a left-hand
+    gutter naming each row — a pitch (e.g. "C4") in the usual melodic mode,
+    or a pad name ("Kick", "Snare", ...) in drum mode (see setDrumPads) — the
+    same way ArrangementView names each of its lanes. Clicking a cell toggles
+    a one-step note. Edits fire onChange with the whole pattern, which the
     owner snapshots to the engine. Kept deliberately simple (fixed step
-    length, no drag-resize, no scrolling/zoom yet) — enough to sequence the
-    synth "on the grid" with the rows clearly labelled.
+    length, no drag-resize, no scrolling/zoom yet) — enough to sequence a
+    synth or drum kit "on the grid" with the rows clearly labelled.
 */
 class PianoRoll final : public juce::Component
 {
@@ -38,6 +40,30 @@ public:
         repaint();
     }
 
+    /** Switches into drum mode: one row per pad, labelled and pitched by
+        @p pads instead of the usual contiguous pitch range — no
+        black/white shading or octave lines (neither means anything for
+        pads), and no scrolling since there's only ever a handful of them. */
+    void setDrumPads(const std::vector<model::DrumPad>& pads)
+    {
+        drumPads_             = pads;
+        drumMode_             = true;
+        geometry_.numRows     = juce::jmax(1, (int) pads.size());
+        hoverRow_             = -1;
+        repaint();
+    }
+
+    /** Switches back to the usual contiguous-pitch melodic mode. */
+    void setMelodicMode()
+    {
+        if (! drumMode_)
+            return;
+        drumMode_         = false;
+        geometry_.numRows = 24;
+        hoverRow_         = -1;
+        repaint();
+    }
+
     void clear()
     {
         pattern_.notes.clear();
@@ -52,8 +78,11 @@ public:
         if (! geometry_.cellAt(e.position.x, e.position.y, (float) getWidth(), (float) getHeight(), row, step))
             return;
 
-        const int    noteNumber = geometry_.pitchForRow(row);
-        const double start      = step * geometry_.stepBeats;
+        const int noteNumber = pitchForRow(row);
+        if (noteNumber < 0)
+            return; // a drum-mode row past the end of the pad list (shouldn't happen; defensive)
+
+        const double start = step * geometry_.stepBeats;
 
         auto it = std::find_if(pattern_.notes.begin(), pattern_.notes.end(),
                                [&](const engine::Note& n)
@@ -108,16 +137,15 @@ public:
         g.setFont(juce::FontOptions(11.0f));
         for (int r = 0; r < geometry_.numRows; ++r)
         {
-            const int  pitch  = geometry_.pitchForRow(r);
-            const bool black  = engine::isBlackKey(pitch);
-            const float y     = geometry_.yForRow(r, h);
-            const bool hovered = (r == hoverRow_);
+            const bool  black    = ! drumMode_ && engine::isBlackKey(pitchForRow(r));
+            const float y        = geometry_.yForRow(r, h);
+            const bool  hovered  = (r == hoverRow_);
 
-            // Gutter cell: the row's pitch name.
+            // Gutter cell: the row's pitch (melodic) or pad (drum) name.
             g.setColour(black ? juce::Colour(0xff222226) : juce::Colour(0xff35353a));
             g.fillRect(juce::Rectangle<float>(0.0f, y, gx, ch));
             g.setColour(juce::Colours::white.withAlpha(black ? 0.55f : 0.85f));
-            g.drawText(engine::midiNoteName(pitch), 4, (int) y, (int) gx - 6, (int) ch,
+            g.drawText(labelForRow(r), 4, (int) y, (int) gx - 6, (int) ch,
                        juce::Justification::centredLeft);
 
             // Grid lane for this row.
@@ -135,13 +163,14 @@ public:
             g.fillRect(geometry_.xForStep(s, w), 0.0f, beat ? 2.0f : 1.0f, h);
         }
 
-        // Row separators, with a heavier line at each octave boundary (every
-        // 12 rows) now that the gutter makes them visually meaningful.
+        // Row separators — melodic mode gets a heavier line at each octave
+        // boundary (every 12 rows); drum mode has no such concept, just
+        // plain separators between the handful of pads.
         for (int r = 0; r <= geometry_.numRows; ++r)
         {
-            const bool octaveBoundary = (geometry_.pitchForRow(std::min(r, geometry_.numRows - 1)) % 12) == 0;
-            g.setColour(juce::Colours::white.withAlpha(octaveBoundary ? 0.18f : 0.06f));
-            g.fillRect(0.0f, geometry_.yForRow(r, h), w, octaveBoundary ? 2.0f : 1.0f);
+            const bool heavy = ! drumMode_ && (pitchForRow(std::min(r, geometry_.numRows - 1)) % 12) == 0;
+            g.setColour(juce::Colours::white.withAlpha(heavy ? 0.18f : 0.06f));
+            g.fillRect(0.0f, geometry_.yForRow(r, h), w, heavy ? 2.0f : 1.0f);
         }
 
         g.setColour(juce::Colours::white.withAlpha(0.16f));
@@ -151,7 +180,7 @@ public:
         for (const auto& n : pattern_.notes)
         {
             const int step = (int) std::llround(n.startBeats / geometry_.stepBeats);
-            const int row  = geometry_.rowForPitch(n.noteNumber);
+            const int row  = rowForPitch(n.noteNumber);
             if (row < 0 || row >= geometry_.numRows || step < 0 || step >= geometry_.numSteps)
                 continue;
 
@@ -162,6 +191,31 @@ public:
     }
 
 private:
+    int pitchForRow(int row) const
+    {
+        if (! drumMode_)
+            return geometry_.pitchForRow(row);
+        return (row >= 0 && row < (int) drumPads_.size()) ? drumPads_[(size_t) row].noteNumber : -1;
+    }
+
+    int rowForPitch(int pitch) const
+    {
+        if (! drumMode_)
+            return geometry_.rowForPitch(pitch);
+        for (size_t i = 0; i < drumPads_.size(); ++i)
+            if (drumPads_[i].noteNumber == pitch)
+                return (int) i;
+        return -1;
+    }
+
+    juce::String labelForRow(int row) const
+    {
+        if (! drumMode_)
+            return engine::midiNoteName(pitchForRow(row));
+        return (row >= 0 && row < (int) drumPads_.size()) ? juce::String(drumPads_[(size_t) row].label)
+                                                          : juce::String();
+    }
+
     void seedDemo()
     {
         pattern_.lengthBeats = geometry_.numSteps * geometry_.stepBeats; // 4 beats = 1 bar
@@ -171,9 +225,11 @@ private:
             pattern_.notes.push_back({ (double) i, 0.5, root + arp[i], 0.8f });
     }
 
-    PianoRollGeometry geometry_;
-    engine::Pattern   pattern_;
-    int               hoverRow_ = -1;
+    PianoRollGeometry        geometry_;
+    engine::Pattern          pattern_;
+    int                      hoverRow_ = -1;
+    bool                     drumMode_ = false;
+    std::vector<model::DrumPad> drumPads_;
 };
 
 } // namespace looper

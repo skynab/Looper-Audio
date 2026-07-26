@@ -37,7 +37,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 10\n";
+    out << "LOOPER 11\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -75,6 +75,12 @@ inline std::string serialize(const Song& song)
         out << "TAUTO " << track.gainAutomation.points().size() << "\n";
         for (const auto& p : track.gainAutomation.points())
             out << "TAPT " << detail::num(p.beat) << " " << detail::num((double) p.value) << "\n";
+        out << "DRUMKIT " << track.drumKit.pads.size() << "\n";
+        for (const auto& pad : track.drumKit.pads)
+            // label is a space-free token (no pad-rename UI exists yet, so
+            // this always holds); samplePath is the rest of the line, like
+            // clip.audioFile/track.name, since a real file path can have spaces.
+            out << "DPAD " << pad.noteNumber << " " << pad.label << " " << pad.samplePath << "\n";
         out << "CLIPS " << track.clips.size() << "\n";
 
         for (const auto& clip : track.clips)
@@ -226,6 +232,22 @@ inline bool deserialize(const std::string& text, Song& out)
                 double beat = 0.0, value = 0.0;
                 ps >> beat >> value;
                 track.gainAutomation.addPoint(beat, (float) value);
+            }
+        }
+
+        if (! readTagged("DRUMKIT", rest)) return false;
+        {
+            const int padCount = std::atoi(rest.c_str());
+            for (int p = 0; p < padCount; ++p)
+            {
+                if (! readTagged("DPAD", rest)) return false;
+                std::istringstream ps(rest);
+                DrumPad pad;
+                ps >> pad.noteNumber >> pad.label;
+                std::string samplePath;
+                std::getline(ps, samplePath);
+                pad.samplePath = detail::trimLeadingSpace(std::move(samplePath));
+                track.drumKit.pads.push_back(pad);
             }
         }
 

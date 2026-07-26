@@ -131,6 +131,33 @@ bool AudioEngine::setTrackAudioClips(int index, const std::vector<AudioClipSpec>
     return allOk;
 }
 
+void AudioEngine::setTrackIsDrum(int index, bool isDrum)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].isDrumTrack.store(isDrum, std::memory_order_relaxed);
+}
+
+void AudioEngine::setTrackDrumKit(int index, const std::vector<DrumPadSpec>& pads)
+{
+    if (index < 0 || index >= kMaxTracks)
+        return;
+
+    auto* map = new DrumPadMap();
+    map->reserve(pads.size());
+
+    for (const auto& pad : pads)
+    {
+        std::shared_ptr<ClipData> clip;
+        if (pad.file != juce::File{})
+            clip = decodeOrGetCached(pad.file); // nullptr on failure — the pad just stays silent
+        map->push_back({ pad.noteNumber, clip });
+    }
+
+    auto& track = tracks_[(size_t) index];
+    track.drumKit.collectRetired();
+    track.drumKit.setPadMap(map);
+}
+
 bool AudioEngine::beginRecording()
 {
     auto* device = deviceManager_.getCurrentAudioDevice();
@@ -189,6 +216,7 @@ void AudioEngine::pump() noexcept
     {
         track.sequencer.collectRetired();
         track.audioPlayer.collectRetiredClips();
+        track.drumKit.collectRetired();
     }
 
     filePlayer_.collectRetiredClips();

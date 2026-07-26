@@ -14,6 +14,7 @@
 
 #include "engine/AudioClipSlot.h"
 #include "engine/AudioFilePlayerNode.h"
+#include "engine/DrumKitNode.h"
 #include "engine/AudioRecorder.h"
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
@@ -36,6 +37,15 @@ struct AudioClipSpec
     juce::File file;
     double     startBeats  = 0.0;
     double     lengthBeats = 0.0;
+};
+
+/** One drum pad to load onto a track: a note number plus the file to play
+    when it's triggered (File{} = no sample assigned, pad stays silent). See
+    AudioEngine::setTrackDrumKit. */
+struct DrumPadSpec
+{
+    int        noteNumber = -1;
+    juce::File file;
 };
 
 /**
@@ -80,6 +90,19 @@ public:
         other gating" behaviour. Message thread. Returns false if any clip's
         file couldn't be read (the others still load). */
     bool setTrackAudioClips(int index, const std::vector<AudioClipSpec>& clips);
+
+    /** Marks a track as driving its drum kit instead of its synth for any
+        notes it receives (see InstrumentTrack::isDrumTrack) — unlike audio
+        clips, the synth doesn't naturally stay silent without content, so
+        this routing has to be explicit. Message thread. */
+    void setTrackIsDrum(int index, bool isDrum);
+
+    /** Replaces a track's whole drum-kit pad→sample mapping, decoding any
+        file not already cached (see decodeOrGetCached — same cache
+        setTrackAudioClips uses, so a sample shared across pads or tracks is
+        never decoded twice). A pad with no file (or one that fails to
+        decode) stays silent. Message thread. */
+    void setTrackDrumKit(int index, const std::vector<DrumPadSpec>& pads);
 
     // ---- recording (message thread) ----
     /** Arms the recorder. Returns false (and arms nothing) if the current

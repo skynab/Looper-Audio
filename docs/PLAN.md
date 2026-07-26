@@ -739,41 +739,61 @@ than a rewrite.
 live look. All 57 unit tests pass and the bounce tool's full check suite, including
 `rmsDry=0.149266`, is unchanged (pure UI change, zero engine/model impact).
 
-### Drum kits
+### Drum kits (implemented)
 
 A track type where each row is an independent one-shot sample (kick, snare, hat, ...), replaceable
-per-pad, instead of one melodic synth timbre shared across every note.
+per-pad, instead of one melodic synth timbre shared across every note. The last, biggest item —
+built on top of the piano-roll gutter (pad-name labels) and the file browser's drag-and-drop
+(sample assignment), as planned.
 
-**Model:** new `model::TrackType::Drum`. A `DrumKit` struct held per-track (alongside
-`gainAutomation`) with a small pad list: `struct DrumPad { int noteNumber; std::string label;
-std::string samplePath; };`. Starting default, matching "one or more bass, snare, and other
-instrument types": four pads — Kick (36), Snare (38), Hat (42), Other (45) — expandable later, not
-a full GM drum map in v1. `samplePath` empty means silent, the same safe default this project
-already uses for an audio clip with no file assigned.
+**Model:** new `model::TrackType::Drum`. A `DrumKit` struct (`src/model/DrumKit.h`) held per-track
+alongside `gainAutomation`, with a small pad list — `struct DrumPad { int noteNumber; std::string
+label; std::string samplePath; };`. `model::addTrack` auto-populates the starting default the
+moment a `Drum` track is created: four pads — Kick (36), Snare (38), Hat (42), Other (45),
+matching "one or more bass, snare, and other instrument types" rather than a full GM drum map.
+`samplePath` empty means silent, the same safe default an audio clip with no file gets. Serialization
+bumped to `LOOPER 11` (a `DRUMKIT`/`DPAD` section per track; `label` is a space-free token since no
+pad-rename UI exists, `samplePath` is the rest of the line like `audioFile`/track `name` already are).
 
-**Engine:** new `engine::DrumKitNode`, built the way `SynthInstrumentNode` already wraps
-`juce::Synthesiser` — reusing its polyphony/sample-accurate dispatch rather than inventing a new
-voice-pool. A custom `DrumSampleVoice : juce::SynthesiserVoice` looks up the triggered note's
-assigned `ClipData` on `startNote()` (via a small hot-swappable per-node pad mapping — same
-lock-free message→audio hand-off pattern already proven twice this session, in
-`AudioFilePlayerNode`'s clip-list swap and `AudioEngine`'s decode cache) and plays it once to the
-end, ignoring note-off — a one-shot, standard drum-machine behaviour, not a sustained voice.
-Reuses `AudioEngine::decodeOrGetCached` so assigning one sample to several pads (or tracks) never
-double-decodes. `InstrumentTrack` gains a `DrumKitNode drumKit` alongside the existing
-`synth`/`audioPlayer`, used only when the track's type is `Drum` — the same "every pool slot has
-every node type, only one is actually driven" shape the class's own doc comment already describes.
+**Engine:** new `engine::DrumKitNode` (`src/engine/DrumKitNode.h`), built the way
+`SynthInstrumentNode` already wraps `juce::Synthesiser` — reusing its polyphony/sample-accurate
+dispatch rather than a bespoke voice pool. `DrumSampleVoice : juce::SynthesiserVoice` looks up the
+triggered note's assigned `ClipData` on `startNote()` (via a whole-pad-map swap — `DrumPadMap`,
+the same lock-free message→audio hand-off shape as `AudioFilePlayerNode`'s clip-list swap) and
+plays it once to the end, *ignoring note-off* — confirmed by reading JUCE's own
+`Synthesiser::noteOff` before relying on it: a normal note-off passes `allowTailOff = true`, which
+`DrumSampleVoice::stopNote` deliberately ignores (a drum hit isn't a sustained voice); only a hard
+stop (`allowTailOff = false` — voice stealing, all-notes-off) cuts it immediately. Reuses
+`AudioEngine::decodeOrGetCached` so assigning one sample to several pads (or tracks) never
+double-decodes. `InstrumentTrack` gained a `DrumKitNode drumKit` alongside `synth`/`audioPlayer`,
+plus an explicit `isDrumTrack` atomic flag routing a track's notes to one or the other —
+*unlike* audio clips (which naturally stay silent with nothing submitted), the synth always
+produces *some* sound for any note it receives, so Drum-track routing has to be explicit rather
+than left to content-gating.
 
-**UI:** a small drum-kit editor (a strip alongside the piano roll when a Drum track is selected) —
-one row per pad, its assigned sample name, a "Load..." button, *and* accepting a drag straight from
-`FileBrowserPanel`'s file tree (reusing the exact `DragAndDropTarget`-by-sourceComponent-type
-pattern `ArrangementView` already established) — replacing a pad's sound becomes "drag a new file
-onto that row." The step grid for a Drum track shows pad names on the gutter (previous subsection)
-instead of pitch names, and shouldn't scroll across octaves — a fixed handful of pads, no pitch
-concept to scroll through.
+**UI:** `src/app/DrumKitEditor.h` — one row per pad (label, assigned sample name or
+"(no sample)", a "Load..." button), shown above the piano roll only when the selected track is a
+Drum track, *and* accepting a file dragged straight from `FileBrowserPanel`'s tree (the same
+`DragAndDropTarget`-by-sourceComponent-type check `ArrangementView` established) — dropping a file
+on a row reassigns that pad. `PianoRoll` gained `setDrumPads()`/`setMelodicMode()`: in drum mode
+the gutter shows pad names instead of pitch names, black/white-key shading and octave lines are
+skipped (neither means anything for pads), and the row count matches the pad list instead of the
+usual 2-octave range. A new **Add Drum** button (mixer toolbar, next to **Add Track**) creates one.
 
-**Verification:** exactly what the bounce tool already does well — render a pattern (kick on 1/3,
-snare on 2/4) through `DrumKitNode` and assert non-silence in the expected windows, in the style of
-the existing `audioTrackWorks`/`multiClipAudioGates` checks.
+**Bug caught in review:** `DrumKitEditor`'s implicit default constructor was, for reasons not
+fully root-caused, rejected by the compiler as a `MainComponent` member (`juce::Component` +
+`juce::DragAndDropTarget` multiple inheritance works fine elsewhere in this codebase without an
+explicit constructor — e.g. `ArrangementView` — so this wasn't simply "that pattern needs one").
+Adding `DrumKitEditor() = default;` resolved it; flagged here in case the same shape recurs.
+
+**Verification:** exactly what the bounce tool already does well — a kick+snare pattern (kick on
+beats 0/2, snare on 1/3) rendered through `DrumKitNode` via the normal sequencer path, asserting
+sound in each hit's window and silence in the gaps — including a *third*, deliberately unassigned
+pad (Hat) whose note fires but produces nothing, confirming a triggered-but-empty pad stays silent.
+New `OfflineRenderer::renderDrumPattern` mirrors `renderClips`/`renderAudioClips`'s existing shape.
+Passed on the first run. All 57 unit tests (including the updated serialization round-trip, which
+now also covers a `Drum` track and a `samplePath` with a space) and the bounce tool's full check
+suite, including `rmsDry=0.149266`, are unchanged.
 
 ---
 

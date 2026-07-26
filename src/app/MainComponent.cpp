@@ -118,6 +118,9 @@ MainComponent::MainComponent()
     addTrackButton.onClick = [this] { addTrack(); };
     mixerView_.addAndMakeVisible(addTrackButton);
 
+    addDrumTrackButton_.onClick = [this] { addDrumTrack(); };
+    mixerView_.addAndMakeVisible(addDrumTrackButton_);
+
     masterSlider.setRange(-60.0, 6.0, 0.1);
     masterSlider.setValue(0.0, juce::dontSendNotification);
     masterSlider.setTextValueSuffix(" dB");
@@ -372,9 +375,17 @@ MainComponent::MainComponent()
 
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
 
-    // ---- edit tab: a header showing which track/clip is open, plus the piano roll ----
+    // ---- edit tab: a header showing which track/clip is open, the drum-kit
+    // editor (only shown for a Drum track — see refreshPianoRollForSelected),
+    // and the piano roll/step grid ----
     editingLabel_.setFont(juce::Font(juce::FontOptions(13.0f)));
     editTab_.addAndMakeVisible(editingLabel_);
+    drumKitEditor_.onSampleAssigned = [this](int padIndex, const juce::File& file)
+    {
+        assignDrumSample(padIndex, file);
+    };
+    editTab_.addChildComponent(drumKitEditor_);
+    drumKitEditor_.setVisible(false); // hidden until a Drum track is selected (see refreshPianoRollForSelected)
     editTab_.addAndMakeVisible(pianoRoll_);
     editTab_.onResized = [this] { layoutEditTab(); };
 
@@ -640,6 +651,60 @@ void MainComponent::addTrack()
     updateEditingLabel();
 }
 
+/** Same as addTrack(), but a Drum-type track (model::addTrack auto-populates
+    its default Kick/Snare/Hat/Other pads — see model::makeDefaultDrumKit). */
+void MainComponent::addDrumTrack()
+{
+    if (trackCount() >= engine_.maxTracks())
+        return;
+
+    history_.edit("Add drum track", [](model::Song& s)
+    {
+        const auto name = "Drums " + juce::String((int) s.tracks.size() + 1);
+        const int  id   = model::addTrack(s, model::TrackType::Drum, name.toStdString()).id;
+        model::Clip clip;
+        clip.type                = model::ClipType::Instrument;
+        clip.lengthBeats         = 4.0;
+        clip.pattern.lengthBeats = 4.0;
+        model::addClip(s, id, clip);
+    });
+
+    selectedTrackIndex_ = trackCount() - 1;
+    selectedClipIndex_  = 0;
+    syncEngineTracks();
+    engine_.setArmedTrack(selectedTrackIndex_);
+    refreshPianoRollForSelected();
+    arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+    updateMixerStrips();
+    updateEditingLabel();
+}
+
+/** Assigns @p file to pad @p padIndex of the currently selected track's drum
+    kit (called from the drum-kit editor's Load... button or a file dropped
+    onto one of its rows). A real document edit, so it goes through history_
+    like any other content change. */
+void MainComponent::assignDrumSample(int padIndex, const juce::File& file)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const int  trackIdx = selectedTrackIndex_;
+    const auto path      = file.getFullPathName().toStdString();
+
+    history_.edit("Assign drum sample", [trackIdx, padIndex, path](model::Song& s)
+    {
+        if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+            return;
+        auto& pads = s.tracks[(size_t) trackIdx].drumKit.pads;
+        if (padIndex >= 0 && padIndex < (int) pads.size())
+            pads[(size_t) padIndex].samplePath = path;
+    });
+
+    syncEngineTracks();
+    refreshPianoRollForSelected(); // also refreshes the drum-kit editor's row display
+}
+
 /** Adds a new clip to the currently selected track, positioned 2 beats after
     its last existing clip (or at beat 0 if it has none), and selects it for
     editing. */
@@ -740,6 +805,26 @@ void MainComponent::syncEngineTracks()
         if (! audioSpecs.empty())
             engine_.setTrackAudioClips(i, audioSpecs);
 
+        // Drum kit -> routes this track's notes to the drum sampler instead
+        // of the synth (see InstrumentTrack::isDrumTrack — unlike audio
+        // clips, the synth doesn't naturally stay silent without content, so
+        // this has to be explicit). Unconditionally resubmitted every sync
+        // for the same reason as the clip lists above: cheap, since
+        // AudioEngine caches decoded samples by path.
+        engine_.setTrackIsDrum(i, track.type == model::TrackType::Drum);
+        if (track.type == model::TrackType::Drum)
+        {
+            std::vector<engine::DrumPadSpec> padSpecs;
+            for (const auto& pad : track.drumKit.pads)
+            {
+                engine::DrumPadSpec spec;
+                spec.noteNumber = pad.noteNumber;
+                spec.file       = pad.samplePath.empty() ? juce::File() : juce::File(pad.samplePath);
+                padSpecs.push_back(spec);
+            }
+            engine_.setTrackDrumKit(i, padSpecs);
+        }
+
         engine_.setTrackMuted(i, track.muted);
         engine_.setTrackSolo(i, track.solo);
         engine_.setTrackGainDb(i, track.gainDb);
@@ -751,6 +836,24 @@ void MainComponent::syncEngineTracks()
 void MainComponent::refreshPianoRollForSelected()
 {
     pianoRoll_.setPattern(currentPattern());
+
+    const bool isDrum = selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount()
+                     && history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Drum;
+
+    if (isDrum)
+    {
+        const auto& pads = history_.current().tracks[(size_t) selectedTrackIndex_].drumKit.pads;
+        pianoRoll_.setDrumPads(pads);
+        drumKitEditor_.setPads(pads);
+        drumKitEditor_.setVisible(true);
+    }
+    else
+    {
+        pianoRoll_.setMelodicMode();
+        drumKitEditor_.setVisible(false);
+    }
+
+    layoutEditTab(); // the drum-kit editor's visibility just changed, which affects layout
 }
 
 void MainComponent::updateEditingLabel()
@@ -1481,6 +1584,7 @@ void MainComponent::timerCallback()
     finishRecordingIfReady();
 
     addTrackButton.setEnabled(trackCount() < engine_.maxTracks());
+    addDrumTrackButton_.setEnabled(trackCount() < engine_.maxTracks());
     addClipButton_.setEnabled(selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount());
 
     const double sampleRate = engine_.sampleRate();
@@ -1698,6 +1802,14 @@ void MainComponent::layoutEditTab()
 {
     auto area = editTab_.getLocalBounds();
     editingLabel_.setBounds(area.removeFromTop(22).reduced(6, 0));
+
+    if (drumKitEditor_.isVisible())
+    {
+        const int kitHeight = juce::jmin(140, area.getHeight() / 3);
+        drumKitEditor_.setBounds(area.removeFromTop(kitHeight));
+        area.removeFromTop(4);
+    }
+
     pianoRoll_.setBounds(area);
 }
 
@@ -1709,6 +1821,8 @@ void MainComponent::layoutMixerView()
 
     auto toolbar = area.removeFromTop(28);
     addTrackButton.setBounds(toolbar.removeFromLeft(100));
+    toolbar.removeFromLeft(6);
+    addDrumTrackButton_.setBounds(toolbar.removeFromLeft(100));
     area.removeFromTop(8);
 
     // ---- master strip: master fader/automation, filter, delay, reverb, meter ----

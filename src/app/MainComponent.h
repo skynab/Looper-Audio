@@ -13,6 +13,7 @@
 
 #include "ArrangementView.h"
 #include "DockRegion.h"
+#include "DrumKitEditor.h"
 #include "FileBrowserPanel.h"
 #include "LevelMeter.h"
 #include "MixerStrip.h"
@@ -86,6 +87,8 @@ private:
     juce::File             recordingsDirectory() const;
     void                   selectNewlyAddedTrack(int newTrackIndex);
     void                   addTrack();
+    void                   addDrumTrack();
+    void                   assignDrumSample(int padIndex, const juce::File& file);
     void                   syncEngineTracks();
     void                   refreshPianoRollForSelected();
     void                   updateDelayControls();
@@ -142,6 +145,7 @@ private:
     juce::TextButton   stopButton     { "Stop" };
     juce::TextButton   recordButton   { "Record" };
     juce::TextButton   addTrackButton { "Add Track" };
+    juce::TextButton   addDrumTrackButton_ { "Add Drum" };
     juce::ToggleButton loopButton      { "Loop" };
 
     juce::Slider       tempoSlider, masterSlider;
@@ -169,6 +173,7 @@ private:
 
     CallbackComponent                  editTab_;
     juce::Label                        editingLabel_;
+    DrumKitEditor                      drumKitEditor_;
     PianoRoll                          pianoRoll_;
 
     CallbackComponent                  arrangeTab_;

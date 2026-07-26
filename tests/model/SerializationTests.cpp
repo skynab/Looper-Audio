@@ -52,6 +52,15 @@ static Song makeSampleSong()
     audioClip.audioFile = "takes/vocal 01.wav";
     addClip(s, voxId, audioClip);
 
+    const int drumId = addTrack(s, TrackType::Drum, "Drums").id; // auto-populates the default pads
+    Clip drumClip;
+    drumClip.type             = ClipType::Instrument;
+    drumClip.lengthBeats      = 4.0;
+    drumClip.pattern.lengthBeats = 4.0;
+    drumClip.pattern.notes.push_back({ 0.0, 0.25, 36, 1.0f }); // kick on beat 1
+    drumClip.pattern.notes.push_back({ 1.0, 0.25, 38, 0.9f }); // snare on beat 2
+    addClip(s, drumId, drumClip);
+
     // Set solo/mute by index (not the returned reference — a later addTrack can
     // reallocate the vector and invalidate it).
     s.tracks[0].solo      = true;
@@ -59,6 +68,7 @@ static Song makeSampleSong()
     s.tracks[1].muted     = true;
     s.tracks[0].gainAutomation.addPoint(0.0, -20.0f);
     s.tracks[0].gainAutomation.addPoint(4.0, 0.0f);
+    s.tracks[2].drumKit.pads[0].samplePath = "samples/Kick 808.wav"; // with a space, deliberately
 
     return s;
 }

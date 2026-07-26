@@ -196,10 +196,31 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > `rmsDry=0.149266`, are unchanged. The grid, dialogs, and folder operations are all JUCE-dependent
 > and need a live try, Delete especially since it's irreversible.
 >
-> That's every item from the MIDI/file-manager/piano-roll/drum-kit plan except drum kits — the
-> biggest one, saved for last since it benefits from this file manager's groundwork (drag a sample
-> onto a pad) and the piano roll's gutter (pad-name labels). See [`docs/PLAN.md`](docs/PLAN.md) for
-> the full roadmap.
+> **Drum kits are done — the last item, and the whole plan is now complete.** A new **Drum** track
+> type gives each row its own independent one-shot sample (Kick/Snare/Hat/Other by default,
+> `model::addTrack` auto-populates them) instead of every note sharing one melodic synth timbre.
+> `engine::DrumKitNode` is built the same way the existing synth wraps `juce::Synthesiser` —
+> reusing its polyphony rather than a bespoke voice pool — with a custom `DrumSampleVoice` that
+> plays a pad's assigned sample once to the end regardless of the note's length, *ignoring
+> note-off* (confirmed against JUCE's own `Synthesiser::noteOff` before relying on it: a normal
+> note-off can't be told apart from `allowTailOff` alone without checking how JUCE calls it — a
+> hard stop is the only thing that cuts a hit short). A new **Add Drum** button creates one; a new
+> drum-kit editor strip (above the piano roll, Drum tracks only) lists each pad with a "Load..."
+> button and accepts a file dragged straight from the file browser to reassign it; the piano roll's
+> gutter (from a few steps back) now shows pad names instead of pitch names in this mode.
+> Serialization bumped to `LOOPER 11`.
+>
+> Caught in review, not fully root-caused: `DrumKitEditor`'s *implicit* default constructor was
+> rejected by the compiler as a member — the same `Component`+`DragAndDropTarget` multiple
+> inheritance works fine elsewhere without an explicit one (e.g. `ArrangementView`), so this wasn't
+> simply "that shape needs one"; adding `DrumKitEditor() = default;` fixed it, noted here in case it
+> recurs. Verified by a new `drumKitWorks` bounce-tool check — kick/snare hits sound at the right
+> times, and a third, deliberately *unassigned* pad whose note fires produces nothing — passed on
+> the first run. All 57 unit tests (the serialization round-trip now also covers a Drum track) and
+> the bounce tool's full check suite, including `rmsDry=0.149266`, are unchanged.
+>
+> That's every item from the MIDI-import/file-manager/piano-roll/drum-kit plan. See
+> [`docs/PLAN.md`](docs/PLAN.md) for the full history and what might come next.
 
 ## Tech stack
 
