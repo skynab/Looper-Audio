@@ -113,6 +113,9 @@ private:
     void                   selectTrack(int index);
     void                   selectTrackAndClip(int trackIndex, int clipIndex);
     void                   addClipToSelectedTrack();
+    void                   setClipLength(int trackIndex, int clipIndex, double newLengthBeats);
+    void                   setPatternBars(int bars);
+    void                   updateBarsControl();
     void                   updateEditingLabel();
     void                   layoutLeftPane();
     void                   buildDefaultDockLayout();
@@ -182,6 +185,8 @@ private:
 
     CallbackComponent                  editTab_;
     juce::Label                        editingLabel_;
+    juce::Label                        barsLabel_ { {}, "Bars" };
+    juce::ComboBox                     barsBox_; // pattern length of the open clip
     PianoRoll                          pianoRoll_;
 
     SynthEditor                        synthEditor_; // its own dock panel — see refreshSynthEditorForSelected

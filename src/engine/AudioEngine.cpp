@@ -311,6 +311,9 @@ void AudioEngine::drainCommandQueue() noexcept
             case EngineCommand::Type::SetTempo:        transport_.setTempo(command.a); break;
             case EngineCommand::Type::SetLoopRegion:   transport_.setLoopRegion((int64_t) command.a, (int64_t) command.b); break;
             case EngineCommand::Type::SetMasterGainDb: master_.setGainDb((float) command.a); break;
+            case EngineCommand::Type::SetTimeSignature:
+                transport_.tempoMap().setTimeSignature((int) command.a, (int) command.b);
+                break;
         }
     }
 }

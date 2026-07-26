@@ -40,6 +40,7 @@ class ArrangementView final : public juce::Component,
 public:
     std::function<void(double)> onSeek; // beat position clicked
     std::function<void(int trackIndex, int clipIndex, double newStartBeats)> onClipMoved;
+    std::function<void(int trackIndex, int clipIndex, double newLengthBeats)> onClipResized;
     std::function<void(int trackIndex, int clipIndex)> onClipSelected; // fired on press, before any drag
     std::function<void(const juce::File& file, double dropBeat, int trackIndex)> onFileDropped;
 
@@ -125,15 +126,26 @@ public:
             for (int c = 0; c < (int) track.clips.size(); ++c)
             {
                 const auto&  clip          = track.clips[(size_t) c];
-                const bool   isBeingMoved   = dragging_ && i == dragTrackIndex_ && c == dragClipIndex_;
+                const bool   isBeingDragged = dragging_ && i == dragTrackIndex_ && c == dragClipIndex_;
                 const bool   isEditSelected = i == selectedTrackForEdit_ && c == selectedClipForEdit_;
-                const double startBeats     = isBeingMoved ? dragPreviewStart_ : clip.startBeats;
+                const double startBeats     = isBeingDragged ? dragPreviewStart_ : clip.startBeats;
+                const double lengthBeats    = isBeingDragged ? dragPreviewLength_ : clip.lengthBeats;
 
                 const float cx = geometry_.xForBeat(startBeats);
-                const float cw = juce::jmax(2.0f, (float) clip.lengthBeats * ppb);
+                const float cw = juce::jmax(2.0f, (float) lengthBeats * ppb);
                 const juce::Rectangle<float> r(cx, y + 3.0f, cw, geometry_.laneHeight - 6.0f);
-                g.setColour(isBeingMoved ? juce::Colour(0xff5aad64) : juce::Colour(0xff3a7d44));
+                g.setColour(isBeingDragged ? juce::Colour(0xff5aad64) : juce::Colour(0xff3a7d44));
                 g.fillRoundedRectangle(r, 3.0f);
+
+                // A grip along the right edge, so the resize handle is
+                // visible rather than only discoverable by hovering.
+                if (r.getWidth() > 3.0f * kResizeEdgePixels)
+                {
+                    g.setColour(juce::Colours::white.withAlpha(0.18f));
+                    g.fillRect(r.getRight() - kResizeEdgePixels, r.getY() + 2.0f,
+                               kResizeEdgePixels - 1.0f, r.getHeight() - 4.0f);
+                }
+
                 g.setColour(isEditSelected ? juce::Colours::cyan.withAlpha(0.9f) : juce::Colours::black.withAlpha(0.3f));
                 g.drawRoundedRectangle(r, 3.0f, isEditSelected ? 2.0f : 1.0f);
             }
@@ -165,12 +177,17 @@ public:
         int trackIndex = -1, clipIndex = -1;
         if (findClipAt(e.position, trackIndex, clipIndex))
         {
-            dragging_          = true;
-            dragTrackIndex_    = trackIndex;
-            dragClipIndex_     = clipIndex;
-            dragGrabBeat_      = geometry_.beatForX(e.position.x);
-            dragOriginalStart_ = song_.tracks[(size_t) trackIndex].clips[(size_t) clipIndex].startBeats;
-            dragPreviewStart_  = dragOriginalStart_;
+            const auto& clip = song_.tracks[(size_t) trackIndex].clips[(size_t) clipIndex];
+
+            dragging_           = true;
+            resizing_           = isOnClipRightEdge(clip, e.position.x);
+            dragTrackIndex_     = trackIndex;
+            dragClipIndex_      = clipIndex;
+            dragGrabBeat_       = geometry_.beatForX(e.position.x);
+            dragOriginalStart_  = clip.startBeats;
+            dragOriginalLength_ = clip.lengthBeats;
+            dragPreviewStart_   = dragOriginalStart_;
+            dragPreviewLength_  = dragOriginalLength_;
 
             if (onClipSelected)
                 onClipSelected(trackIndex, clipIndex);
@@ -190,7 +207,17 @@ public:
             return;
 
         const double currentBeat = geometry_.beatForX(e.position.x);
-        dragPreviewStart_ = std::max(0.0, dragOriginalStart_ + (currentBeat - dragGrabBeat_));
+
+        // Snap to whole beats unless alt is held — the usual DAW convention,
+        // and without it a clip can't be given an exact length at all.
+        const bool snap = ! e.mods.isAltDown();
+
+        if (resizing_)
+            dragPreviewLength_ = std::max(kMinClipBeats,
+                                          maybeSnap(currentBeat - dragPreviewStart_, snap, kMinClipBeats));
+        else
+            dragPreviewStart_ = std::max(0.0, maybeSnap(dragOriginalStart_ + (currentBeat - dragGrabBeat_),
+                                                        snap, 0.0));
         repaint();
     }
 
@@ -199,13 +226,32 @@ public:
         if (! dragging_)
             return;
 
+        const bool wasResizing = resizing_;
         dragging_ = false;
+        resizing_ = false;
 
-        // Only fire for an actual move — a plain click-to-select (no drag)
+        // Only fire for an actual change — a plain click-to-select (no drag)
         // would otherwise create a harmless but noisy no-op undo step.
-        if (onClipMoved && std::abs(dragPreviewStart_ - dragOriginalStart_) > 1.0e-9)
+        if (wasResizing)
+        {
+            if (onClipResized && std::abs(dragPreviewLength_ - dragOriginalLength_) > 1.0e-9)
+                onClipResized(dragTrackIndex_, dragClipIndex_, dragPreviewLength_);
+        }
+        else if (onClipMoved && std::abs(dragPreviewStart_ - dragOriginalStart_) > 1.0e-9)
+        {
             onClipMoved(dragTrackIndex_, dragClipIndex_, dragPreviewStart_);
+        }
         repaint();
+    }
+
+    void mouseMove(const juce::MouseEvent& e) override
+    {
+        // The resize cursor is the only hint the clip's edge is grabbable.
+        int trackIndex = -1, clipIndex = -1;
+        const bool onEdge = findClipAt(e.position, trackIndex, clipIndex)
+                         && isOnClipRightEdge(song_.tracks[(size_t) trackIndex].clips[(size_t) clipIndex],
+                                              e.position.x);
+        setMouseCursor(onEdge ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
     // juce::DragAndDropTarget
@@ -318,12 +364,32 @@ private:
     model::Song      song_;
     double           playheadBeats_ = 0.0;
 
+    static constexpr double kMinClipBeats     = 1.0;  // a clip shorter than a beat isn't useful
+    static constexpr float  kResizeEdgePixels = 6.0f;
+
+    /** Rounds to whole beats when snapping is on, with a floor so a snapped
+        value can't collapse below its minimum. */
+    static double maybeSnap(double beats, bool snap, double minimum)
+    {
+        const double snapped = snap ? std::round(beats) : beats;
+        return std::max(minimum, snapped);
+    }
+
+    bool isOnClipRightEdge(const model::Clip& clip, float x) const
+    {
+        const float right = geometry_.xForBeat(clip.startBeats + clip.lengthBeats);
+        return x >= right - kResizeEdgePixels && x <= right;
+    }
+
     bool   dragging_          = false;
+    bool   resizing_          = false;
     int    dragTrackIndex_    = -1;
     int    dragClipIndex_     = -1;
-    double dragGrabBeat_      = 0.0; // beat under the mouse at grab
-    double dragOriginalStart_ = 0.0; // the clip's startBeats at grab
-    double dragPreviewStart_  = 0.0; // live preview while dragging
+    double dragGrabBeat_       = 0.0; // beat under the mouse at grab
+    double dragOriginalStart_  = 0.0; // the clip's startBeats at grab
+    double dragPreviewStart_   = 0.0; // live preview while dragging
+    double dragOriginalLength_ = 0.0; // the clip's lengthBeats at grab
+    double dragPreviewLength_  = 0.0; // live preview while resizing
 
     int selectedTrackForEdit_ = -1;
     int selectedClipForEdit_  = -1;

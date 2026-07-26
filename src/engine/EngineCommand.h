@@ -16,7 +16,8 @@ struct EngineCommand
         Seek,           // a: sample position
         SetTempo,       // a: bpm
         SetLoopRegion,  // a: start sample, b: end sample
-        SetMasterGainDb // a: dB
+        SetMasterGainDb, // a: dB
+        SetTimeSignature // a: numerator, b: denominator
     };
 
     Type   type {};

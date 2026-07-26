@@ -413,6 +413,21 @@ MainComponent::MainComponent()
     // Drums pane instead. ----
     editingLabel_.setFont(juce::Font(juce::FontOptions(13.0f)));
     editTab_.addAndMakeVisible(editingLabel_);
+
+    // Pattern length of the open clip, in bars — how long the content loops
+    // over, as opposed to the clip's window on the timeline (which the
+    // arrangement's resize handle sets). Deliberately separate controls: they
+    // are separate concepts, and resizing the window shouldn't silently
+    // re-loop the notes inside it.
+    barsLabel_.setFont(juce::Font(juce::FontOptions(11.0f)));
+    barsLabel_.setJustificationType(juce::Justification::centredRight);
+    editTab_.addAndMakeVisible(barsLabel_);
+
+    for (int bars : { 1, 2, 4 })
+        barsBox_.addItem(juce::String(bars), bars);
+    barsBox_.onChange = [this] { setPatternBars(barsBox_.getSelectedId()); };
+    editTab_.addAndMakeVisible(barsBox_);
+
     editTab_.addAndMakeVisible(pianoRoll_);
     editTab_.onResized = [this] { layoutEditTab(); };
 
@@ -510,6 +525,11 @@ MainComponent::MainComponent()
             lines.add(f.getFullPathName());
         settings_.setValue("fileBrowserFavorites", lines.joinIntoString("\n"));
         settings_.saveIfNeeded();
+    };
+
+    arrangementView_.onClipResized = [this](int trackIndex, int clipIndex, double newLengthBeats)
+    {
+        setClipLength(trackIndex, clipIndex, newLengthBeats);
     };
 
     arrangementView_.onFileDropped = [this](const juce::File& file, double dropBeat, int trackIndex)
@@ -817,6 +837,84 @@ void MainComponent::addClipToSelectedTrack()
     updateEditingLabel();
 }
 
+/** Sets a clip's window on the timeline (from the arrangement's resize
+    handle). Note this is the window, not the pattern's loop length — see
+    setPatternBars. A track holding a *single* clip is still given an
+    unbounded window by syncEngineTracks (the long-standing "one clip plays
+    until Stop" rule), so resizing a lone clip changes what you see and what
+    gets exported, but not when it stops sounding; that only bites once the
+    track has more than one clip. */
+void MainComponent::setClipLength(int trackIndex, int clipIndex, double newLengthBeats)
+{
+    history_.edit("Resize clip", [trackIndex, clipIndex, newLengthBeats](model::Song& s)
+    {
+        if (trackIndex < 0 || trackIndex >= (int) s.tracks.size())
+            return;
+        auto& clips = s.tracks[(size_t) trackIndex].clips;
+        if (clipIndex >= 0 && clipIndex < (int) clips.size())
+            clips[(size_t) clipIndex].lengthBeats = juce::jmax(1.0, newLengthBeats);
+    });
+
+    syncEngineTracks();
+    arrangementView_.setSong(history_.current());
+    updateEditingLabel();
+}
+
+/** Sets how many bars the open clip's pattern loops over. Growing the pattern
+    also grows the clip's window if the window would otherwise be too short to
+    contain it — keeping a clip able to hold its own content isn't the same as
+    silently re-looping it, which is why the window is only ever grown here,
+    never shrunk. */
+void MainComponent::setPatternBars(int bars)
+{
+    if (bars <= 0 || selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const double beatsPerBar = juce::jmax(1.0, uiTempoMap_.quartersPerBar());
+    const double lengthBeats = beatsPerBar * bars;
+    const int    trackIdx    = selectedTrackIndex_;
+    const int    clipIdx     = selectedClipIndex_;
+
+    history_.edit("Set pattern length", [trackIdx, clipIdx, lengthBeats](model::Song& s)
+    {
+        if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+            return;
+        auto& clips = s.tracks[(size_t) trackIdx].clips;
+        if (clipIdx < 0 || clipIdx >= (int) clips.size())
+            return;
+
+        auto& clip = clips[(size_t) clipIdx];
+        clip.pattern.lengthBeats = lengthBeats;
+        clip.lengthBeats         = juce::jmax(clip.lengthBeats, lengthBeats);
+
+        // Notes now past the end would be unreachable in the editor and
+        // silent in the sequencer, so drop them rather than leave them
+        // invisibly attached to the clip.
+        auto& notes = clip.pattern.notes;
+        notes.erase(std::remove_if(notes.begin(), notes.end(),
+                                   [lengthBeats](const engine::Note& n) { return n.startBeats >= lengthBeats; }),
+                    notes.end());
+    });
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshDrumsPaneForSelected();
+    arrangementView_.setSong(history_.current());
+    updateEditingLabel();
+}
+
+/** Mirrors the open clip's pattern length into the Bars box. */
+void MainComponent::updateBarsControl()
+{
+    const double beatsPerBar = juce::jmax(1.0, uiTempoMap_.quartersPerBar());
+    const auto&  pattern     = currentPattern();
+    const int    bars        = juce::jmax(1, (int) std::llround(pattern.lengthBeats / beatsPerBar));
+
+    // Only reflects lengths the box actually offers; an odd length set
+    // elsewhere leaves it blank rather than silently rounding the clip.
+    barsBox_.setSelectedId(bars == 1 || bars == 2 || bars == 4 ? bars : 0, juce::dontSendNotification);
+}
+
 void MainComponent::syncEngineTracks()
 {
     const auto& song = history_.current();
@@ -927,6 +1025,7 @@ void MainComponent::syncEngineTracks()
 void MainComponent::refreshPianoRollForSelected()
 {
     pianoRoll_.setPattern(currentPattern());
+    updateBarsControl();
 
     const bool isDrum = selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount()
                      && history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Drum;
@@ -1290,6 +1389,14 @@ void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
 
 void MainComponent::refreshFromModel()
 {
+    // The song's metre drives both tempo maps: the UI's (bar/beat readout,
+    // bars-to-beats for pattern lengths) and the engine's (which decides
+    // where the metronome's downbeat accent falls). Neither was ever told,
+    // so both sat at 4/4 no matter what the document said.
+    const auto& song = history_.current();
+    uiTempoMap_.setTimeSignature(song.timeSigNumerator, song.timeSigDenominator);
+    post(Cmd::SetTimeSignature, (double) song.timeSigNumerator, (double) song.timeSigDenominator);
+
     if (selectedTrackIndex_ >= trackCount())
         selectedTrackIndex_ = juce::jmax(0, trackCount() - 1);
 
@@ -2028,8 +2135,11 @@ void MainComponent::layoutArrangeTab()
 
 void MainComponent::layoutEditTab()
 {
-    auto area = editTab_.getLocalBounds();
-    editingLabel_.setBounds(area.removeFromTop(22).reduced(6, 0));
+    auto area   = editTab_.getLocalBounds();
+    auto header = area.removeFromTop(22);
+    barsBox_.setBounds(header.removeFromRight(56).reduced(2, 0));
+    barsLabel_.setBounds(header.removeFromRight(34));
+    editingLabel_.setBounds(header.reduced(6, 0));
     pianoRoll_.setBounds(area);
 }
 

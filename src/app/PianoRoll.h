@@ -46,10 +46,16 @@ public:
 
     const engine::Pattern& pattern() const noexcept { return pattern_; }
 
-    /** Replace the displayed pattern without firing onChange (used for undo/redo). */
+    /** Replace the displayed pattern without firing onChange (used for undo/redo).
+        The column count follows the pattern's own length, so a longer clip is
+        actually editable rather than showing only its first bar — same rule
+        DrumStepGrid uses, capped so a very long pattern can't produce
+        hairline columns. */
     void setPattern(const engine::Pattern& p)
     {
         pattern_ = p;
+        const int steps = (int) std::llround(pattern_.lengthBeats / geometry_.stepBeats);
+        geometry_.numSteps = juce::jlimit(1, kMaxSteps, steps);
         repaint();
     }
 
@@ -299,6 +305,7 @@ private:
 
     static constexpr int   kDefaultLowPitch    = 48; // C3
     static constexpr int   kDefaultNumRows     = 24; // two octaves
+    static constexpr int   kMaxSteps           = 64; // 4 bars of 16ths
     static constexpr float kVelocityLaneHeight = 46.0f;
     static constexpr float kResizeEdgePixels   = 6.0f;
 
