@@ -906,10 +906,13 @@ shaped the result:
 
 The ordering beyond here, with the reasoning:
 
-- **Per-track insert effects.** Effects today live only on the master bus plus one shared send, so
-  every track shares one reverb — the biggest functional hole for real mixing. It also introduces the
-  effect-chain abstraction that plugin hosting will slot into, so it's better shaped before hosting
-  exists than retrofitted around it.
+- **Per-track insert effects (implemented).** Each track now has its own filter, delay and reverb,
+  pre-fader, reusing the master bus's settings structs and a new Track FX pane. Shipped as a *fixed
+  trio* rather than the general chain this entry originally imagined: the engine's no-real-time-graph-
+  surgery rule makes a fixed set free (members of `InstrumentTrack`, prepared once, bypassed when
+  off), while an arbitrary reorderable chain needs a slot abstraction with a lock-free swap. That is
+  better designed alongside plugin hosting, which forces the question anyway — so the abstraction
+  moves there rather than being guessed at now.
 - **Automating more than gain.** `AutomationLane` is proven and sample-accurate on export but is
   wired only to master and per-track gain; pan, sends, filter cutoff and the synth parameters are
   mostly plumbing on top of it. (Playback is still coarse — message-thread at 30 Hz — so fast moves
