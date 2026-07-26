@@ -913,10 +913,13 @@ The ordering beyond here, with the reasoning:
   off), while an arbitrary reorderable chain needs a slot abstraction with a lock-free swap. That is
   better designed alongside plugin hosting, which forces the question anyway — so the abstraction
   moves there rather than being guessed at now.
-- **Automating more than gain.** `AutomationLane` is proven and sample-accurate on export but is
-  wired only to master and per-track gain; pan, sends, filter cutoff and the synth parameters are
-  mostly plumbing on top of it. (Playback is still coarse — message-thread at 30 Hz — so fast moves
-  are steppy outside a bounce; worth revisiting here.)
+- **Automating more than gain (implemented).** Lanes are now keyed by a `TrackParam`, so adding an
+  automatable parameter is an enumerator plus the code that applies it. Gain, **pan** (which didn't
+  exist as a parameter at all and had to be added first) and send level are automatable; the export
+  path automates gain and pan sample-accurately. Insert-effect and synth parameters are the obvious
+  next enumerators and need no new machinery. **Playback is still coarse** — message-thread at 30 Hz,
+  so fast moves are stepped when playing even though an export is sample-accurate. Fixing that means
+  handing lanes to the audio thread, which is its own piece of work and the main thing left here.
 - **Session view: clip launching + scenes** — the loop-first identity §1 is built around, and still
   entirely absent. Held until the items above land, because clip launching is far more compelling
   once clips are properly editable.
