@@ -40,6 +40,10 @@ public:
         before this parameter existed. */
     using GainAutomationFn = std::function<float(int trackIndex, double beat, float staticGainDb)>;
 
+    /** As GainAutomationFn, but for pan (-1..+1). Optional and independent:
+        a render can automate gain, pan, both or neither. */
+    using PanAutomationFn = std::function<float(int trackIndex, double beat, float staticPan)>;
+
     /** Renders one instrument track per pattern, at the given per-track gains (dB),
         solo flags, clip start offsets (beats — the track stays silent until the
         transport reaches this point, then plays and loops indefinitely), and
@@ -75,7 +79,8 @@ public:
                                            GainAutomationFn gainAutomation = {},
                                            int    sendBusEffectType = 0,
                                            float  sendDelayTimeMs = 300.0f,
-                                           float  sendDelayFeedback = 0.35f)
+                                           float  sendDelayFeedback = 0.35f,
+                                           PanAutomationFn panAutomation = {})
     {
         const int totalSamples = (int) std::ceil(numSeconds * sampleRate);
         juce::AudioBuffer<float> output(2, std::max(1, totalSamples));
@@ -164,10 +169,17 @@ public:
                     // gets its usual, gain-independent pre-fader copy from
                     // inside render()) so we can fold it into the mix ourselves
                     // with a sample-accurate curve instead of one flat gain.
+                    // Pan is neutralised for the same reason as gain: whatever
+                    // render() applies statically would otherwise be applied a
+                    // second time by the per-sample fold below.
+                    const float staticPan = track->pan.load();
+
                     trackTemp.clear();
                     track->gainDb.store(0.0f);
+                    track->pan.store(0.0f);
                     track->render(trackTemp, sendBus, noLiveMidi, ctx, false, anySolo);
                     track->gainDb.store(staticGainDb);
+                    track->pan.store(staticPan);
 
                     const int channels = juce::jmin(block.getNumChannels(), trackTemp.getNumChannels());
                     for (int i = 0; i < n; ++i)
@@ -175,8 +187,20 @@ public:
                         const double beat = samplesPerBeat > 0.0 ? (double) (playhead + i) / samplesPerBeat : 0.0;
                         const float  g    = juce::Decibels::decibelsToGain(
                                                 gainAutomation((int) t, beat, staticGainDb));
+
+                        // Same unity-centre law as InstrumentTrack, so an
+                        // exported centred track matches the live one exactly.
+                        const float pan      = juce::jlimit(-1.0f, 1.0f,
+                                                   panAutomation ? panAutomation((int) t, beat, staticPan)
+                                                                 : staticPan);
+                        const float panLeft  = pan <= 0.0f ? 1.0f : 1.0f - pan;
+                        const float panRight = pan >= 0.0f ? 1.0f : 1.0f + pan;
+
                         for (int ch = 0; ch < channels; ++ch)
-                            block.getWritePointer(ch)[i] += trackTemp.getReadPointer(ch)[i] * g;
+                        {
+                            const float channelGain = g * (ch == 0 ? panLeft : (ch == 1 ? panRight : 1.0f));
+                            block.getWritePointer(ch)[i] += trackTemp.getReadPointer(ch)[i] * channelGain;
+                        }
                     }
                 }
             }

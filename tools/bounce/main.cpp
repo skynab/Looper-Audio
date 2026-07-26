@@ -387,6 +387,39 @@ int main(int argc, char** argv)
         drumPadPitchWorks = before > 0.01f && after < 1.0e-5f;
     }
 
+    // Pan-automation export check: a lane sweeping hard left to hard right
+    // across the render must land the energy on the left early and the right
+    // late. Exercises OfflineRenderer's isolation path, which is the only
+    // place per-track automation can be applied sample-accurately.
+    bool panAutomationWorks = false;
+    {
+        const double renderSeconds = 4.0;
+
+        OfflineRenderer::GainAutomationFn flatGain =
+            [](int, double, float staticGainDb) { return staticGainDb; };
+        OfflineRenderer::PanAutomationFn sweep =
+            [renderSeconds, bpm](int, double beat, float) -> float
+            {
+                const double totalBeats = renderSeconds * bpm / 60.0;
+                return (float) juce::jlimit(-1.0, 1.0, (beat / totalBeats) * 2.0 - 1.0);
+            };
+
+        const auto swept = OfflineRenderer::render({ arp }, { 0.0f }, {}, {}, { 0.0f },
+                                                   false, 0.5f, 0.5f, 0.5f,
+                                                   bpm, sampleRate, renderSeconds, 512, flatGain,
+                                                   0, 300.0f, 0.35f, sweep);
+
+        const int window = (int) (sampleRate * 0.5);
+        const int lateAt = swept.getNumSamples() - window;
+
+        const float earlyLeft  = swept.getRMSLevel(0, 0, window);
+        const float earlyRight = swept.getRMSLevel(1, 0, window);
+        const float lateLeft   = swept.getRMSLevel(0, lateAt, window);
+        const float lateRight  = swept.getRMSLevel(1, lateAt, window);
+
+        panAutomationWorks = earlyLeft > earlyRight * 2.0f && lateRight > lateLeft * 2.0f;
+    }
+
     // Per-track pan check: the same part hard-panned left must vanish from
     // the right channel while staying present on the left, and a centred
     // track must be identical on both — the unity-centre pan law is what
@@ -727,6 +760,7 @@ int main(int argc, char** argv)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
               << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
               << "  trackPanWorks=" << (trackPanWorks ? 1 : 0)
+              << "  panAutomationWorks=" << (panAutomationWorks ? 1 : 0)
               << "  trackInsertFilterWorks=" << (trackInsertFilterWorks ? 1 : 0)
               << "  metronomeWorks=" << (metronomeWorks ? 1 : 0)
               << "  metronomeSilentWhenOff=" << (metronomeSilentWhenOff ? 1 : 0)
@@ -755,7 +789,7 @@ int main(int argc, char** argv)
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && drumPadMixWorks && drumPadPitchWorks
-                 && trackPanWorks && trackInsertFilterWorks
+                 && trackPanWorks && panAutomationWorks && trackInsertFilterWorks
                  && metronomeWorks && metronomeSilentWhenOff && recorderWorks;
     return ok ? 0 : 2;
 }

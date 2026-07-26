@@ -36,8 +36,9 @@ namespace looper::model
       12  + SYNTH (per-track model::SynthSettings)
       13  DPAD carries per-pad gain/pan/pitch/mute/solo before its sample path
       14  + TFX (per-track insert filter/delay/reverb)
-      15  TRACK carries pan before its (rest-of-line) name */
-inline constexpr int kFormatVersion = 15;
+      15  TRACK carries pan before its (rest-of-line) name
+      16  TAUTO (one gain lane) -> TAUTOS/TLANE (a lane per parameter) */
+inline constexpr int kFormatVersion = 16;
 namespace detail
 {
     inline std::string num(double v)
@@ -94,9 +95,23 @@ inline std::string serialize(const Song& song)
             << " " << (track.solo ? 1 : 0) << " " << detail::num((double) track.sendLevel)
             << " " << detail::num((double) track.pan)
             << " " << track.name << "\n";
-        out << "TAUTO " << track.gainAutomation.points().size() << "\n";
-        for (const auto& p : track.gainAutomation.points())
-            out << "TAPT " << detail::num(p.beat) << " " << detail::num((double) p.value) << "\n";
+        // Only non-empty lanes are written, so an unautomated track costs one
+        // "TAUTOS 0" line rather than one empty record per automatable
+        // parameter (a list that will only grow).
+        size_t laneCount = 0;
+        for (const auto& [param, lane] : track.automation)
+            if (! lane.empty())
+                ++laneCount;
+
+        out << "TAUTOS " << laneCount << "\n";
+        for (const auto& [param, lane] : track.automation)
+        {
+            if (lane.empty())
+                continue;
+            out << "TLANE " << param << " " << lane.points().size() << "\n";
+            for (const auto& pt : lane.points())
+                out << "TAPT " << detail::num(pt.beat) << " " << detail::num((double) pt.value) << "\n";
+        }
         out << "DRUMKIT " << track.drumKit.pads.size() << "\n";
         for (const auto& pad : track.drumKit.pads)
             // label is a space-free token (no pad-rename UI exists yet, so
@@ -319,16 +334,41 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             track.name = detail::trimLeadingSpace(std::move(name));
         }
 
+        // Before v16 a track had exactly one lane, always gain, written as a
+        // bare TAUTO point list. Read it straight into the Gain lane so an
+        // older project keeps its automation rather than silently losing it.
         if (readTagged("TAUTO", rest))
         {
             const int pointCount = std::atoi(rest.c_str());
+            auto&     gainLane   = track.laneFor(TrackParam::Gain);
             for (int p = 0; p < pointCount; ++p)
             {
                 if (! readTagged("TAPT", rest)) return fail("truncated track automation");
                 std::istringstream ps(rest);
                 double beat = 0.0, value = 0.0;
                 ps >> beat >> value;
-                track.gainAutomation.addPoint(beat, (float) value);
+                gainLane.addPoint(beat, (float) value);
+            }
+        }
+        else if (readTagged("TAUTOS", rest))
+        {
+            const int laneCount = std::atoi(rest.c_str());
+            for (int l = 0; l < laneCount; ++l)
+            {
+                if (! readTagged("TLANE", rest)) return fail("truncated automation lane list");
+                std::istringstream ls(rest);
+                int paramId = 0, pointCount = 0;
+                ls >> paramId >> pointCount;
+
+                auto& lane = track.automation[paramId];
+                for (int p = 0; p < pointCount; ++p)
+                {
+                    if (! readTagged("TAPT", rest)) return fail("truncated track automation");
+                    std::istringstream ps(rest);
+                    double beat = 0.0, value = 0.0;
+                    ps >> beat >> value;
+                    lane.addPoint(beat, (float) value);
+                }
             }
         }
 

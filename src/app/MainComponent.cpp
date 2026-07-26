@@ -383,7 +383,7 @@ MainComponent::MainComponent()
         auto& song = history_.mutableCurrent();
         song.masterGainDb.clear();
         if (selectedTrackIndex_ >= 0 && selectedTrackIndex_ < (int) song.tracks.size())
-            song.tracks[(size_t) selectedTrackIndex_].gainAutomation.clear();
+            song.tracks[(size_t) selectedTrackIndex_].automation.clear(); // every parameter, not just gain
     };
     masterPanel_.addAndMakeVisible(autoRecButton);
     masterPanel_.addAndMakeVisible(autoClearButton);
@@ -1616,14 +1616,12 @@ void MainComponent::setTrackGain(int index, float gainDb)
         auto& track = song.tracks[(size_t) index];
         track.gainDb = gainDb;
 
-        // The same global "Rec Auto" toggle used for master-gain automation
-        // also arms per-track gain automation — touch whichever fader you want
-        // to automate while it's on.
+        // The same global "Rec Auto" toggle arms every automatable per-track
+        // parameter — touch whichever control you want to automate while it's
+        // on (see also setTrackPan and setTrackSendLevel).
         if (recordAutomation_ && engine_.isPlaying())
-        {
-            const double beat = uiTempoMap_.ppqFromSamples(engine_.playheadSamples());
-            track.gainAutomation.addPoint(beat, gainDb);
-        }
+            track.laneFor(model::TrackParam::Gain)
+                 .addPoint(uiTempoMap_.ppqFromSamples(engine_.playheadSamples()), gainDb);
     }
     engine_.setTrackGainDb(index, gainDb);
 }
@@ -1648,7 +1646,13 @@ void MainComponent::setTrackPan(int index, float pan)
 {
     auto& song = history_.mutableCurrent();
     if (index >= 0 && index < (int) song.tracks.size())
-        song.tracks[(size_t) index].pan = pan;
+    {
+        auto& track = song.tracks[(size_t) index];
+        track.pan = pan;
+        if (recordAutomation_ && engine_.isPlaying())
+            track.laneFor(model::TrackParam::Pan)
+                 .addPoint(uiTempoMap_.ppqFromSamples(engine_.playheadSamples()), pan);
+    }
     engine_.setTrackPan(index, pan);
 }
 
@@ -1656,7 +1660,13 @@ void MainComponent::setTrackSendLevel(int index, float level)
 {
     auto& song = history_.mutableCurrent();
     if (index >= 0 && index < (int) song.tracks.size())
-        song.tracks[(size_t) index].sendLevel = level;
+    {
+        auto& track = song.tracks[(size_t) index];
+        track.sendLevel = level;
+        if (recordAutomation_ && engine_.isPlaying())
+            track.laneFor(model::TrackParam::SendLevel)
+                 .addPoint(uiTempoMap_.ppqFromSamples(engine_.playheadSamples()), level);
+    }
     engine_.setTrackSendLevel(index, level);
 }
 
@@ -2147,17 +2157,27 @@ void MainComponent::bounceProject()
         // renders through the exact same (untouched) fast path as before this
         // existed — no behaviour change for the common case.
         const bool anyTrackAutomated = std::any_of(song.tracks.begin(), song.tracks.end(),
-                                                   [](const model::Track& t) { return ! t.gainAutomation.empty(); });
+                                                   [](const model::Track& t) { return t.hasAutomation(); });
 
         engine::OfflineRenderer::GainAutomationFn gainAutomationFn;
+        engine::OfflineRenderer::PanAutomationFn  panAutomationFn;
         if (anyTrackAutomated)
         {
+            // One lookup shape for both, since the only difference is which
+            // lane and which static fallback.
             gainAutomationFn = [&song](int trackIndex, double beat, float staticGainDb) -> float
             {
                 if (trackIndex < 0 || (size_t) trackIndex >= song.tracks.size())
                     return staticGainDb;
-                const auto& lane = song.tracks[(size_t) trackIndex].gainAutomation;
-                return lane.empty() ? staticGainDb : lane.valueAt(beat, staticGainDb);
+                const auto* lane = song.tracks[(size_t) trackIndex].lane(model::TrackParam::Gain);
+                return lane != nullptr ? lane->valueAt(beat, staticGainDb) : staticGainDb;
+            };
+            panAutomationFn = [&song](int trackIndex, double beat, float staticPan) -> float
+            {
+                if (trackIndex < 0 || (size_t) trackIndex >= song.tracks.size())
+                    return staticPan;
+                const auto* lane = song.tracks[(size_t) trackIndex].lane(model::TrackParam::Pan);
+                return lane != nullptr ? lane->valueAt(beat, staticPan) : staticPan;
             };
         }
 
@@ -2166,7 +2186,8 @@ void MainComponent::bounceProject()
                                                        song.sendBus.damping, song.sendBus.returnLevel,
                                                        bpm, sampleRate, 8.0, 512, gainAutomationFn,
                                                        (int) song.sendBus.effectType,
-                                                       song.sendBus.delayTimeMs, song.sendBus.delayFeedback);
+                                                       song.sendBus.delayTimeMs, song.sendBus.delayFeedback,
+                                                       panAutomationFn);
 
         if (song.filter.enabled)
         {
@@ -2298,15 +2319,31 @@ void MainComponent::timerCallback()
             masterSlider.setValue(db, juce::dontSendNotification);
         }
 
+        // Every automated parameter on every track, not just gain. Still
+        // message-thread and coarse (30Hz) — fast moves are stepped on
+        // playback, though an export renders them sample-accurately.
         for (int i = 0; i < n; ++i)
         {
-            const auto& lane = song.tracks[(size_t) i].gainAutomation;
-            if (lane.empty())
-                continue;
+            const auto& track = song.tracks[(size_t) i];
 
-            const float db = lane.valueAt(beat, song.tracks[(size_t) i].gainDb);
-            engine_.setTrackGainDb(i, db);
-            trackStrips_[i]->setGainDb(db);
+            if (const auto* lane = track.lane(model::TrackParam::Gain))
+            {
+                const float db = lane->valueAt(beat, track.gainDb);
+                engine_.setTrackGainDb(i, db);
+                trackStrips_[i]->setGainDb(db);
+            }
+            if (const auto* lane = track.lane(model::TrackParam::Pan))
+            {
+                const float pan = lane->valueAt(beat, track.pan);
+                engine_.setTrackPan(i, pan);
+                trackStrips_[i]->setPan(pan);
+            }
+            if (const auto* lane = track.lane(model::TrackParam::SendLevel))
+            {
+                const float send = lane->valueAt(beat, track.sendLevel);
+                engine_.setTrackSendLevel(i, send);
+                trackStrips_[i]->setSendLevel(send);
+            }
         }
     }
 }

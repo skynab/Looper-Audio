@@ -68,8 +68,11 @@ static Song makeSampleSong()
     s.tracks[0].pan       = -0.75f;
     s.tracks[1].pan       = 0.5f;
     s.tracks[1].muted     = true;
-    s.tracks[0].gainAutomation.addPoint(0.0, -20.0f);
-    s.tracks[0].gainAutomation.addPoint(4.0, 0.0f);
+    s.tracks[0].laneFor(TrackParam::Gain).addPoint(0.0, -20.0f);
+    s.tracks[0].laneFor(TrackParam::Gain).addPoint(4.0, 0.0f);
+    s.tracks[0].laneFor(TrackParam::Pan).addPoint(0.0, -1.0f);
+    s.tracks[0].laneFor(TrackParam::Pan).addPoint(8.0, 1.0f);
+    s.tracks[1].laneFor(TrackParam::SendLevel).addPoint(2.0, 0.25f);
     s.tracks[2].drumKit.pads[0].samplePath = "samples/Kick 808.wav"; // with a space, deliberately
     s.tracks[2].drumKit.pads[0].gainDb         = -2.5f;
     s.tracks[2].drumKit.pads[0].pitchSemitones = -3.0f;
@@ -170,7 +173,9 @@ TEST_CASE("A project from before per-track synths still opens", "[model][io]")
         "AUTO 0\n"
         "TRACKS 1\n"
         "TRACK 1 2 0 0 0 0 Drums\n"
-        "TAUTO 0\n"
+        "TAUTO 2\n"
+        "TAPT 0 -12\n"
+        "TAPT 4 0\n"
         "DRUMKIT 1\n"
         "DPAD 36 Kick samples/Kick 808.wav\n"
         "CLIPS 1\n"
@@ -209,6 +214,13 @@ TEST_CASE("A project from before per-track synths still opens", "[model][io]")
 
     // Pan joined TRACK in v15; this file predates it, so it reads as centred.
     REQUIRE(track.pan == 0.0f);
+
+    // Its single unkeyed gain lane (all v15-and-earlier files had exactly
+    // one, always gain) must land in the Gain lane rather than be dropped.
+    const auto* gainLane = track.lane(TrackParam::Gain);
+    REQUIRE(gainLane != nullptr);
+    REQUIRE(gainLane->points().size() == 2);
+    REQUIRE(track.lane(TrackParam::Pan) == nullptr);
 }
 
 TEST_CASE("A current-format file still round-trips after the version work", "[model][io]")
