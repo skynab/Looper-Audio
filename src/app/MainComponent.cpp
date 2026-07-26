@@ -1647,9 +1647,11 @@ void MainComponent::openProject()
             return;
 
         model::Song song;
-        if (! model::deserialize(file.loadFileAsString().toStdString(), song))
+        std::string error;
+        if (! model::deserialize(file.loadFileAsString().toStdString(), song, &error))
         {
-            clipLabel.setText("Could not open: " + file.getFileName(), juce::dontSendNotification);
+            clipLabel.setText("Could not open " + file.getFileName() + ": " + error,
+                              juce::dontSendNotification);
             return;
         }
 

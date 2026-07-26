@@ -114,3 +114,85 @@ TEST_CASE("deserialize rejects malformed input", "[model][io]")
     REQUIRE_FALSE(deserialize("", out));
     REQUIRE_FALSE(deserialize("LOOPER 1\nBPM 120\n", out)); // truncated (missing later records)
 }
+
+TEST_CASE("deserialize reports why it failed", "[model][io]")
+{
+    Song        out;
+    std::string error;
+
+    REQUIRE_FALSE(deserialize("not a looper file", out, &error));
+    REQUIRE_FALSE(error.empty());
+}
+
+TEST_CASE("A file from a newer build is refused, not part-parsed", "[model][io]")
+{
+    // Reading it with this build's rules would silently drop whatever records
+    // it gained — worse than declining to open it.
+    const std::string newer = "LOOPER " + std::to_string(kFormatVersion + 1) + "\nBPM 120\n";
+
+    Song        out;
+    std::string error;
+    REQUIRE_FALSE(deserialize(newer, out, &error));
+    REQUIRE(error.find("newer") != std::string::npos);
+}
+
+TEST_CASE("A project from before per-track synths still opens", "[model][io]")
+{
+    // A v11 file: no SYNTH record, and DPAD in its old note/label/path shape.
+    // This is exactly what was on disk before those two format bumps, and it
+    // must still load — with the new fields at their defaults.
+    const std::string v11 =
+        "LOOPER 11\n"
+        "BPM 100\n"
+        "TSNUM 4\n"
+        "TSDEN 4\n"
+        "NEXTID 5\n"
+        "FILTER 0 0 1000 0.707\n"
+        "DELAY 0 300 0.35 0.3\n"
+        "REVERB 0 0.5 0.5 0.3\n"
+        "SENDBUS 0 0 0.5 0.5 300 0.35 0.5\n"
+        "PROJECTROOT \n"
+        "AUTO 0\n"
+        "TRACKS 1\n"
+        "TRACK 1 2 0 0 0 0 Drums\n"
+        "TAUTO 0\n"
+        "DRUMKIT 1\n"
+        "DPAD 36 Kick samples/Kick 808.wav\n"
+        "CLIPS 1\n"
+        "CLIP 2 0 0 4 4 \n"
+        "NOTES 1\n"
+        "NOTE 0 0.25 36 1\n";
+
+    Song        restored;
+    std::string error;
+    REQUIRE(deserialize(v11, restored, &error));
+
+    REQUIRE(restored.bpm == 100.0);
+    REQUIRE(restored.tracks.size() == 1);
+
+    const auto& track = restored.tracks[0];
+    REQUIRE(track.type == TrackType::Drum);
+    REQUIRE(track.clips.size() == 1);
+    REQUIRE(track.clips[0].pattern.notes.size() == 1);
+
+    // The pad's path survives (spaces and all) and the v13 mix fields default
+    // to a no-op, so the kit sounds as it did before they existed.
+    REQUIRE(track.drumKit.pads.size() == 1);
+    REQUIRE(track.drumKit.pads[0].samplePath == "samples/Kick 808.wav");
+    REQUIRE(track.drumKit.pads[0].gainDb == 0.0f);
+    REQUIRE(track.drumKit.pads[0].pan == 0.0f);
+    REQUIRE_FALSE(track.drumKit.pads[0].muted);
+
+    // And the synth settings this file predates are the defaults.
+    REQUIRE(track.synthSettings == SynthSettings{});
+}
+
+TEST_CASE("A current-format file still round-trips after the version work", "[model][io]")
+{
+    const Song original = makeSampleSong();
+
+    Song        restored;
+    std::string error;
+    REQUIRE(deserialize(serialize(original), restored, &error));
+    REQUIRE(restored == original);
+}

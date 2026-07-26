@@ -31,7 +31,8 @@ This is a living document. As sections mature they should graduate into their ow
 15. [Key risks & mitigations](#15-key-risks--mitigations)
 16. [Immediate next steps](#16-immediate-next-steps)
 17. [Next planned features: MIDI I/O, file manager 2.0, piano-roll & drum tools](#17-next-planned-features-midi-io-file-manager-20-piano-roll--drum-tools)
-18. [Appendix: reference reading](#18-appendix-reference-reading)
+18. [Next planned features: project-format versioning, metronome, editable clips & notes](#18-next-planned-features-project-format-versioning-metronome-editable-clips--notes)
+19. [Appendix: reference reading](#19-appendix-reference-reading)
 
 ---
 
@@ -797,7 +798,122 @@ suite, including `rmsDry=0.149266`, are unchanged.
 
 ---
 
-## 18. Appendix: reference reading
+## 18. Next planned features: project-format versioning, metronome, editable clips & notes
+
+Where things actually stand: Phases 1–4 are done (multi-track sequencing, mixer, master effects,
+gain automation, offline bounce) and the app shell has grown a freely splittable docking workspace
+with dedicated Synth and Drums panes. What's missing is less "another subsystem" than **the ability
+to write a real musical idea in it** — notes are all one length and one velocity, clips are all four
+beats, there's no clipboard, and there's no click to play to.
+
+This batch closes that gap. Build order — the format fix first because it protects work already on
+disk, then smallest-to-largest:
+
+0. **Project-format versioning** (a present bug, not a feature — see below).
+1. **Metronome + count-in** (small, standalone, unblocks recording in time).
+2. **Piano roll: note length, velocity, zoom/scroll.**
+3. **Clip length + resize handles.**
+4. **Copy/paste/duplicate, quantize, swing.**
+
+As in §17, the judgment calls are flagged here rather than buried in the code.
+
+### 0. Project-format versioning (bug fix)
+
+`model::deserialize` reads the version token after `LOOPER` but never *checks* it, and then requires
+every record of the current format in order. Two format bumps landed in one sitting (`12` for
+per-track `SynthSettings`, `13` for per-pad drum mix), which means **every project saved before those
+bumps now fails to open** — the parser reaches a missing `SYNTH` line and returns `false`, surfacing
+as a generic "couldn't open" with no explanation.
+
+The fix is to treat the version as data: parse it, and make records added after version *N* optional
+when reading a file older than *N*, falling back to the struct's defaults (which are already chosen
+to be behaviour-preserving no-ops). Two judgment calls:
+
+- **Forward compatibility is explicitly not offered.** A file newer than this build is rejected with
+  a clear message rather than partially parsed — silently dropping records the user can't see is
+  worse than refusing.
+- **The reader gets the version-tolerance, not the writer.** `serialize` always emits the current
+  format; there's no "save as old version". Keeps one write path and one set of tests.
+
+Every subsequent item in this batch bumps the format again, so this lands first.
+
+### 1. Metronome + count-in
+
+There is no click at all today, which makes recording in time guesswork. A metronome is a source
+node driven by the existing `TempoMap`/`Transport`, emitting a short synthesized tick (accented on
+the bar) — no sample assets, no new dependency.
+
+- **Not a track.** The click is engine-level and deliberately excluded from the bounce, so it can
+  never end up in an export. That means it sums in *after* the master chain rather than through it.
+- **Count-in is a transport property**, not a metronome one: arm, hit record, and the transport rolls
+  a configurable number of bars before the playhead starts capturing.
+
+### 2. Piano roll: note length, velocity, zoom/scroll
+
+The piano roll is honest about being minimal ("fixed step length, no drag-resize, no scrolling/zoom
+yet") and that is now the main thing between this app and writing an actual part. Three changes, in
+order of value: drag a note's right edge to set its length; drag vertically on a note (or a velocity
+lane under the grid) to set velocity; scroll and zoom the pitch range beyond the fixed two octaves.
+
+- **`engine::Note` already carries `lengthBeats` and `velocity`** and the sequencer already honours
+  both — this is a UI-side gap only, so it needs no engine work and no format change.
+- **Keep the click-to-toggle step behaviour** for fast drum-style entry; length/velocity editing is
+  additive, not a replacement. The drum step grid keeps its one-click-per-step model unchanged.
+- Zoom/scroll wants the pitch range to become state on `PianoRollGeometry` rather than the current
+  fixed `lowPitch`/`numRows` constants — which keeps the conversion math unit-testable headless, as
+  it is today.
+
+### 3. Clip length + resize handles
+
+Clips are created at a hardcoded 4 beats and `ArrangementView` supports moving them but not resizing
+them, so an eight-bar section is unreachable. Adds a drag handle on each clip's right edge, mirroring
+the existing move-drag (`onClipMoved` → `onClipResized`), plus a length field for exact values.
+
+- **Clip length and pattern length are separate concepts** and stay separate: the clip's window on
+  the timeline vs. the loop length of the pattern inside it. Resizing the window should *not*
+  silently re-loop the content, so both get their own control.
+- The single-clip "unbounded length" special case in `syncEngineTracks` (a lone clip loops forever)
+  has to survive this, or existing projects change behaviour.
+
+### 4. Copy/paste/duplicate, quantize, swing
+
+No clipboard exists anywhere in the app; duplicating a bar means redrawing it by hand. Adds
+copy/paste/duplicate for both clips (in the arrangement) and note selections (in the piano roll),
+then quantize and swing over a note selection.
+
+- **An app-level clipboard holding model values**, not a system-clipboard serialization — pasting
+  between two instances of the app isn't worth the format work yet.
+- **Quantize needs a selection model** in the piano roll (there isn't one today — clicks toggle
+  single notes), so selection lands as part of this item rather than being assumed.
+- Swing is expressed as a percentage offset applied to off-beat subdivisions at edit time, writing
+  real note positions rather than a playback-time feel parameter — keeps the engine unchanged and
+  the result visible and editable, consistent with "AI produces editable musical data" elsewhere.
+
+### After this batch
+
+The ordering beyond here, with the reasoning:
+
+- **Per-track insert effects.** Effects today live only on the master bus plus one shared send, so
+  every track shares one reverb — the biggest functional hole for real mixing. It also introduces the
+  effect-chain abstraction that plugin hosting will slot into, so it's better shaped before hosting
+  exists than retrofitted around it.
+- **Automating more than gain.** `AutomationLane` is proven and sample-accurate on export but is
+  wired only to master and per-track gain; pan, sends, filter cutoff and the synth parameters are
+  mostly plumbing on top of it. (Playback is still coarse — message-thread at 30 Hz — so fast moves
+  are steppy outside a bounce; worth revisiting here.)
+- **Session view: clip launching + scenes** — the loop-first identity §1 is built around, and still
+  entirely absent. Held until the items above land, because clip launching is far more compelling
+  once clips are properly editable.
+- **Plugin hosting**, then the **AI/generative layer** (symbolic MIDI first, which wants the
+  key/scale awareness that quantize in this batch already starts to need).
+
+Known limits not scheduled yet, recorded so they aren't rediscovered as surprises: the fixed 8-track
+pool (`kMaxTracks`), RAM-only recording capped at 180 s with no disk streaming, and drum pads having
+no choke groups or velocity layers.
+
+---
+
+## 19. Appendix: reference reading
 
 - **Real-time audio programming:** Ross Bencina, *"Real-time audio programming 101: time waits for
   nothing"* (the no-locks/no-allocations canon).

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "model/Song.h"
 
@@ -16,7 +17,25 @@ namespace looper::model
     Layout is flat and count-prefixed so it parses deterministically. Numbers use
     %.17g (exact IEEE double round-trip); string fields (track name, audio file)
     are the rest of their line, so they may contain spaces.
+
+    **Versioning.** `serialize` always writes kFormatVersion; there is no
+    "save as an older version", so there's one write path to reason about and
+    test. `deserialize` is the tolerant side: records introduced after a given
+    version are read only *if present*, so an older file simply leaves those
+    fields at their struct defaults (which are chosen to be behaviour-
+    preserving). Where a record's own shape changed rather than a new record
+    being added — only DPAD so far — the version decides how to read it.
+
+    A file written by a *newer* build is refused outright rather than
+    part-parsed: silently dropping records the user can't see would be worse
+    than declining to open it.
 */
+
+/** Bumped whenever the format changes. History worth knowing:
+      11  the format before per-track synths
+      12  + SYNTH (per-track model::SynthSettings)
+      13  DPAD carries per-pad gain/pan/pitch/mute/solo before its sample path */
+inline constexpr int kFormatVersion = 13;
 namespace detail
 {
     inline std::string num(double v)
@@ -37,7 +56,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 13\n";
+    out << "LOOPER " << kFormatVersion << "\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -114,38 +133,73 @@ inline std::string serialize(const Song& song)
     return out.str();
 }
 
-inline bool deserialize(const std::string& text, Song& out)
+/** Reads a project. @p errorOut, if given, receives a short human-readable
+    reason on failure (the caller shows it — see MainComponent::openProject);
+    @p out is left untouched unless the whole parse succeeds. */
+inline bool deserialize(const std::string& text, Song& out, std::string* errorOut = nullptr)
 {
-    std::istringstream in(text);
-    std::string        line;
+    auto fail = [&](const char* why)
+    {
+        if (errorOut != nullptr)
+            *errorOut = why;
+        return false;
+    };
 
-    // Reads the next line, checks its leading tag, and returns the remainder.
+    // Buffered into lines with a cursor, rather than streamed, so a record can
+    // be *offered* and declined without being consumed — which is what lets an
+    // older file skip records added in later versions (see readTagged below).
+    std::vector<std::string> lines;
+    {
+        std::istringstream in(text);
+        std::string        line;
+        while (std::getline(in, line))
+            lines.push_back(line);
+    }
+
+    size_t cursor = 0;
+
+    /** Consumes the next line and returns its remainder *only* if it carries
+        @p expectedTag; otherwise leaves the cursor alone and returns false.
+        Required records treat false as an error; records added in a later
+        format version simply let their defaults stand. */
     auto readTagged = [&](const char* expectedTag, std::string& rest) -> bool
     {
-        if (! std::getline(in, line))
+        if (cursor >= lines.size())
             return false;
-        std::istringstream ls(line);
+
+        std::istringstream ls(lines[cursor]);
         std::string        tag;
         ls >> tag;
         if (tag != expectedTag)
             return false;
+
         std::getline(ls, rest);
         rest = detail::trimLeadingSpace(std::move(rest));
+        ++cursor;
         return true;
     };
 
     std::string rest;
     if (! readTagged("LOOPER", rest))
-        return false;
+        return fail("not a Looper project file");
+
+    const int version = std::atoi(rest.c_str());
+    if (version <= 0)
+        return fail("unrecognised project format version");
+    if (version > kFormatVersion)
+        return fail("saved by a newer version of Looper-Audio");
 
     Song song;
 
-    if (! readTagged("BPM", rest))    return false; song.bpm = std::strtod(rest.c_str(), nullptr);
-    if (! readTagged("TSNUM", rest))  return false; song.timeSigNumerator = std::atoi(rest.c_str());
-    if (! readTagged("TSDEN", rest))  return false; song.timeSigDenominator = std::atoi(rest.c_str());
-    if (! readTagged("NEXTID", rest)) return false; song.nextId = std::atoi(rest.c_str());
+    if (! readTagged("BPM", rest))    return fail("missing tempo"); song.bpm = std::strtod(rest.c_str(), nullptr);
+    if (! readTagged("TSNUM", rest))  return fail("missing time signature"); song.timeSigNumerator = std::atoi(rest.c_str());
+    if (! readTagged("TSDEN", rest))  return fail("missing time signature"); song.timeSigDenominator = std::atoi(rest.c_str());
+    if (! readTagged("NEXTID", rest)) return fail("missing id counter"); song.nextId = std::atoi(rest.c_str());
 
-    if (! readTagged("FILTER", rest)) return false;
+    // Everything from here to TRACKS is read only if present: each of these
+    // records joined the format at some point, so an older file just leaves
+    // the corresponding defaults in place.
+    if (readTagged("FILTER", rest))
     {
         std::istringstream fs(rest);
         int    enabled = 0, mode = 0;
@@ -157,7 +211,7 @@ inline bool deserialize(const std::string& text, Song& out)
         song.filter.resonance = (float) resonance;
     }
 
-    if (! readTagged("DELAY", rest)) return false;
+    if (readTagged("DELAY", rest))
     {
         std::istringstream ds(rest);
         int    enabled = 0;
@@ -169,7 +223,7 @@ inline bool deserialize(const std::string& text, Song& out)
         song.delay.mix      = (float) mix;
     }
 
-    if (! readTagged("REVERB", rest)) return false;
+    if (readTagged("REVERB", rest))
     {
         std::istringstream rs(rest);
         int    enabled = 0;
@@ -181,7 +235,7 @@ inline bool deserialize(const std::string& text, Song& out)
         song.reverb.mix      = (float) mix;
     }
 
-    if (! readTagged("SENDBUS", rest)) return false;
+    if (readTagged("SENDBUS", rest))
     {
         std::istringstream sb(rest);
         int    enabled = 0, effectType = 0;
@@ -196,16 +250,18 @@ inline bool deserialize(const std::string& text, Song& out)
         song.sendBus.returnLevel   = (float) returnLevel;
     }
 
-    if (! readTagged("PROJECTROOT", rest)) return false;
-    song.projectRootFolder = rest;
+    if (readTagged("PROJECTROOT", rest))
+        song.projectRootFolder = rest;
 
-    if (! readTagged("AUTO", rest)) return false;
+    if (readTagged("AUTO", rest))
     {
         const int pointCount = std::atoi(rest.c_str());
         song.masterGainDb.clear();
         for (int i = 0; i < pointCount; ++i)
         {
-            if (! readTagged("APT", rest)) return false;
+            // Once a count-prefixed record is present its points are not
+            // optional — a short list means the file is damaged, not old.
+            if (! readTagged("APT", rest)) return fail("truncated master automation");
             std::istringstream ps(rest);
             double beat = 0.0, value = 0.0;
             ps >> beat >> value;
@@ -213,13 +269,13 @@ inline bool deserialize(const std::string& text, Song& out)
         }
     }
 
-    if (! readTagged("TRACKS", rest)) return false;
+    if (! readTagged("TRACKS", rest)) return fail("missing track list");
     const int trackCount = std::atoi(rest.c_str());
 
     for (int i = 0; i < trackCount; ++i)
     {
         if (! readTagged("TRACK", rest))
-            return false;
+            return fail("truncated track list");
 
         Track track;
         {
@@ -237,12 +293,12 @@ inline bool deserialize(const std::string& text, Song& out)
             track.name = detail::trimLeadingSpace(std::move(name));
         }
 
-        if (! readTagged("TAUTO", rest)) return false;
+        if (readTagged("TAUTO", rest))
         {
             const int pointCount = std::atoi(rest.c_str());
             for (int p = 0; p < pointCount; ++p)
             {
-                if (! readTagged("TAPT", rest)) return false;
+                if (! readTagged("TAPT", rest)) return fail("truncated track automation");
                 std::istringstream ps(rest);
                 double beat = 0.0, value = 0.0;
                 ps >> beat >> value;
@@ -250,22 +306,33 @@ inline bool deserialize(const std::string& text, Song& out)
             }
         }
 
-        if (! readTagged("DRUMKIT", rest)) return false;
+        if (readTagged("DRUMKIT", rest))
         {
             const int padCount = std::atoi(rest.c_str());
             for (int p = 0; p < padCount; ++p)
             {
-                if (! readTagged("DPAD", rest)) return false;
+                if (! readTagged("DPAD", rest)) return fail("truncated drum kit");
                 std::istringstream ps(rest);
                 DrumPad pad;
-                double  gainDb = 0.0, pan = 0.0, pitchSemitones = 0.0;
-                int     muted = 0, solo = 0;
-                ps >> pad.noteNumber >> pad.label >> gainDb >> pan >> pitchSemitones >> muted >> solo;
-                pad.gainDb         = (float) gainDb;
-                pad.pan            = (float) pan;
-                pad.pitchSemitones = (float) pitchSemitones;
-                pad.muted          = muted != 0;
-                pad.solo           = solo != 0;
+                ps >> pad.noteNumber >> pad.label;
+
+                // The one record whose *shape* changed rather than being
+                // added wholesale: before v13 a pad was just note/label/path,
+                // and the mix fields didn't exist. They can't be detected by
+                // token count because the path is rest-of-line and may
+                // contain spaces, so the version decides.
+                if (version >= 13)
+                {
+                    double gainDb = 0.0, pan = 0.0, pitchSemitones = 0.0;
+                    int    muted = 0, solo = 0;
+                    ps >> gainDb >> pan >> pitchSemitones >> muted >> solo;
+                    pad.gainDb         = (float) gainDb;
+                    pad.pan            = (float) pan;
+                    pad.pitchSemitones = (float) pitchSemitones;
+                    pad.muted          = muted != 0;
+                    pad.solo           = solo != 0;
+                }
+
                 std::string samplePath;
                 std::getline(ps, samplePath);
                 pad.samplePath = detail::trimLeadingSpace(std::move(samplePath));
@@ -273,7 +340,7 @@ inline bool deserialize(const std::string& text, Song& out)
             }
         }
 
-        if (! readTagged("SYNTH", rest)) return false;
+        if (readTagged("SYNTH", rest)) // added in v12; older files keep the defaults
         {
             std::istringstream ss(rest);
             int    waveform = 0, filterEnabled = 0, filterMode = 0;
@@ -294,13 +361,13 @@ inline bool deserialize(const std::string& text, Song& out)
         }
 
         if (! readTagged("CLIPS", rest))
-            return false;
+            return fail("missing clip list");
         const int clipCount = std::atoi(rest.c_str());
 
         for (int j = 0; j < clipCount; ++j)
         {
             if (! readTagged("CLIP", rest))
-                return false;
+                return fail("truncated clip list");
 
             Clip clip;
             {
@@ -314,13 +381,13 @@ inline bool deserialize(const std::string& text, Song& out)
             }
 
             if (! readTagged("NOTES", rest))
-                return false;
+                return fail("missing note list");
             const int noteCount = std::atoi(rest.c_str());
 
             for (int k = 0; k < noteCount; ++k)
             {
                 if (! readTagged("NOTE", rest))
-                    return false;
+                    return fail("truncated note list");
                 std::istringstream ns(rest);
                 engine::Note note;
                 double velocity = 0.0;
