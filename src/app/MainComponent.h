@@ -78,6 +78,8 @@ private:
     void                   importAudioToNewTrack();
     void                   importAudioFileAtBeat(const juce::File& file, double startBeats, int targetTrackIndex = -1);
     void                   previewAudioFile(const juce::File& file);
+    void                   importMidiFileDialog();
+    void                   exportMidiFileDialog();
     void                   toggleRecording();
     void                   finishRecordingIfReady();
     juce::File             recordingsDirectory() const;

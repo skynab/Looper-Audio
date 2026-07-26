@@ -168,8 +168,19 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > change, zero engine/model impact — the bounce tool's full check suite, including
 > `rmsDry=0.149266`, is unchanged. The rendering itself needs a live look to confirm it reads well.
 >
-> Next: MIDI import/export, file manager 2.0, and drum kits. See [`docs/PLAN.md`](docs/PLAN.md) for
-> the full roadmap.
+> **MIDI import/export is done too** — `File > Import MIDI...` / `File > Export MIDI...`, built on
+> JUCE's own `juce::MidiFile` (no new dependency). Import creates one `Instrument` track per
+> imported MIDI track that actually has notes (tick positions convert to beats via the file's own
+> ticks-per-quarter-note, note on/off pairs via JUCE's built-in pairing); export flattens each
+> track's clips onto one continuous sequence, including a tempo event from the song's BPM. The
+> engine has a single global tempo, not a tempo map — so a source file's *first* tempo event sets
+> the imported BPM, and any further tempo changes are counted and reported ("Imported 2 track(s) at
+> 128.0 BPM (3 further tempo change(s) not imported)") rather than silently dropped or misapplied.
+> Verified by a new `midiRoundTripWorks` bounce-tool check: export a three-note song, re-import it,
+> confirm the tempo and every note's beat/pitch/velocity survived — passed first try. All 57 unit
+> tests and the bounce tool's full check suite, including `rmsDry=0.149266`, are unchanged.
+>
+> Next: file manager 2.0 and drum kits. See [`docs/PLAN.md`](docs/PLAN.md) for the full roadmap.
 
 ## Tech stack
 

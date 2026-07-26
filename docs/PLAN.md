@@ -609,44 +609,53 @@ the others already existing:
 Each subsection below flags the judgment calls made so they're visible before implementation starts,
 rather than buried in code.
 
-### MIDI import/export
+### MIDI import/export (implemented)
 
 Read and write Standard MIDI Files (`.mid`) so patterns can come from, or go to, other tools —
 no new dependency: `juce::MidiFile` (already-linked `juce_audio_basics`) parses/writes SMF headers,
 per-track `juce::MidiMessageSequence`s, and tempo/time-signature meta-events.
 
-**New module:** `src/engine/MidiFileIO.h` — engine layer, not model/, since it needs JUCE (same
+**What was built:** `src/engine/MidiFileIO.h` — engine layer, not model/, since it needs JUCE (same
 reasoning that already puts `OfflineRenderer.h` in engine/ despite needing `juce_audio_formats`).
 Two entry points, both JUCE-dependent, both operating on `model::Song`:
 
-- `bool importMidiFile(const juce::File&, model::Song&)` — one new `Instrument` track per imported
-  MIDI track; each track's note on/off pairs become `engine::Note{startBeats, lengthBeats,
-  noteNumber, velocity}` via tick→beat conversion using `MidiFile::getTimeFormat()` (ticks per
-  quarter note). Each imported track gets one clip spanning its whole content, `startBeats = 0`,
-  mirroring the existing "single clip = unbounded, plays until stop" convention rather than
-  inventing multi-clip splitting for something that doesn't need it.
+- `MidiImportResult importMidiFile(const juce::File&, model::Song&)` — one new `Instrument` track
+  per imported MIDI track with at least one note (a tempo-only or otherwise note-less track imports
+  nothing); each track's note on/off pairs (matched via JUCE's own
+  `MidiMessageSequence::updateMatchedPairs`/`noteOffObject`) become `engine::Note{startBeats,
+  lengthBeats, noteNumber, velocity}` via tick→beat conversion using `MidiFile::getTimeFormat()`
+  (ticks per quarter note). Each imported track gets one clip spanning its whole content,
+  `startBeats = 0`, the existing "single clip = unbounded, plays until stop" convention rather than
+  multi-clip splitting something that doesn't need it. `MidiImportResult` reports
+  `tracksImported`/`extraTempoEventsIgnored` rather than a bare bool, so the UI can say exactly
+  what happened.
 - `bool exportMidiFile(const juce::File&, const model::Song&)` — the reverse: one
   `MidiMessageSequence` per Instrument track, flattening *all* of that track's clips onto one
-  continuous sequence at their timeline positions (each clip's `startBeats` becomes a tick offset),
-  plus one tempo meta-event from `song.bpm`. Audio tracks have nothing to export and are skipped.
+  continuous sequence at their timeline positions (each clip's `startBeats` becomes a tick offset,
+  at a fixed 960-ticks-per-quarter-note resolution), plus one tempo meta-event from `song.bpm`.
+  Audio tracks have nothing to export and are skipped; a track with zero notes across all its clips
+  is skipped too, so the file only contains tracks that actually have content.
 
-**Scope call — no tempo map:** the engine has one global `song.bpm`, not a tempo-map-over-time. A
-source MIDI file with tempo *changes* mid-song can't be represented exactly. Default: import using
-the file's *first* tempo event as `song.bpm` (notes still land at the tick-derived beat position
-correctly for that single tempo — the overwhelming majority of loop/pattern MIDI files have exactly
-one tempo event); if the file has more, surface a message ("Imported at 128 BPM; N further tempo
-changes in this file were not imported") rather than silently dropping them or failing the import —
-same "safe fallback, never silently wrong" convention already used for automation export. SMPTE-format
-time bases (rare) are out of scope for v1 — reject with a clear message rather than misinterpreting.
+**Scope call — no tempo map, as planned:** the engine has one global `song.bpm`, not a
+tempo-map-over-time. Import uses the file's *first* tempo event for `song.bpm` (every event after
+that increments `extraTempoEventsIgnored` instead of being silently dropped or misapplied); a file
+with no tempo event at all leaves the song's existing BPM untouched. SMPTE-based time formats
+(`MidiFile::getTimeFormat() <= 0`) are rejected outright rather than misinterpreted.
 
-**UI:** File > Import MIDI... / File > Export MIDI..., mirroring the existing Import Audio / Bounce
-dialog patterns (`juce::FileChooser`, `history_.edit(...)` for the import mutation; export doesn't
-touch the document).
+**UI:** File > Import MIDI... / File > Export MIDI..., built the same way Import Audio / Bounce
+already are (`juce::FileChooser`, `history_.edit(...)` wrapping the import mutation since it's a
+real document change; export doesn't touch the document, so it isn't). Import's status message
+reports the tempo actually used and any ignored tempo changes, e.g. "Imported 2 track(s) at 128.0
+BPM (3 further tempo change(s) not imported)".
 
-**Verification:** can't be a headless Catch2 test (needs JUCE) — verify via the bounce tool with a
-round-trip check: build a `Pattern` in memory, export to a temp `.mid`, re-import it, assert the
-reimported notes match the original (beat/pitch/velocity, within tick-rounding tolerance). Same
-assertion-based, no-GUI-required discipline as every other engine check in this project.
+**Verification:** can't be a headless Catch2 test (needs JUCE) — verified by a new
+`midiRoundTripWorks` bounce-tool check: a three-note `Song` at 128 BPM, exported to a temp `.mid`
+and re-imported into a fresh `Song` seeded at a deliberately different BPM (90), asserting the
+tempo, track/clip count, and every note's beat/pitch/velocity survived (velocity rounds through a
+0–127 MIDI byte, so the tolerance accounts for that — verified to round-trip within ~0.005, well
+under the check's 0.01 margin). Passed on the first run; all 57 unit tests and the bounce tool's
+full check suite, including `rmsDry=0.149266`, are unchanged (no engine/model impact beyond the new
+module itself).
 
 ### File manager 2.0
 

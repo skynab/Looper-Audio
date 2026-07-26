@@ -11,9 +11,11 @@
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
 #include "engine/FilterEffect.h"
+#include "engine/MidiFileIO.h"
 #include "engine/OfflineRenderer.h"
 #include "engine/ReverbEffect.h"
 #include "model/AutomationLane.h"
+#include "model/Song.h"
 
 // Headless bounce: renders a demo arpeggio to a WAV so the synth + sequencer
 // audio path can be verified without an audio device. Also usable as a smoke test.
@@ -227,6 +229,55 @@ int main(int argc, char** argv)
     const float rmsAudioClipB      = multiAudioClip.getRMSLevel(0, 6 * halfSec, 4 * halfSec); // 3-5s: clip B
     const bool  multiClipAudioGates = rmsAudioClipA > 0.01f && rmsAudioGap < 1.0e-5f && rmsAudioClipB > 0.01f;
 
+    // MIDI import/export round-trip check: build a Song with three notes on
+    // one track, export it to a temp .mid, re-import it into a fresh Song,
+    // and confirm every note (and the tempo) survived — beat/pitch/velocity
+    // within the rounding tolerance a real tick-based file format implies.
+    bool midiRoundTripWorks = false;
+    {
+        using namespace looper::model;
+
+        Song original;
+        original.bpm = 128.0;
+        auto& track = addTrack(original, TrackType::Instrument, "Test");
+        Clip  clip;
+        clip.id                  = allocateId(original);
+        clip.type                = ClipType::Instrument;
+        clip.startBeats          = 0.0;
+        clip.lengthBeats         = 4.0;
+        clip.pattern.lengthBeats = 4.0;
+        clip.pattern.notes.push_back({ 0.0, 0.5, 60, 0.8f });
+        clip.pattern.notes.push_back({ 1.0, 1.0, 64, 0.6f });
+        clip.pattern.notes.push_back({ 2.5, 0.25, 67, 1.0f });
+        track.clips.push_back(clip);
+
+        const juce::File midiTemp = juce::File::getCurrentWorkingDirectory().getChildFile("midi_roundtrip_test.mid");
+        const bool       exportOk = exportMidiFile(midiTemp, original);
+
+        Song reimported;
+        reimported.bpm            = 90.0; // deliberately different, so import setting it is actually verified
+        const auto importResult   = importMidiFile(midiTemp, reimported);
+        midiTemp.deleteFile();
+
+        midiRoundTripWorks = exportOk && importResult.ok && importResult.tracksImported == 1
+                          && importResult.extraTempoEventsIgnored == 0
+                          && std::abs(reimported.bpm - 128.0) < 0.5
+                          && reimported.tracks.size() == 1
+                          && reimported.tracks[0].clips.size() == 1;
+
+        if (midiRoundTripWorks)
+        {
+            const auto& notes = reimported.tracks[0].clips[0].pattern.notes;
+            midiRoundTripWorks = notes.size() == 3
+                && std::abs(notes[0].startBeats - 0.0) < 0.01 && std::abs(notes[0].lengthBeats - 0.5) < 0.01
+                && notes[0].noteNumber == 60 && std::abs(notes[0].velocity - 0.8f) < 0.01f
+                && std::abs(notes[1].startBeats - 1.0) < 0.01 && std::abs(notes[1].lengthBeats - 1.0) < 0.01
+                && notes[1].noteNumber == 64 && std::abs(notes[1].velocity - 0.6f) < 0.01f
+                && std::abs(notes[2].startBeats - 2.5) < 0.01 && std::abs(notes[2].lengthBeats - 0.25) < 0.01
+                && notes[2].noteNumber == 67 && std::abs(notes[2].velocity - 1.0f) < 0.01f;
+        }
+    }
+
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
 
@@ -376,6 +427,7 @@ int main(int argc, char** argv)
               << "  multiClipGates=" << (multiClipGates ? 1 : 0)
               << "  audioTrackWorks=" << (audioTrackWorks ? 1 : 0)
               << "  multiClipAudioGates=" << (multiClipAudioGates ? 1 : 0)
+              << "  midiRoundTripWorks=" << (midiRoundTripWorks ? 1 : 0)
               << "  recorderWorks=" << (recorderWorks ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
@@ -386,15 +438,16 @@ int main(int argc, char** argv)
     // send bus that changes the output whether it's reverb or delay, two
     // MIDI clips on one track each sounding only in their own window, a
     // decoded audio clip playing back through a track, two AUDIO clips on one
-    // track likewise each sounding only in their own window, and the
+    // track likewise each sounding only in their own window, a MIDI file
+    // export/import round trip that preserves tempo and every note, and the
     // recorder's capture/handoff logic (fed synthetic input, since there's no
     // live mic here) together confirm
-    // the full render/gain/fx/automation/solo/clip/send-bus/audio/record path.
+    // the full render/gain/fx/automation/solo/clip/send-bus/audio/midi/record path.
     const bool ok = rmsDry > 0.0f && std::isfinite(rmsDry)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
                  && perTrackAutomationWorks
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
-                 && audioTrackWorks && multiClipAudioGates && recorderWorks;
+                 && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && recorderWorks;
     return ok ? 0 : 2;
 }

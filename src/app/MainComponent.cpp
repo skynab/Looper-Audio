@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 
 #include "engine/ClipSlot.h"
+#include "engine/MidiFileIO.h"
 #include "engine/OfflineRenderer.h"
 #include "model/Serialization.h"
 
@@ -500,6 +501,8 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addSeparator();
         menu.addItem(4, "Import Audio...");
         menu.addItem(7, "Import Audio to Track...");
+        menu.addItem(8, "Import MIDI...");
+        menu.addItem(9, "Export MIDI...");
         menu.addItem(5, "Bounce to WAV...");
         menu.addSeparator();
         menu.addItem(6, "Audio Settings...");
@@ -526,6 +529,8 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 5:  bounceProject(); break;
         case 6:  showAudioSettings(); break;
         case 7:  importAudioToNewTrack(); break;
+        case 8:  importMidiFileDialog(); break;
+        case 9:  exportMidiFileDialog(); break;
         case 10: history_.undo(); refreshFromModel(); break;
         case 11: history_.redo(); refreshFromModel(); break;
         case 12: pianoRoll_.clear(); break;
@@ -1009,6 +1014,62 @@ void MainComponent::previewAudioFile(const juce::File& file)
                           juce::dontSendNotification);
     else
         clipLabel.setText("Could not load: " + file.getFileName(), juce::dontSendNotification);
+}
+
+void MainComponent::importMidiFileDialog()
+{
+    chooser_ = std::make_unique<juce::FileChooser>("Import MIDI file", juce::File{}, "*.mid;*.midi");
+    const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
+
+    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    {
+        const auto file = fc.getResult();
+        if (file == juce::File{})
+            return;
+
+        engine::MidiImportResult result;
+        history_.edit("Import MIDI", [&file, &result](model::Song& s)
+        {
+            result = engine::importMidiFile(file, s);
+        });
+
+        if (! result.ok)
+        {
+            clipLabel.setText("Could not import: " + file.getFileName(), juce::dontSendNotification);
+            return;
+        }
+
+        syncEngineTracks();
+        arrangementView_.setSong(history_.current());
+        updateMixerStrips();
+        updateEditingLabel();
+
+        auto msg = "Imported " + juce::String(result.tracksImported) + " track(s) at "
+                 + juce::String(history_.current().bpm, 1) + " BPM";
+        if (result.extraTempoEventsIgnored > 0)
+            msg += " (" + juce::String(result.extraTempoEventsIgnored) + " further tempo change(s) not imported)";
+        clipLabel.setText(msg, juce::dontSendNotification);
+    });
+}
+
+void MainComponent::exportMidiFileDialog()
+{
+    chooser_ = std::make_unique<juce::FileChooser>("Export MIDI file", juce::File{}, "*.mid");
+    const auto flags = juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles
+                      | juce::FileBrowserComponent::warnAboutOverwriting;
+
+    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+        if (file == juce::File{})
+            return;
+        file = file.withFileExtension("mid");
+
+        const bool ok = engine::exportMidiFile(file, history_.current());
+        clipLabel.setText(ok ? "Exported: " + file.getFileName()
+                             : juce::String("MIDI export failed (no instrument track has any notes)"),
+                          juce::dontSendNotification);
+    });
 }
 
 /** Imports an audio file onto a brand-new Audio track (as its one clip, at
