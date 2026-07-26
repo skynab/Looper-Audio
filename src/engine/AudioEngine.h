@@ -130,6 +130,20 @@ public:
     void setTrackSendLevel(int index, float level);
     void setArmedTrack(int index);
 
+    // Per-track synth timbre (see model::SynthSettings / SynthInstrumentNode)
+    // — meaningless for a Drum track, but harmless to set regardless since
+    // it's simply not read while isDrumTrack routes notes to the drum kit.
+    void setTrackSynthWaveform(int index, int waveform);
+    void setTrackSynthAttackMs(int index, float ms);
+    void setTrackSynthDecayMs(int index, float ms);
+    void setTrackSynthSustain(int index, float level);
+    void setTrackSynthReleaseMs(int index, float ms);
+    void setTrackSynthFilterEnabled(int index, bool enabled);
+    void setTrackSynthFilterMode(int index, int mode);
+    void setTrackSynthFilterCutoff(int index, float hz);
+    void setTrackSynthFilterResonance(int index, float q);
+    void setTrackSynthGainDb(int index, float db);
+
     // Master effects (thread-safe atomics; safe to call from the message thread).
     void setMasterFilterEnabled(bool enabled)  { masterFilter_.setEnabled(enabled); }
     void setMasterFilterMode(int mode)         { masterFilter_.setMode(mode); }

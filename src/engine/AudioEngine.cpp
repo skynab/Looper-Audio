@@ -205,6 +205,66 @@ void AudioEngine::setTrackSendLevel(int index, float level)
         tracks_[(size_t) index].sendLevel.store(level, std::memory_order_relaxed);
 }
 
+void AudioEngine::setTrackSynthWaveform(int index, int waveform)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setWaveform(waveform);
+}
+
+void AudioEngine::setTrackSynthAttackMs(int index, float ms)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setAttackMs(ms);
+}
+
+void AudioEngine::setTrackSynthDecayMs(int index, float ms)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setDecayMs(ms);
+}
+
+void AudioEngine::setTrackSynthSustain(int index, float level)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setSustain(level);
+}
+
+void AudioEngine::setTrackSynthReleaseMs(int index, float ms)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setReleaseMs(ms);
+}
+
+void AudioEngine::setTrackSynthFilterEnabled(int index, bool enabled)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setFilterEnabled(enabled);
+}
+
+void AudioEngine::setTrackSynthFilterMode(int index, int mode)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setFilterMode(mode);
+}
+
+void AudioEngine::setTrackSynthFilterCutoff(int index, float hz)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setFilterCutoff(hz);
+}
+
+void AudioEngine::setTrackSynthFilterResonance(int index, float q)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setFilterResonance(q);
+}
+
+void AudioEngine::setTrackSynthGainDb(int index, float db)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setGainDb(db);
+}
+
 void AudioEngine::setArmedTrack(int index)
 {
     armedTrack_.store(juce::jlimit(0, kMaxTracks - 1, index), std::memory_order_relaxed);

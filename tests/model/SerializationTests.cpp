@@ -70,6 +70,17 @@ static Song makeSampleSong()
     s.tracks[0].gainAutomation.addPoint(4.0, 0.0f);
     s.tracks[2].drumKit.pads[0].samplePath = "samples/Kick 808.wav"; // with a space, deliberately
 
+    s.tracks[0].synthSettings.waveform        = 2; // square
+    s.tracks[0].synthSettings.attackMs        = 12.0f;
+    s.tracks[0].synthSettings.decayMs         = 300.0f;
+    s.tracks[0].synthSettings.sustain         = 0.5f;
+    s.tracks[0].synthSettings.releaseMs       = 400.0f;
+    s.tracks[0].synthSettings.filterEnabled   = true;
+    s.tracks[0].synthSettings.filterMode      = 1;
+    s.tracks[0].synthSettings.filterCutoff    = 2500.0f;
+    s.tracks[0].synthSettings.filterResonance = 1.5f;
+    s.tracks[0].synthSettings.gainDb          = -3.0f;
+
     return s;
 }
 

@@ -457,7 +457,9 @@ MainComponent::MainComponent()
         syncEngineTracks(); // pushes every track's whole clip list, including this move
     };
 
-    // Default docking layout: Left = Files; Center = Tracks/Keys/Mixer
+    synthEditor_.onSettingsChanged = [this](const model::SynthSettings& s) { setTrackSynthSettings(s); };
+
+    // Default docking layout: Left = Files; Center = Tracks/Keys/Synth/Mixer
     // together; Bottom = Transport/Keyboard together; Right starts empty
     // (and hidden — see updateRightRegionVisibility). Drag any tab's header
     // onto another region — including the Center's own second half, once
@@ -465,6 +467,7 @@ MainComponent::MainComponent()
     dockRegionLeft_.addPanel("Files", fileBrowser_);
     centerSplit_.primary_.addPanel("Tracks", arrangeTab_);
     centerSplit_.primary_.addPanel("Keys", editTab_);
+    centerSplit_.primary_.addPanel("Synth", synthEditor_);
     centerSplit_.primary_.addPanel("Mixer", mixerView_);
     centerSplit_.primary_.showPanel("Keys"); // start on the note editor
     dockRegionBottom_.addPanel("Transport", leftPane_);
@@ -516,6 +519,7 @@ MainComponent::MainComponent()
     syncEngineTracks();
     engine_.setArmedTrack(0);
     refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -700,6 +704,7 @@ void MainComponent::addTrack()
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -729,6 +734,7 @@ void MainComponent::addDrumTrack()
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -758,6 +764,7 @@ void MainComponent::assignDrumSample(int padIndex, const juce::File& file)
 
     syncEngineTracks();
     refreshPianoRollForSelected(); // also refreshes the drum-kit editor's row display
+    refreshSynthEditorForSelected();
 }
 
 /** Adds a new clip to the currently selected track, positioned 2 beats after
@@ -799,6 +806,7 @@ void MainComponent::addClipToSelectedTrack()
     selectedClipIndex_ = newClipIndex;
     syncEngineTracks();
     refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -884,6 +892,18 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackSolo(i, track.solo);
         engine_.setTrackGainDb(i, track.gainDb);
         engine_.setTrackSendLevel(i, track.sendLevel);
+
+        const auto& synth = track.synthSettings;
+        engine_.setTrackSynthWaveform(i, synth.waveform);
+        engine_.setTrackSynthAttackMs(i, synth.attackMs);
+        engine_.setTrackSynthDecayMs(i, synth.decayMs);
+        engine_.setTrackSynthSustain(i, synth.sustain);
+        engine_.setTrackSynthReleaseMs(i, synth.releaseMs);
+        engine_.setTrackSynthFilterEnabled(i, synth.filterEnabled);
+        engine_.setTrackSynthFilterMode(i, synth.filterMode);
+        engine_.setTrackSynthFilterCutoff(i, synth.filterCutoff);
+        engine_.setTrackSynthFilterResonance(i, synth.filterResonance);
+        engine_.setTrackSynthGainDb(i, synth.gainDb);
     }
     engine_.setActiveTrackCount(n);
 }
@@ -909,6 +929,44 @@ void MainComponent::refreshPianoRollForSelected()
     }
 
     layoutEditTab(); // the drum-kit editor's visibility just changed, which affects layout
+}
+
+/** Shows the Synth pane's controls for the selected track's timbre, or a
+    placeholder if it's not an Instrument track (Drum/Audio tracks have no
+    synth to edit) — the same is-it-this-track-type gating
+    refreshPianoRollForSelected already does for the drum-kit editor. */
+void MainComponent::refreshSynthEditorForSelected()
+{
+    const bool isInstrument = selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount()
+                            && history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Instrument;
+
+    if (isInstrument)
+        synthEditor_.setSettings(history_.current().tracks[(size_t) selectedTrackIndex_].synthSettings);
+    else
+        synthEditor_.setNoTrackSelected();
+}
+
+/** Live tweak from the Synth pane (a knob turn) — updates the current
+    document in place, same non-undoable-per-notch pattern as setTrackGain,
+    and mirrors it into the engine. */
+void MainComponent::setTrackSynthSettings(const model::SynthSettings& settings)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    history_.mutableCurrent().tracks[(size_t) selectedTrackIndex_].synthSettings = settings;
+
+    const int index = selectedTrackIndex_;
+    engine_.setTrackSynthWaveform(index, settings.waveform);
+    engine_.setTrackSynthAttackMs(index, settings.attackMs);
+    engine_.setTrackSynthDecayMs(index, settings.decayMs);
+    engine_.setTrackSynthSustain(index, settings.sustain);
+    engine_.setTrackSynthReleaseMs(index, settings.releaseMs);
+    engine_.setTrackSynthFilterEnabled(index, settings.filterEnabled);
+    engine_.setTrackSynthFilterMode(index, settings.filterMode);
+    engine_.setTrackSynthFilterCutoff(index, settings.filterCutoff);
+    engine_.setTrackSynthFilterResonance(index, settings.filterResonance);
+    engine_.setTrackSynthGainDb(index, settings.gainDb);
 }
 
 /** Briefly sounds @p noteNumber through whichever track is currently armed —
@@ -1111,6 +1169,7 @@ void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
     selectedClipIndex_  = clipIndex;
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
     updateMixerStrips(); // refreshes the selection highlight
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -1130,6 +1189,7 @@ void MainComponent::refreshFromModel()
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -1381,6 +1441,7 @@ void MainComponent::selectNewlyAddedTrack(int newTrackIndex)
     syncEngineTracks();
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -1792,6 +1853,7 @@ void MainComponent::movePanelBetweenRegions(const juce::String& panelName, DockR
     else if (panelName == "Transport")   content = &leftPane_;
     else if (panelName == "Tracks")      content = &arrangeTab_;
     else if (panelName == "Keys")        content = &editTab_;
+    else if (panelName == "Synth")       content = &synthEditor_;
     else if (panelName == "Mixer")       content = &mixerView_;
     else if (panelName == "Keyboard")    content = &keyboard_;
     if (content == nullptr)
@@ -1809,7 +1871,7 @@ namespace
 {
     struct KnownPanel { const char* name; };
     constexpr KnownPanel kKnownPanels[] =
-        { { "Files" }, { "Transport" }, { "Tracks" }, { "Keys" }, { "Mixer" }, { "Keyboard" } };
+        { { "Files" }, { "Transport" }, { "Tracks" }, { "Keys" }, { "Synth" }, { "Mixer" }, { "Keyboard" } };
     constexpr const char* kRegionKeys[] = { "Left", "CenterPrimary", "CenterSecondary", "Bottom", "Right" };
 }
 
@@ -1825,7 +1887,7 @@ void MainComponent::loadDockLayout()
     DockRegion* regionsByKey[] = { &dockRegionLeft_, &centerSplit_.primary_, &centerSplit_.secondary_,
                                    &dockRegionBottom_, &dockRegionRight_ };
 
-    juce::Component* contentFor[] = { &fileBrowser_, &leftPane_, &arrangeTab_, &editTab_, &mixerView_, &keyboard_ };
+    juce::Component* contentFor[] = { &fileBrowser_, &leftPane_, &arrangeTab_, &editTab_, &synthEditor_, &mixerView_, &keyboard_ };
 
     for (size_t i = 0; i < std::size(kKnownPanels); ++i)
     {

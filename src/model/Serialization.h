@@ -37,7 +37,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 11\n";
+    out << "LOOPER 12\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -81,6 +81,15 @@ inline std::string serialize(const Song& song)
             // this always holds); samplePath is the rest of the line, like
             // clip.audioFile/track.name, since a real file path can have spaces.
             out << "DPAD " << pad.noteNumber << " " << pad.label << " " << pad.samplePath << "\n";
+
+        const auto& synth = track.synthSettings;
+        out << "SYNTH " << synth.waveform << " "
+            << detail::num((double) synth.attackMs) << " " << detail::num((double) synth.decayMs) << " "
+            << detail::num((double) synth.sustain) << " " << detail::num((double) synth.releaseMs) << " "
+            << (synth.filterEnabled ? 1 : 0) << " " << synth.filterMode << " "
+            << detail::num((double) synth.filterCutoff) << " " << detail::num((double) synth.filterResonance) << " "
+            << detail::num((double) synth.gainDb) << "\n";
+
         out << "CLIPS " << track.clips.size() << "\n";
 
         for (const auto& clip : track.clips)
@@ -249,6 +258,26 @@ inline bool deserialize(const std::string& text, Song& out)
                 pad.samplePath = detail::trimLeadingSpace(std::move(samplePath));
                 track.drumKit.pads.push_back(pad);
             }
+        }
+
+        if (! readTagged("SYNTH", rest)) return false;
+        {
+            std::istringstream ss(rest);
+            int    waveform = 0, filterEnabled = 0, filterMode = 0;
+            double attackMs = 0.0, decayMs = 0.0, sustain = 0.0, releaseMs = 0.0;
+            double filterCutoff = 0.0, filterResonance = 0.0, gainDb = 0.0;
+            ss >> waveform >> attackMs >> decayMs >> sustain >> releaseMs
+               >> filterEnabled >> filterMode >> filterCutoff >> filterResonance >> gainDb;
+            track.synthSettings.waveform        = waveform;
+            track.synthSettings.attackMs        = (float) attackMs;
+            track.synthSettings.decayMs         = (float) decayMs;
+            track.synthSettings.sustain         = (float) sustain;
+            track.synthSettings.releaseMs       = (float) releaseMs;
+            track.synthSettings.filterEnabled   = filterEnabled != 0;
+            track.synthSettings.filterMode      = filterMode;
+            track.synthSettings.filterCutoff    = (float) filterCutoff;
+            track.synthSettings.filterResonance = (float) filterResonance;
+            track.synthSettings.gainDb          = (float) gainDb;
         }
 
         if (! readTagged("CLIPS", rest))

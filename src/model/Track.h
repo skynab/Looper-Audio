@@ -6,6 +6,7 @@
 #include "model/AutomationLane.h"
 #include "model/Clip.h"
 #include "model/DrumKit.h"
+#include "model/SynthSettings.h"
 
 namespace looper::model
 {
@@ -28,6 +29,7 @@ struct Track
     std::vector<Clip> clips;
     AutomationLane    gainAutomation; // this track's gain (dB) over beats; empty = static gainDb only
     DrumKit           drumKit; // only meaningful when type == Drum; empty pads otherwise
+    SynthSettings     synthSettings; // only meaningful when type == Instrument
 
     bool operator==(const Track&) const = default;
 };

@@ -19,6 +19,7 @@
 #include "LevelMeter.h"
 #include "MixerStrip.h"
 #include "PianoRoll.h"
+#include "SynthEditor.h"
 
 namespace looper
 {
@@ -92,6 +93,8 @@ private:
     void                   assignDrumSample(int padIndex, const juce::File& file);
     void                   syncEngineTracks();
     void                   refreshPianoRollForSelected();
+    void                   refreshSynthEditorForSelected();
+    void                   setTrackSynthSettings(const model::SynthSettings& settings);
     void                   previewNote(int noteNumber);
     void                   updateDelayControls();
     void                   updateFilterControls();
@@ -192,6 +195,8 @@ private:
     juce::Label                        editingLabel_;
     DrumKitEditor                      drumKitEditor_;
     PianoRoll                          pianoRoll_;
+
+    SynthEditor                        synthEditor_; // its own dock panel — see refreshSynthEditorForSelected
 
     CallbackComponent                  arrangeTab_;
     juce::Viewport                     arrangementViewport_;
