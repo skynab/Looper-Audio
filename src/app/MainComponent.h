@@ -114,6 +114,12 @@ private:
     void                   selectTrackAndClip(int trackIndex, int clipIndex);
     void                   addClipToSelectedTrack();
     void                   setClipLength(int trackIndex, int clipIndex, double newLengthBeats);
+    void                   copyNotes();
+    void                   pasteNotes();
+    void                   copyClip();
+    void                   pasteClip();
+    void                   duplicateClip();
+    void                   quantizeNotes(double swingAmount);
     void                   setPatternBars(int bars);
     void                   updateBarsControl();
     void                   updateEditingLabel();
@@ -205,6 +211,14 @@ private:
     std::unique_ptr<juce::FileChooser> chooser_;
 
     engine::TempoMap uiTempoMap_;
+
+    // An app-level clipboard holding model values, deliberately not the system
+    // clipboard: pasting between two running copies of the app isn't worth a
+    // serialization format yet. Notes and clips are kept apart so the Edit
+    // menu's commands can say exactly what they act on, rather than depending
+    // on which pane happens to have focus.
+    std::vector<engine::Note> noteClipboard_;
+    std::vector<model::Clip>  clipClipboard_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

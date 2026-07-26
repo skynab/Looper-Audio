@@ -9,6 +9,7 @@ add_executable(looper_tests
   engine/MidiNoteTests.cpp
   engine/SequencerMathTests.cpp
   engine/MetronomeMathTests.cpp
+  engine/NoteOpsTests.cpp
   engine/DelayLineTests.cpp
   engine/StateVariableFilterTests.cpp
   engine/ReverbTests.cpp

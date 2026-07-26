@@ -1,6 +1,7 @@
 #include "MainComponent.h"
 
 #include "engine/ClipSlot.h"
+#include "engine/NoteOps.h"
 #include "engine/MidiFileIO.h"
 #include "engine/OfflineRenderer.h"
 #include "model/Serialization.h"
@@ -599,6 +600,20 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(11, "Redo", history_.canRedo());
         menu.addSeparator();
         menu.addItem(12, "Clear Notes");
+        menu.addSeparator();
+        // Notes and clips get their own commands rather than one pair whose
+        // meaning depends on which pane has focus.
+        menu.addItem(15, "Copy Notes");
+        menu.addItem(16, "Paste Notes", ! noteClipboard_.empty());
+        menu.addSeparator();
+        menu.addItem(17, "Copy Clip");
+        menu.addItem(18, "Paste Clip", ! clipClipboard_.empty());
+        menu.addItem(19, "Duplicate Clip");
+        menu.addSeparator();
+        menu.addItem(20, "Quantize");
+        menu.addItem(21, "Swing - Light");
+        menu.addItem(22, "Swing - Medium");
+        menu.addItem(23, "Swing - Heavy");
     }
     else if (topLevelMenuIndex == 2) // View
     {
@@ -628,6 +643,15 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 12: pianoRoll_.clear(); break;
         case 13: setProjectRootFolderDialog(); break;
         case 14: buildDefaultDockLayout(); saveDockLayout(); break;
+        case 15: copyNotes(); break;
+        case 16: pasteNotes(); break;
+        case 17: copyClip(); break;
+        case 18: pasteClip(); break;
+        case 19: duplicateClip(); break;
+        case 20: quantizeNotes(0.0); break;
+        case 21: quantizeNotes(0.25); break;
+        case 22: quantizeNotes(0.5); break;
+        case 23: quantizeNotes(0.66); break;
         default: break;
     }
 }
@@ -835,6 +859,187 @@ void MainComponent::addClipToSelectedTrack()
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
+}
+
+/** Copies the piano roll's selected notes, or the whole pattern if nothing
+    is selected — the same "no selection means everything" rule quantize
+    uses, so both commands are useful before the selection gesture is
+    discovered. */
+void MainComponent::copyNotes()
+{
+    const auto& pattern   = currentPattern();
+    const auto& selection = pianoRoll_.selectedNoteIndices();
+
+    noteClipboard_.clear();
+    if (selection.empty())
+    {
+        noteClipboard_ = pattern.notes;
+    }
+    else
+    {
+        for (int index : selection)
+            if (index >= 0 && index < (int) pattern.notes.size())
+                noteClipboard_.push_back(pattern.notes[(size_t) index]);
+    }
+
+    clipLabel.setText("Copied " + juce::String((int) noteClipboard_.size()) + " note(s)",
+                      juce::dontSendNotification);
+}
+
+/** Pastes notes into the open clip at the positions they were copied from,
+    which is what makes "copy this part into that clip" work. Anything past
+    the destination pattern's end is dropped rather than pasted somewhere it
+    can't be seen or heard. */
+void MainComponent::pasteNotes()
+{
+    if (noteClipboard_.empty() || selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const int trackIdx = selectedTrackIndex_;
+    const int clipIdx  = selectedClipIndex_;
+    const auto notes   = noteClipboard_;
+
+    history_.edit("Paste notes", [trackIdx, clipIdx, &notes](model::Song& s)
+    {
+        if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+            return;
+        auto& clips = s.tracks[(size_t) trackIdx].clips;
+        if (clipIdx < 0 || clipIdx >= (int) clips.size())
+            return;
+
+        auto& pattern = clips[(size_t) clipIdx].pattern;
+        for (const auto& note : notes)
+            if (note.startBeats < pattern.lengthBeats)
+                pattern.notes.push_back(note);
+    });
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshDrumsPaneForSelected();
+}
+
+/** Copies the selected clip whole — pattern, length and all. */
+void MainComponent::copyClip()
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+        return;
+
+    const auto& clips = song.tracks[(size_t) selectedTrackIndex_].clips;
+    if (selectedClipIndex_ < 0 || selectedClipIndex_ >= (int) clips.size())
+        return;
+
+    clipClipboard_.assign(1, clips[(size_t) selectedClipIndex_]);
+    clipLabel.setText("Copied clip", juce::dontSendNotification);
+}
+
+/** Pastes onto the selected track at the playhead, snapped to a beat — the
+    playhead is the one position the user can see, which makes where it lands
+    predictable. */
+void MainComponent::pasteClip()
+{
+    if (clipClipboard_.empty() || selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const double dropBeat = std::round(uiTempoMap_.ppqFromSamples(engine_.playheadSamples()));
+    const int    trackIdx = selectedTrackIndex_;
+    auto         pasted   = clipClipboard_.front();
+    int          newIndex = -1;
+
+    history_.edit("Paste clip", [trackIdx, dropBeat, &pasted, &newIndex](model::Song& s)
+    {
+        if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+            return;
+        auto& track  = s.tracks[(size_t) trackIdx];
+
+        auto clip       = pasted;
+        clip.id         = model::allocateId(s); // a paste is a new clip, not the same one twice
+        clip.startBeats = juce::jmax(0.0, dropBeat);
+        track.clips.push_back(std::move(clip));
+        newIndex = (int) track.clips.size() - 1;
+    });
+
+    if (newIndex >= 0)
+        selectedClipIndex_ = newIndex;
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshDrumsPaneForSelected();
+    arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+    updateEditingLabel();
+}
+
+/** Copy + paste in one step, landing the copy immediately after the original
+    — the usual way to extend a part by a bar. */
+void MainComponent::duplicateClip()
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+        return;
+
+    const auto& clips = song.tracks[(size_t) selectedTrackIndex_].clips;
+    if (selectedClipIndex_ < 0 || selectedClipIndex_ >= (int) clips.size())
+        return;
+
+    const auto source   = clips[(size_t) selectedClipIndex_];
+    const int  trackIdx = selectedTrackIndex_;
+    int        newIndex = -1;
+
+    history_.edit("Duplicate clip", [trackIdx, &source, &newIndex](model::Song& s)
+    {
+        auto& track = s.tracks[(size_t) trackIdx];
+
+        auto clip       = source;
+        clip.id         = model::allocateId(s);
+        clip.startBeats = source.startBeats + source.lengthBeats;
+        track.clips.push_back(std::move(clip));
+        newIndex = (int) track.clips.size() - 1;
+    });
+
+    if (newIndex >= 0)
+        selectedClipIndex_ = newIndex;
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshDrumsPaneForSelected();
+    arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+    updateEditingLabel();
+}
+
+/** Snaps the open clip's notes onto the grid, optionally swung. Acts on the
+    piano roll's selection, or the whole pattern when nothing is selected. */
+void MainComponent::quantizeNotes(double swingAmount)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const int  trackIdx  = selectedTrackIndex_;
+    const int  clipIdx   = selectedClipIndex_;
+    const auto selection = pianoRoll_.selectedNoteIndices();
+
+    history_.edit(swingAmount > 0.0 ? "Swing" : "Quantize",
+                  [trackIdx, clipIdx, swingAmount, &selection](model::Song& s)
+    {
+        if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+            return;
+        auto& clips = s.tracks[(size_t) trackIdx].clips;
+        if (clipIdx < 0 || clipIdx >= (int) clips.size())
+            return;
+
+        // The grid the editor draws is 16ths, so that's what notes snap to.
+        engine::NoteOps::quantizeNotes(clips[(size_t) clipIdx].pattern.notes, 0.25, swingAmount, selection);
+    });
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshDrumsPaneForSelected();
+
+    // Reloading the pattern clears the selection, which would silently widen
+    // a follow-up Swing to the whole part. Quantizing never adds, removes or
+    // reorders notes, so the same indices still mean the same notes.
+    pianoRoll_.setSelectedNoteIndices(selection);
 }
 
 /** Sets a clip's window on the timeline (from the arrangement's resize

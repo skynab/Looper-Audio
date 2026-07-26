@@ -56,6 +56,34 @@ public:
         pattern_ = p;
         const int steps = (int) std::llround(pattern_.lengthBeats / geometry_.stepBeats);
         geometry_.numSteps = juce::jlimit(1, kMaxSteps, steps);
+        selection_.clear(); // indices refer to the old pattern; they mean nothing now
+        repaint();
+    }
+
+    /** Indices into pattern().notes of the current selection, empty if none.
+        Callers treat "no selection" as "the whole pattern" (see
+        NoteOps::quantizeNotes), so a user who hasn't discovered the selection
+        gesture can still quantize. */
+    const std::vector<int>& selectedNoteIndices() const noexcept { return selection_; }
+
+    void clearSelection()
+    {
+        if (selection_.empty())
+            return;
+        selection_.clear();
+        repaint();
+    }
+
+    /** Restores a selection after the pattern has been reloaded by an edit
+        that left every note in place — quantize and swing move notes but
+        never add, remove or reorder them, so the indices still mean the same
+        notes. Out-of-range indices are dropped rather than trusted. */
+    void setSelectedNoteIndices(const std::vector<int>& indices)
+    {
+        selection_.clear();
+        for (int index : indices)
+            if (index >= 0 && index < (int) pattern_.notes.size())
+                selection_.push_back(index);
         repaint();
     }
 
@@ -103,7 +131,33 @@ public:
         }
 
         int row = 0, step = 0;
-        if (! geometry_.cellAt(e.position.x, e.position.y, (float) getWidth(), gridHeight(), row, step))
+        const bool onGrid = geometry_.cellAt(e.position.x, e.position.y,
+                                             (float) getWidth(), gridHeight(), row, step);
+
+        // Shift is the selection modifier throughout: on a note it toggles
+        // that note, on empty grid it starts a rubber band. Selecting had to
+        // go on a modifier because a plain click already means add-or-remove,
+        // which is the fastest way to block a part out and worth keeping.
+        if (e.mods.isShiftDown())
+        {
+            const int existing = onGrid ? noteIndexAtCell(row, step) : -1;
+            if (existing >= 0)
+            {
+                toggleSelected(existing);
+                repaint();
+            }
+            else
+            {
+                rubberBanding_  = true;
+                rubberStart_    = e.position;
+                rubberCurrent_  = e.position;
+            }
+            return;
+        }
+
+        clearSelection();
+
+        if (! onGrid)
             return;
 
         const int noteNumber = pitchForRow(row);
@@ -140,6 +194,13 @@ public:
 
     void mouseDrag(const juce::MouseEvent& e) override
     {
+        if (rubberBanding_)
+        {
+            rubberCurrent_ = e.position;
+            repaint();
+            return;
+        }
+
         if (dragNoteIndex_ < 0 || dragNoteIndex_ >= (int) pattern_.notes.size())
             return;
 
@@ -173,6 +234,14 @@ public:
 
     void mouseUp(const juce::MouseEvent&) override
     {
+        if (rubberBanding_)
+        {
+            selectNotesIn(juce::Rectangle<float>(rubberStart_, rubberCurrent_));
+            rubberBanding_ = false;
+            repaint();
+            return; // selecting changes nothing about the pattern itself
+        }
+
         // Drags report once, on release: resizing a note across ten pixels
         // should be one undo step, not ten.
         if (dragMode_ != DragMode::None && onChange)
@@ -281,20 +350,36 @@ public:
         g.setColour(juce::Colours::white.withAlpha(0.16f));
         g.fillRect(gx - 1.0f, 0.0f, 1.0f, h);
 
-        for (const auto& n : pattern_.notes)
+        for (size_t i = 0; i < pattern_.notes.size(); ++i)
         {
-            const int step = stepOf(n);
-            const int row  = rowForPitch(n.noteNumber);
+            const auto& n    = pattern_.notes[i];
+            const int   step = stepOf(n);
+            const int   row  = rowForPitch(n.noteNumber);
             if (row < 0 || row >= geometry_.numRows || step < 0 || step >= geometry_.numSteps)
                 continue; // outside the visible pitch window or past the pattern's end
 
             // Brightness carries velocity, so the grid alone tells you which
             // hits are accented without reading the lane below.
+            const juce::Rectangle<float> block(geometry_.xForStep(step, w) + 1.0f,
+                                               geometry_.yForRow(row, h) + 1.0f,
+                                               (float) spanOf(n) * cw - 2.0f, ch - 2.0f);
             g.setColour(juce::Colours::limegreen.withAlpha(0.4f + 0.6f * juce::jlimit(0.0f, 1.0f, n.velocity)));
-            const float span = (float) spanOf(n);
-            g.fillRect(juce::Rectangle<float>(geometry_.xForStep(step, w) + 1.0f,
-                                              geometry_.yForRow(row, h) + 1.0f,
-                                              span * cw - 2.0f, ch - 2.0f));
+            g.fillRect(block);
+
+            if (isSelected((int) i))
+            {
+                g.setColour(juce::Colours::cyan.withAlpha(0.95f));
+                g.drawRect(block, 2.0f);
+            }
+        }
+
+        if (rubberBanding_)
+        {
+            const juce::Rectangle<float> band(rubberStart_, rubberCurrent_);
+            g.setColour(juce::Colours::cyan.withAlpha(0.12f));
+            g.fillRect(band);
+            g.setColour(juce::Colours::cyan.withAlpha(0.6f));
+            g.drawRect(band, 1.0f);
         }
 
         paintVelocityLane(g, w, cw, gx);
@@ -312,6 +397,46 @@ private:
     float gridHeight() const { return juce::jmax(1.0f, (float) getHeight() - kVelocityLaneHeight); }
     float velocityLaneTop() const { return gridHeight(); }
     bool  isInVelocityLane(float y) const { return y >= velocityLaneTop(); }
+
+    bool isSelected(int index) const
+    {
+        return std::find(selection_.begin(), selection_.end(), index) != selection_.end();
+    }
+
+    void toggleSelected(int index)
+    {
+        const auto it = std::find(selection_.begin(), selection_.end(), index);
+        if (it != selection_.end())
+            selection_.erase(it);
+        else
+            selection_.push_back(index);
+    }
+
+    /** Replaces the selection with every note whose block overlaps @p area
+        (in this component's coordinates). */
+    void selectNotesIn(juce::Rectangle<float> area)
+    {
+        selection_.clear();
+
+        const float w  = (float) getWidth();
+        const float h  = gridHeight();
+        const float cw = geometry_.colWidth(w);
+        const float ch = geometry_.rowHeight(h);
+
+        for (size_t i = 0; i < pattern_.notes.size(); ++i)
+        {
+            const auto& n    = pattern_.notes[i];
+            const int   step = stepOf(n);
+            const int   row  = rowForPitch(n.noteNumber);
+            if (row < 0 || step < 0 || step >= geometry_.numSteps)
+                continue;
+
+            const juce::Rectangle<float> block(geometry_.xForStep(step, w), geometry_.yForRow(row, h),
+                                               (float) spanOf(n) * cw, ch);
+            if (area.intersects(block))
+                selection_.push_back((int) i);
+        }
+    }
 
     int stepOf(const engine::Note& n) const { return (int) std::llround(n.startBeats / geometry_.stepBeats); }
     int spanOf(const engine::Note& n) const
@@ -472,6 +597,10 @@ private:
     int                         hoverRow_ = -1;
     bool                        drumMode_ = false;
     std::vector<model::DrumPad> drumPads_;
+
+    std::vector<int>   selection_;     // indices into pattern_.notes
+    bool               rubberBanding_ = false;
+    juce::Point<float> rubberStart_, rubberCurrent_;
 
     DragMode dragMode_      = DragMode::None;
     int      dragNoteIndex_ = -1;
