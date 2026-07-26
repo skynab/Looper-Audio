@@ -227,6 +227,16 @@ void AudioEngine::setTrackSendLevel(int index, float level)
         tracks_[(size_t) index].sendLevel.store(level, std::memory_order_relaxed);
 }
 
+void AudioEngine::setTrackAutomation(int index, const TrackAutomation& curves)
+{
+    if (index < 0 || index >= kMaxTracks)
+        return;
+
+    auto& track = tracks_[(size_t) index];
+    track.collectRetiredAutomation();
+    track.setAutomation(new TrackAutomation(curves));
+}
+
 void AudioEngine::setTrackSynthWaveform(int index, int waveform)
 {
     if (index >= 0 && index < kMaxTracks)
@@ -371,6 +381,7 @@ void AudioEngine::pump() noexcept
         track.sequencer.collectRetired();
         track.audioPlayer.collectRetiredClips();
         track.drumKit.collectRetired();
+        track.collectRetiredAutomation();
     }
 
     filePlayer_.collectRetiredClips();

@@ -158,6 +158,12 @@ public:
     void setTrackGainDb(int index, float gainDb);
     void setTrackPan(int index, float pan);
     void setTrackSendLevel(int index, float level);
+
+    /** Replaces a track's automation curves. Sample-accurate: the track
+        ramps them across each block itself rather than the UI poking a
+        value in every 33ms. Pass nullptr-equivalent (an empty set) to
+        clear. Message thread. */
+    void setTrackAutomation(int index, const TrackAutomation& curves);
     void setArmedTrack(int index);
 
     // Per-track synth timbre (see model::SynthSettings / SynthInstrumentNode)

@@ -1184,6 +1184,31 @@ void MainComponent::updateBarsControl()
     barsBox_.setSelectedId(bars == 1 || bars == 2 || bars == 4 ? bars : 0, juce::dontSendNotification);
 }
 
+/** Converts a track's model automation lanes into the engine's curve form.
+    The engine can't use model::AutomationLane directly — `model` already
+    depends on `engine`, so the dependency can't run both ways — and this is
+    the single place the two representations meet, used by both live playback
+    and the offline exporter. */
+static engine::TrackAutomation toTrackAutomation(const model::Track& track)
+{
+    engine::TrackAutomation curves;
+
+    auto copyLane = [&track](model::TrackParam param, engine::AutomationCurve& into)
+    {
+        if (const auto* lane = track.lane(param))
+        {
+            for (const auto& point : lane->points())
+                into.addPoint(point.beat, point.value);
+            into.sortPoints();
+        }
+    };
+
+    copyLane(model::TrackParam::Gain, curves.gain);
+    copyLane(model::TrackParam::Pan, curves.pan);
+    copyLane(model::TrackParam::SendLevel, curves.sendLevel);
+    return curves;
+}
+
 void MainComponent::syncEngineTracks()
 {
     const auto& song = history_.current();
@@ -1275,6 +1300,7 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackSolo(i, track.solo);
         engine_.setTrackGainDb(i, track.gainDb);
         engine_.setTrackPan(i, track.pan);
+        engine_.setTrackAutomation(i, toTrackAutomation(track));
         engine_.setTrackSendLevel(i, track.sendLevel);
 
         const auto& synth = track.synthSettings;
@@ -2159,35 +2185,18 @@ void MainComponent::bounceProject()
         const bool anyTrackAutomated = std::any_of(song.tracks.begin(), song.tracks.end(),
                                                    [](const model::Track& t) { return t.hasAutomation(); });
 
-        engine::OfflineRenderer::GainAutomationFn gainAutomationFn;
-        engine::OfflineRenderer::PanAutomationFn  panAutomationFn;
+        engine::OfflineRenderer::TrackAutomationList automationCurves;
         if (anyTrackAutomated)
-        {
-            // One lookup shape for both, since the only difference is which
-            // lane and which static fallback.
-            gainAutomationFn = [&song](int trackIndex, double beat, float staticGainDb) -> float
-            {
-                if (trackIndex < 0 || (size_t) trackIndex >= song.tracks.size())
-                    return staticGainDb;
-                const auto* lane = song.tracks[(size_t) trackIndex].lane(model::TrackParam::Gain);
-                return lane != nullptr ? lane->valueAt(beat, staticGainDb) : staticGainDb;
-            };
-            panAutomationFn = [&song](int trackIndex, double beat, float staticPan) -> float
-            {
-                if (trackIndex < 0 || (size_t) trackIndex >= song.tracks.size())
-                    return staticPan;
-                const auto* lane = song.tracks[(size_t) trackIndex].lane(model::TrackParam::Pan);
-                return lane != nullptr ? lane->valueAt(beat, staticPan) : staticPan;
-            };
-        }
+            for (const auto& track : song.tracks)
+                automationCurves.push_back(toTrackAutomation(track));
 
         auto buffer = engine::OfflineRenderer::render(patterns, gains, solos, clipStarts, sends,
                                                        song.sendBus.enabled, song.sendBus.roomSize,
                                                        song.sendBus.damping, song.sendBus.returnLevel,
-                                                       bpm, sampleRate, 8.0, 512, gainAutomationFn,
+                                                       bpm, sampleRate, 8.0, 512,
+                                                       anyTrackAutomated ? &automationCurves : nullptr,
                                                        (int) song.sendBus.effectType,
-                                                       song.sendBus.delayTimeMs, song.sendBus.delayFeedback,
-                                                       panAutomationFn);
+                                                       song.sendBus.delayTimeMs, song.sendBus.delayFeedback);
 
         if (song.filter.enabled)
         {
@@ -2319,31 +2328,21 @@ void MainComponent::timerCallback()
             masterSlider.setValue(db, juce::dontSendNotification);
         }
 
-        // Every automated parameter on every track, not just gain. Still
-        // message-thread and coarse (30Hz) — fast moves are stepped on
-        // playback, though an export renders them sample-accurately.
+        // Per-track automation is *applied* by the engine now (each track
+        // ramps its own curves across every block, see InstrumentTrack), so
+        // this only moves the controls to follow along. Pushing values from
+        // here as well would fight the engine and re-introduce the 30Hz
+        // stepping this replaced.
         for (int i = 0; i < n; ++i)
         {
             const auto& track = song.tracks[(size_t) i];
 
             if (const auto* lane = track.lane(model::TrackParam::Gain))
-            {
-                const float db = lane->valueAt(beat, track.gainDb);
-                engine_.setTrackGainDb(i, db);
-                trackStrips_[i]->setGainDb(db);
-            }
+                trackStrips_[i]->setGainDb(lane->valueAt(beat, track.gainDb));
             if (const auto* lane = track.lane(model::TrackParam::Pan))
-            {
-                const float pan = lane->valueAt(beat, track.pan);
-                engine_.setTrackPan(i, pan);
-                trackStrips_[i]->setPan(pan);
-            }
+                trackStrips_[i]->setPan(lane->valueAt(beat, track.pan));
             if (const auto* lane = track.lane(model::TrackParam::SendLevel))
-            {
-                const float send = lane->valueAt(beat, track.sendLevel);
-                engine_.setTrackSendLevel(i, send);
-                trackStrips_[i]->setSendLevel(send);
-            }
+                trackStrips_[i]->setSendLevel(lane->valueAt(beat, track.sendLevel));
         }
     }
 }

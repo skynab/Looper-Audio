@@ -11,6 +11,7 @@ add_executable(looper_tests
   engine/MetronomeMathTests.cpp
   engine/NoteOpsTests.cpp
   engine/OscillatorTests.cpp
+  engine/AutomationCurveTests.cpp
   engine/DelayLineTests.cpp
   engine/StateVariableFilterTests.cpp
   engine/ReverbTests.cpp

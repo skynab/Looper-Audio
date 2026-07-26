@@ -6,6 +6,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "engine/AudioFilePlayerNode.h"
+#include "engine/AutomationCurve.h"
 #include "engine/DelayEffect.h"
 #include "engine/DrumKitNode.h"
 #include "engine/FilterEffect.h"
@@ -74,6 +75,38 @@ struct InstrumentTrack
     juce::AudioBuffer<float> scratch;
     std::atomic<float>       channelPeak_[2] {};
 
+    TrackAutomation*                     automation_ = nullptr; // audio-thread owned
+    rt::SpscRingBuffer<TrackAutomation*> automationInbox_   { 8 };  // message -> audio
+    rt::SpscRingBuffer<TrackAutomation*> automationReclaim_ { 16 }; // audio -> message
+
+    ~InstrumentTrack()
+    {
+        collectRetiredAutomation();
+        delete automation_;
+
+        TrackAutomation* straggler = nullptr;
+        while (automationInbox_.pop(straggler))
+            delete straggler;
+    }
+
+    // ---- message thread ----
+    /** Hands ownership of @p curves (this track's whole automation set) to the
+        audio thread. nullptr clears automation. */
+    void setAutomation(TrackAutomation* curves)
+    {
+        if (! automationInbox_.push(curves))
+            delete curves;
+    }
+
+    /** Frees automation the audio thread has retired. Call periodically from
+        the message thread (see AudioEngine::pump). */
+    void collectRetiredAutomation()
+    {
+        TrackAutomation* retired = nullptr;
+        while (automationReclaim_.pop(retired))
+            delete retired;
+    }
+
     void prepare(double sampleRate, int blockSize)
     {
         synth.prepare(sampleRate, blockSize);
@@ -86,6 +119,44 @@ struct InstrumentTrack
         scratch.setSize(2, juce::jmax(1, blockSize));
     }
 
+private:
+    // Automation lookups. Each returns nullptr when that parameter isn't
+    // automated, which is what makes the track fall back to its static value.
+    const AutomationCurve* automationGain() const noexcept
+    {
+        return (automation_ != nullptr && ! automation_->gain.empty()) ? &automation_->gain : nullptr;
+    }
+    const AutomationCurve* automationPan() const noexcept
+    {
+        return (automation_ != nullptr && ! automation_->pan.empty()) ? &automation_->pan : nullptr;
+    }
+    const AutomationCurve* automationSend() const noexcept
+    {
+        return (automation_ != nullptr && ! automation_->sendLevel.empty()) ? &automation_->sendLevel : nullptr;
+    }
+
+    static float decibelsAt(const AutomationCurve* curve, double beat, float staticDb)
+    {
+        return juce::Decibels::decibelsToGain(curve != nullptr ? curve->valueAt(beat, staticDb) : staticDb);
+    }
+
+    /** Unity-centre linear pan law — see the note in render(). */
+    static float panGainFor(int channel, float panPosition) noexcept
+    {
+        const float p = juce::jlimit(-1.0f, 1.0f, panPosition);
+        if (channel == 0) return p <= 0.0f ? 1.0f : 1.0f - p;
+        if (channel == 1) return p >= 0.0f ? 1.0f : 1.0f + p;
+        return 1.0f;
+    }
+
+    static double beatsPerBlock(const ProcessContext& context) noexcept
+    {
+        if (context.sampleRate <= 0.0 || context.transport.bpm <= 0.0)
+            return 0.0;
+        return (double) context.numSamples * context.transport.bpm / (60.0 * context.sampleRate);
+    }
+
+public:
     /** Read by the UI thread for the mixer strip's meter. */
     float peak(int channel) const noexcept
     {
@@ -100,6 +171,14 @@ struct InstrumentTrack
                 const juce::MidiBuffer& liveMidi,
                 const ProcessContext& context, bool receivesLiveMidi, bool anySoloActive)
     {
+        TrackAutomation* incoming = nullptr;
+        while (automationInbox_.pop(incoming))
+        {
+            if (automation_ != nullptr)
+                automationReclaim_.push(automation_); // rare drop-on-full leaks until dtor
+            automation_ = incoming;
+        }
+
         trackMidi.clear();
         sequencer.renderBlock(trackMidi, context);
 
@@ -134,35 +213,63 @@ struct InstrumentTrack
         insertDelay.process(scratch);
         insertReverb.process(scratch);
 
-        const float gain     = juce::Decibels::decibelsToGain(gainDb.load(std::memory_order_relaxed));
-        const float send     = sendLevel.load(std::memory_order_relaxed);
-        const int   channels = juce::jmin(mix.getNumChannels(), scratch.getNumChannels());
+        const float staticGainDb = gainDb.load(std::memory_order_relaxed);
+        const float staticPan    = pan.load(std::memory_order_relaxed);
+        const float staticSend   = sendLevel.load(std::memory_order_relaxed);
 
-        // A linear pan law with a unity centre, the same one the drum pads
-        // use: at pan 0 both sides stay at 1.0, so a centred track sums
-        // bit-identically to how it did before panning existed. An
-        // equal-power law would drop every centred track to ~0.707.
-        const float panPosition = juce::jlimit(-1.0f, 1.0f, pan.load(std::memory_order_relaxed));
-        const float panLeft     = panPosition <= 0.0f ? 1.0f : 1.0f - panPosition;
-        const float panRight    = panPosition >= 0.0f ? 1.0f : 1.0f + panPosition;
+        // Automation is evaluated at both ends of the block and ramped across
+        // it, rather than held at one value per block. Within a straight
+        // segment that ramp *is* the curve, so a fade is smooth to the sample;
+        // only a breakpoint landing mid-block is approximated, and then by at
+        // most one block. This is what the message thread can't do — it only
+        // gets to set a value every ~33ms, which steps audibly on a fast move.
+        const double beatAtStart = context.transport.ppqPosition;
+        const double beatAtEnd   = beatAtStart + beatsPerBlock(context);
+
+        const float gainStart = decibelsAt(automationGain(), beatAtStart, staticGainDb);
+        const float gainEnd   = decibelsAt(automationGain(), beatAtEnd, staticGainDb);
+        const float panStart  = automationPan() != nullptr ? automationPan()->valueAt(beatAtStart, staticPan) : staticPan;
+        const float panEnd    = automationPan() != nullptr ? automationPan()->valueAt(beatAtEnd, staticPan) : staticPan;
+        const float sendStart = automationSend() != nullptr ? automationSend()->valueAt(beatAtStart, staticSend) : staticSend;
+        const float sendEnd   = automationSend() != nullptr ? automationSend()->valueAt(beatAtEnd, staticSend) : staticSend;
+
+        const int channels = juce::jmin(mix.getNumChannels(), scratch.getNumChannels());
 
         for (int ch = 0; ch < channels; ++ch)
         {
-            const float channelGain = gain * (ch == 0 ? panLeft : (ch == 1 ? panRight : 1.0f));
-            mix.addFrom(ch, 0, scratch, ch, 0, numSamples, channelGain);
+            // A linear pan law with a unity centre, the same one the drum pads
+            // use: at pan 0 both sides stay at 1.0, so a centred track sums
+            // bit-identically to how it did before panning existed. An
+            // equal-power law would drop every centred track to ~0.707.
+            const float channelGainStart = gainStart * panGainFor(ch, panStart);
+            const float channelGainEnd   = gainEnd   * panGainFor(ch, panEnd);
+
+            if (channelGainStart == channelGainEnd)
+                mix.addFrom(ch, 0, scratch, ch, 0, numSamples, channelGainStart);
+            else
+                mix.addFromWithRamp(ch, 0, scratch.getReadPointer(ch), numSamples,
+                                    channelGainStart, channelGainEnd);
 
             // The send stays pre-fader *and* pre-pan: it's a mono-ish aux
             // feed, and panning it would move the track's reverb around the
             // stereo field independently of the track, which isn't wanted.
-            if (send > 0.0f && ch < sendBus.getNumChannels())
-                sendBus.addFrom(ch, 0, scratch, ch, 0, numSamples, send);
+            if (ch < sendBus.getNumChannels() && (sendStart > 0.0f || sendEnd > 0.0f))
+            {
+                if (sendStart == sendEnd)
+                    sendBus.addFrom(ch, 0, scratch, ch, 0, numSamples, sendStart);
+                else
+                    sendBus.addFromWithRamp(ch, 0, scratch.getReadPointer(ch), numSamples, sendStart, sendEnd);
+            }
 
             if (ch < 2)
             {
-                float peak = 0.0f;
-                const float* data = scratch.getReadPointer(ch);
+                // Metered against the loudest end of the ramp, so a peak can't
+                // hide inside a fade.
+                const float peakGain = std::max(std::abs(channelGainStart), std::abs(channelGainEnd));
+                float       peak     = 0.0f;
+                const float* data    = scratch.getReadPointer(ch);
                 for (int i = 0; i < numSamples; ++i)
-                    peak = std::max(peak, std::abs(data[i]) * channelGain);
+                    peak = std::max(peak, std::abs(data[i]) * peakGain);
                 channelPeak_[ch].store(peak, std::memory_order_relaxed);
             }
         }

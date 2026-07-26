@@ -38,11 +38,11 @@ public:
         Pass a default-constructed (empty) one to skip this entirely — every
         track then uses its static gainsDb for the whole render, exactly as
         before this parameter existed. */
-    using GainAutomationFn = std::function<float(int trackIndex, double beat, float staticGainDb)>;
-
-    /** As GainAutomationFn, but for pan (-1..+1). Optional and independent:
-        a render can automate gain, pan, both or neither. */
-    using PanAutomationFn = std::function<float(int trackIndex, double beat, float staticPan)>;
+    /** Per-track automation, one entry per pattern, applied by the tracks
+        themselves — the same TrackAutomation the live engine uses, so an
+        export and a playback run the identical code rather than two
+        mechanisms that have to be kept agreeing. */
+    using TrackAutomationList = std::vector<TrackAutomation>;
 
     /** Renders one instrument track per pattern, at the given per-track gains (dB),
         solo flags, clip start offsets (beats — the track stays silent until the
@@ -52,13 +52,13 @@ public:
         Solo follows the same "solo overrides, mute always wins" rule as the live
         engine.
 
-        If @p gainAutomation is set, each track is rendered in isolation at unity
-        gain and folded into the mix with a sample-accurate gain curve from the
-        callback instead of InstrumentTrack's flat per-block gain — this is the
-        only way to get sample-accurate *per-track* automation, since (unlike
-        master automation) it can't be applied as a single post-render multiply
-        once tracks are already summed. Leaving it unset keeps the original,
-        untouched fast path (a plain per-track render() straight into the mix).
+        If @p automation is set, each track is given its curves and applies
+        them itself while rendering, ramping across each block. This used to
+        require rendering every track in isolation at unity gain and folding it
+        back in with a per-sample curve, because InstrumentTrack could only
+        apply one flat gain per block; now that it ramps natively, that whole
+        second code path is gone and an export runs exactly the same automation
+        code as live playback.
 
         The send bus applies reverb (sendRoomSize/sendDamping) when
         @p sendBusEffectType is 0, or delay (sendDelayTimeMs/sendDelayFeedback)
@@ -76,11 +76,10 @@ public:
                                            double sampleRate,
                                            double numSeconds,
                                            int    blockSize = 512,
-                                           GainAutomationFn gainAutomation = {},
+                                           const TrackAutomationList* automation = nullptr,
                                            int    sendBusEffectType = 0,
                                            float  sendDelayTimeMs = 300.0f,
-                                           float  sendDelayFeedback = 0.35f,
-                                           PanAutomationFn panAutomation = {})
+                                           float  sendDelayFeedback = 0.35f)
     {
         const int totalSamples = (int) std::ceil(numSeconds * sampleRate);
         juce::AudioBuffer<float> output(2, std::max(1, totalSamples));
@@ -108,6 +107,12 @@ public:
                 track->solo.store(soloFlags[i]);
             if (i < sendLevels.size())
                 track->sendLevel.store(sendLevels[i]);
+
+            // Handed over the same way the live engine does it; the track
+            // picks it up on its first render() and applies it itself.
+            if (automation != nullptr && i < automation->size())
+                track->setAutomation(new TrackAutomation((*automation)[i]));
+
             tracks.push_back(std::move(track));
         }
 
@@ -131,7 +136,6 @@ public:
 
         juce::AudioBuffer<float> block(2, blockSize);
         juce::AudioBuffer<float> sendBus(2, blockSize);
-        juce::AudioBuffer<float> trackTemp; // only sized/used when gainAutomation is set
         juce::MidiBuffer         noLiveMidi;
 
         const double samplesPerBeat = bpm > 0.0 ? sampleRate * 60.0 / bpm : 0.0;
@@ -151,59 +155,11 @@ public:
             ctx.transport.playing         = true;
             ctx.transport.playheadSamples = playhead;
             ctx.transport.bpm             = bpm;
+            // Tracks read this to place themselves on their automation curves.
+            ctx.transport.ppqPosition     = samplesPerBeat > 0.0 ? (double) playhead / samplesPerBeat : 0.0;
 
-            if (! gainAutomation)
-            {
-                for (auto& track : tracks)
-                    track->render(block, sendBus, noLiveMidi, ctx, false, anySolo);
-            }
-            else
-            {
-                trackTemp.setSize(2, n, false, false, true);
-                for (size_t t = 0; t < tracks.size(); ++t)
-                {
-                    auto&       track       = tracks[t];
-                    const float staticGainDb = track->gainDb.load();
-
-                    // Render this track alone at unity gain (the send bus still
-                    // gets its usual, gain-independent pre-fader copy from
-                    // inside render()) so we can fold it into the mix ourselves
-                    // with a sample-accurate curve instead of one flat gain.
-                    // Pan is neutralised for the same reason as gain: whatever
-                    // render() applies statically would otherwise be applied a
-                    // second time by the per-sample fold below.
-                    const float staticPan = track->pan.load();
-
-                    trackTemp.clear();
-                    track->gainDb.store(0.0f);
-                    track->pan.store(0.0f);
-                    track->render(trackTemp, sendBus, noLiveMidi, ctx, false, anySolo);
-                    track->gainDb.store(staticGainDb);
-                    track->pan.store(staticPan);
-
-                    const int channels = juce::jmin(block.getNumChannels(), trackTemp.getNumChannels());
-                    for (int i = 0; i < n; ++i)
-                    {
-                        const double beat = samplesPerBeat > 0.0 ? (double) (playhead + i) / samplesPerBeat : 0.0;
-                        const float  g    = juce::Decibels::decibelsToGain(
-                                                gainAutomation((int) t, beat, staticGainDb));
-
-                        // Same unity-centre law as InstrumentTrack, so an
-                        // exported centred track matches the live one exactly.
-                        const float pan      = juce::jlimit(-1.0f, 1.0f,
-                                                   panAutomation ? panAutomation((int) t, beat, staticPan)
-                                                                 : staticPan);
-                        const float panLeft  = pan <= 0.0f ? 1.0f : 1.0f - pan;
-                        const float panRight = pan >= 0.0f ? 1.0f : 1.0f + pan;
-
-                        for (int ch = 0; ch < channels; ++ch)
-                        {
-                            const float channelGain = g * (ch == 0 ? panLeft : (ch == 1 ? panRight : 1.0f));
-                            block.getWritePointer(ch)[i] += trackTemp.getReadPointer(ch)[i] * channelGain;
-                        }
-                    }
-                }
-            }
+            for (auto& track : tracks)
+                track->render(block, sendBus, noLiveMidi, ctx, false, anySolo);
 
             if (sendBusEnabled)
             {

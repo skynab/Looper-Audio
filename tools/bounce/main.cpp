@@ -151,7 +151,7 @@ int main(int argc, char** argv)
     const auto  withSendBusDelay     = OfflineRenderer::render(one, std::vector<float> { 0.0f }, std::vector<bool>{},
                                                                std::vector<double>{}, std::vector<float> { 1.0f },
                                                                true, 0.6f, 0.4f, 0.7f, bpm, sampleRate, seconds,
-                                                               512, OfflineRenderer::GainAutomationFn {},
+                                                               512, nullptr,
                                                                1, 250.0f, 0.4f);
     const float rmsWithSendBusDelay  = withSendBusDelay.getRMSLevel(0, 0, withSendBusDelay.getNumSamples());
     const bool  sendBusDelayWorks    = std::abs(rmsWithSendBusDelay - rmsNoSendBus) > 1.0e-4f
@@ -387,27 +387,24 @@ int main(int argc, char** argv)
         drumPadPitchWorks = before > 0.01f && after < 1.0e-5f;
     }
 
-    // Pan-automation export check: a lane sweeping hard left to hard right
+    // Pan-automation export check: a curve sweeping hard left to hard right
     // across the render must land the energy on the left early and the right
-    // late. Exercises OfflineRenderer's isolation path, which is the only
-    // place per-track automation can be applied sample-accurately.
+    // late. Now goes through the same TrackAutomation the live engine uses,
+    // rather than a renderer-only callback.
     bool panAutomationWorks = false;
     {
         const double renderSeconds = 4.0;
+        const double totalBeats    = renderSeconds * bpm / 60.0;
 
-        OfflineRenderer::GainAutomationFn flatGain =
-            [](int, double, float staticGainDb) { return staticGainDb; };
-        OfflineRenderer::PanAutomationFn sweep =
-            [renderSeconds, bpm](int, double beat, float) -> float
-            {
-                const double totalBeats = renderSeconds * bpm / 60.0;
-                return (float) juce::jlimit(-1.0, 1.0, (beat / totalBeats) * 2.0 - 1.0);
-            };
+        TrackAutomation sweep;
+        sweep.pan.addPoint(0.0, -1.0f);
+        sweep.pan.addPoint(totalBeats, 1.0f);
+
+        const OfflineRenderer::TrackAutomationList curves { sweep };
 
         const auto swept = OfflineRenderer::render({ arp }, { 0.0f }, {}, {}, { 0.0f },
                                                    false, 0.5f, 0.5f, 0.5f,
-                                                   bpm, sampleRate, renderSeconds, 512, flatGain,
-                                                   0, 300.0f, 0.35f, sweep);
+                                                   bpm, sampleRate, renderSeconds, 512, &curves);
 
         const int window = (int) (sampleRate * 0.5);
         const int lateAt = swept.getNumSamples() - window;
@@ -684,33 +681,25 @@ int main(int argc, char** argv)
     // Per-track automation check: unlike the master-gain trick above (a plain
     // post-render multiply, since master gain applies uniformly to the whole
     // mix), per-track automation can't be applied after tracks are already
-    // summed — this exercises the real OfflineRenderer::render(gainAutomation)
+    // summed — this exercises the real OfflineRenderer::render(automation)
     // path. Track 1 (arp) gets a -40 dB -> 0 dB fade; track 2 (bass) gets none.
-    looper::model::AutomationLane arpAutomation;
-    arpAutomation.addPoint(0.0, -40.0f);
-    arpAutomation.addPoint(bpm / 60.0 * seconds, 0.0f);
-    looper::model::AutomationLane noAutomation; // empty: bass keeps its static gain
+    TrackAutomation arpAutomation;
+    arpAutomation.gain.addPoint(0.0, -40.0f);
+    arpAutomation.gain.addPoint(bpm / 60.0 * seconds, 0.0f);
+    const TrackAutomation noAutomation; // empty: bass keeps its static gain
 
-    const std::vector<looper::model::AutomationLane> perTrackLanes { arpAutomation, noAutomation };
-    OfflineRenderer::GainAutomationFn perTrackGainFn =
-        [&perTrackLanes](int trackIndex, double beat, float staticGainDb) -> float
-    {
-        if (trackIndex < 0 || (size_t) trackIndex >= perTrackLanes.size())
-            return staticGainDb;
-        const auto& trackLane = perTrackLanes[(size_t) trackIndex];
-        return trackLane.empty() ? staticGainDb : trackLane.valueAt(beat, staticGainDb);
-    };
+    const OfflineRenderer::TrackAutomationList perTrackCurves { arpAutomation, noAutomation };
 
     // Isolate each track (the other silenced at -100 dB) so the comparison
     // below reflects one track's automation state, not the fixed two-track mix.
     const auto arpAloneAutomated  = OfflineRenderer::render({ arp, bass }, { 0.0f, -100.0f }, std::vector<bool>{},
                                                             std::vector<double>{}, std::vector<float>{},
                                                             false, 0.5f, 0.5f, 0.0f,
-                                                            bpm, sampleRate, seconds, 512, perTrackGainFn);
+                                                            bpm, sampleRate, seconds, 512, &perTrackCurves);
     const auto bassAloneNoAuto    = OfflineRenderer::render({ arp, bass }, { -100.0f, 0.0f }, std::vector<bool>{},
                                                             std::vector<double>{}, std::vector<float>{},
                                                             false, 0.5f, 0.5f, 0.0f,
-                                                            bpm, sampleRate, seconds, 512, perTrackGainFn);
+                                                            bpm, sampleRate, seconds, 512, &perTrackCurves);
 
     const int   halfArp             = arpAloneAutomated.getNumSamples() / 2;
     const float rmsArpFirstHalf     = arpAloneAutomated.getRMSLevel(0, 0, halfArp);
