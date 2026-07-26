@@ -817,7 +817,7 @@ disk, then smallest-to-largest:
 
 As in §17, the judgment calls are flagged here rather than buried in the code.
 
-### 0. Project-format versioning (bug fix)
+### 0. Project-format versioning (implemented)
 
 `model::deserialize` reads the version token after `LOOPER` but never *checks* it, and then requires
 every record of the current format in order. Two format bumps landed in one sitting (`12` for
@@ -837,7 +837,7 @@ to be behaviour-preserving no-ops). Two judgment calls:
 
 Every subsequent item in this batch bumps the format again, so this lands first.
 
-### 1. Metronome + count-in
+### 1. Metronome + count-in (implemented)
 
 There is no click at all today, which makes recording in time guesswork. A metronome is a source
 node driven by the existing `TempoMap`/`Transport`, emitting a short synthesized tick (accented on
@@ -848,7 +848,7 @@ the bar) — no sample assets, no new dependency.
 - **Count-in is a transport property**, not a metronome one: arm, hit record, and the transport rolls
   a configurable number of bars before the playhead starts capturing.
 
-### 2. Piano roll: note length, velocity, zoom/scroll
+### 2. Piano roll: note length, velocity, zoom/scroll (implemented)
 
 The piano roll is honest about being minimal ("fixed step length, no drag-resize, no scrolling/zoom
 yet") and that is now the main thing between this app and writing an actual part. Three changes, in
@@ -863,7 +863,7 @@ lane under the grid) to set velocity; scroll and zoom the pitch range beyond the
   fixed `lowPitch`/`numRows` constants — which keeps the conversion math unit-testable headless, as
   it is today.
 
-### 3. Clip length + resize handles
+### 3. Clip length + resize handles (implemented)
 
 Clips are created at a hardcoded 4 beats and `ArrangementView` supports moving them but not resizing
 them, so an eight-bar section is unreachable. Adds a drag handle on each clip's right edge, mirroring
@@ -875,7 +875,7 @@ the existing move-drag (`onClipMoved` → `onClipResized`), plus a length field 
 - The single-clip "unbounded length" special case in `syncEngineTracks` (a lone clip loops forever)
   has to survive this, or existing projects change behaviour.
 
-### 4. Copy/paste/duplicate, quantize, swing
+### 4. Copy/paste/duplicate, quantize, swing (implemented)
 
 No clipboard exists anywhere in the app; duplicating a bar means redrawing it by hand. Adds
 copy/paste/duplicate for both clips (in the arrangement) and note selections (in the piano roll),
@@ -888,6 +888,19 @@ then quantize and swing over a note selection.
 - Swing is expressed as a percentage offset applied to off-beat subdivisions at edit time, writing
   real note positions rather than a playback-time feel parameter — keeps the engine unchanged and
   the result visible and editable, consistent with "AI produces editable musical data" elsewhere.
+
+All five landed. Two things the plan didn't anticipate, recorded because they
+shaped the result:
+
+- **Clip resize alone doesn't give you a longer part.** A track holding a single clip is still
+  given an unbounded window by `syncEngineTracks` (the "one clip plays until Stop" rule the plan
+  said had to survive), so resizing a lone clip changes what you see and what exports, but not when
+  it stops sounding. *Pattern length* is what actually makes a longer part — and the piano roll was
+  hardcoded to 16 steps, so a longer clip wasn't even editable. Item 3 grew to cover all three.
+- **The song's time signature was never pushed anywhere.** Both tempo maps sat at 4/4 regardless of
+  the document, so a 3/4 project got the wrong bar/beat readout, the wrong loop length, and (once
+  the metronome existed) its accent on every fourth beat instead of every third. Fixed as part of
+  item 3, since the bars-to-beats maths depends on it.
 
 ### After this batch
 
