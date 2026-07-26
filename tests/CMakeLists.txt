@@ -15,7 +15,8 @@ add_executable(looper_tests
   model/SongTests.cpp
   model/SerializationTests.cpp
   model/AutomationLaneTests.cpp
-  app/TimelineGeometryTests.cpp)
+  app/TimelineGeometryTests.cpp
+  app/PianoRollGeometryTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE

@@ -30,7 +30,8 @@ This is a living document. As sections mature they should graduate into their ow
 14. [Phased roadmap](#14-phased-roadmap)
 15. [Key risks & mitigations](#15-key-risks--mitigations)
 16. [Immediate next steps](#16-immediate-next-steps)
-17. [Appendix: reference reading](#17-appendix-reference-reading)
+17. [Next planned features: MIDI I/O, file manager 2.0, piano-roll & drum tools](#17-next-planned-features-midi-io-file-manager-20-piano-roll--drum-tools)
+18. [Appendix: reference reading](#18-appendix-reference-reading)
 
 ---
 
@@ -594,7 +595,165 @@ Concrete, in order — the first three get you to *hearing sound through your ow
 
 ---
 
-## 17. Appendix: reference reading
+## 17. Next planned features: MIDI I/O, file manager 2.0, piano-roll & drum tools
+
+Four features requested together, each independent enough to build and verify on its own. Suggested
+build order — smallest/lowest-risk first, and drum kits last since it genuinely benefits from two of
+the others already existing:
+
+1. Piano-roll key-name gutter (smallest, standalone).
+2. MIDI import/export (standalone).
+3. File manager 2.0 (standalone; also lays down the drag-onto-a-pad infrastructure drum kits reuse).
+4. Drum kits (largest; reuses #1's gutter pattern and #3's drag-and-drop).
+
+Each subsection below flags the judgment calls made so they're visible before implementation starts,
+rather than buried in code.
+
+### MIDI import/export
+
+Read and write Standard MIDI Files (`.mid`) so patterns can come from, or go to, other tools —
+no new dependency: `juce::MidiFile` (already-linked `juce_audio_basics`) parses/writes SMF headers,
+per-track `juce::MidiMessageSequence`s, and tempo/time-signature meta-events.
+
+**New module:** `src/engine/MidiFileIO.h` — engine layer, not model/, since it needs JUCE (same
+reasoning that already puts `OfflineRenderer.h` in engine/ despite needing `juce_audio_formats`).
+Two entry points, both JUCE-dependent, both operating on `model::Song`:
+
+- `bool importMidiFile(const juce::File&, model::Song&)` — one new `Instrument` track per imported
+  MIDI track; each track's note on/off pairs become `engine::Note{startBeats, lengthBeats,
+  noteNumber, velocity}` via tick→beat conversion using `MidiFile::getTimeFormat()` (ticks per
+  quarter note). Each imported track gets one clip spanning its whole content, `startBeats = 0`,
+  mirroring the existing "single clip = unbounded, plays until stop" convention rather than
+  inventing multi-clip splitting for something that doesn't need it.
+- `bool exportMidiFile(const juce::File&, const model::Song&)` — the reverse: one
+  `MidiMessageSequence` per Instrument track, flattening *all* of that track's clips onto one
+  continuous sequence at their timeline positions (each clip's `startBeats` becomes a tick offset),
+  plus one tempo meta-event from `song.bpm`. Audio tracks have nothing to export and are skipped.
+
+**Scope call — no tempo map:** the engine has one global `song.bpm`, not a tempo-map-over-time. A
+source MIDI file with tempo *changes* mid-song can't be represented exactly. Default: import using
+the file's *first* tempo event as `song.bpm` (notes still land at the tick-derived beat position
+correctly for that single tempo — the overwhelming majority of loop/pattern MIDI files have exactly
+one tempo event); if the file has more, surface a message ("Imported at 128 BPM; N further tempo
+changes in this file were not imported") rather than silently dropping them or failing the import —
+same "safe fallback, never silently wrong" convention already used for automation export. SMPTE-format
+time bases (rare) are out of scope for v1 — reject with a clear message rather than misinterpreting.
+
+**UI:** File > Import MIDI... / File > Export MIDI..., mirroring the existing Import Audio / Bounce
+dialog patterns (`juce::FileChooser`, `history_.edit(...)` for the import mutation; export doesn't
+touch the document).
+
+**Verification:** can't be a headless Catch2 test (needs JUCE) — verify via the bounce tool with a
+round-trip check: build a `Pattern` in memory, export to a temp `.mid`, re-import it, assert the
+reimported notes match the original (beat/pitch/velocity, within tick-rounding tolerance). Same
+assertion-based, no-GUI-required discipline as every other engine check in this project.
+
+### File manager 2.0
+
+The plain `juce::FileTreeComponent` list becomes a two-pane file manager: a folder tree on the left,
+a sortable, color-coded file **grid** on the right, plus folder operations and a per-project root
+folder.
+
+**Grid:** `juce::TableListBox` + a custom `FileGridModel : juce::TableListBoxModel`. Columns: Name /
+Type / Size / Modified / Duration (audio only, probed lazily the same lightweight way
+`AudioEngine::probeDurationSeconds` already reads a file's header without decoding it). Sortable by
+column out of the box (`TableListBox` supports this natively).
+
+**Color coding:** one small `getFileColour(const juce::File&)` classifier — audio extensions one
+hue, `.mid`/`.midi` another, `.looper` project files a third, unrecognized dimmed — used for the
+grid's type swatch and row tint.
+
+**Layout:** left = a directories-only tree (reuse the proven `FileTreeComponent` + a
+`WildcardFileFilter` scoped to folders, rather than writing a new tree widget); right = the grid,
+showing the selected folder's contents. The existing Home/Recordings/user-bookmark buttons stay
+above the tree unchanged.
+
+**Folder management:** right-click (tree and grid) opens a `juce::PopupMenu`: New Folder
+(`File::createDirectory()`), Rename (`moveFileTo()`), Delete (`deleteRecursively()`) — Delete is a
+real destructive filesystem operation and needs an explicit "are you sure" confirmation before it
+runs, and real live testing before it's trusted, not just headless review.
+
+**Project root folder:** a new `model::Song` field, `std::string projectRootFolder` (empty =
+unset) — project-specific data, so it belongs in the document (round-trips with `.looper` saves),
+not an app-level preference. Set via a "Set Project Root Folder..." picker; once set, it becomes an
+always-present, visually distinct "Places" entry above Home/Recordings/bookmarks, and a natural
+default starting directory for recordings/bounces (nice-to-have, not required for v1). Needs a
+serialization bump (`LOOPER 9` → `10`) and a round-trip test update — same mechanical pattern as
+adding `SendBusSettings.effectType` earlier.
+
+**Verification:** mostly filesystem/UI logic, not audio — verify via compilation + careful review;
+the destructive folder operations specifically need live, manual testing before trusting them.
+
+### Piano roll: key-name gutter (implemented)
+
+The concrete ask: a left-hand gutter naming each row's pitch ("C4", "C#4", "D4", ...) — `PianoRoll`
+previously had *no* such gutter at all, the grid filled the full width with only black/white row
+shading to go on. Built the same way `ArrangementView` already names its lanes
+(`TimelineGeometry.gutterWidth`), applied to the pitch axis instead of the time axis.
+
+**What was built:** `src/app/PianoRollGeometry.h` — a JUCE-free geometry struct (`pitchForRow`,
+`rowForPitch`, `cellAt`, `xForStep`/`yForRow`) mirroring `TimelineGeometry`, pulled out of
+`PianoRoll` itself so the row↔pitch math is unit-tested headless for the first time
+(`tests/app/PianoRollGeometryTests.cpp`). Two small JUCE-free helpers moved into the existing
+`engine::MidiNote.h` module rather than living in the UI layer: `midiNoteName(int)` (scientific
+pitch notation, middle C = C4 — this project's existing convention, per `PianoRoll`'s demo pattern)
+and `isBlackKey(int)` (previously a private, untested `PianoRoll` method) — both unit-tested in
+`tests/engine/MidiNoteTests.cpp`. No JUCE note-naming API was used, since a hand-written,
+JUCE-free version could be tested the same way every other pure-math helper in this project is.
+
+Bundled, as planned: hover-row highlighting (`mouseMove`/`mouseExit`), and a heavier line every 12
+rows at octave boundaries. Not bundled, as planned: scrolling/zoom, drag-to-resize notes.
+
+**Drum-track connection:** not wired up yet — `TrackType::Drum` doesn't exist until the drum-kits
+subsection below is built. `PianoRollGeometry`/`PianoRoll` are already structured so that seam (a
+`labelForRow(row)` swapping pitch names for pad names) is a small, contained addition later rather
+than a rewrite.
+
+**Verification:** the row↔pitch math is now unit-tested (`PianoRollGeometryTests.cpp` plus two new
+`MidiNoteTests.cpp` cases — 7 new test cases in total, all passing). The rendering itself
+(gutter/hover/octave-line layout) is JUCE-dependent and could not be verified headlessly — needs a
+live look. All 57 unit tests pass and the bounce tool's full check suite, including
+`rmsDry=0.149266`, is unchanged (pure UI change, zero engine/model impact).
+
+### Drum kits
+
+A track type where each row is an independent one-shot sample (kick, snare, hat, ...), replaceable
+per-pad, instead of one melodic synth timbre shared across every note.
+
+**Model:** new `model::TrackType::Drum`. A `DrumKit` struct held per-track (alongside
+`gainAutomation`) with a small pad list: `struct DrumPad { int noteNumber; std::string label;
+std::string samplePath; };`. Starting default, matching "one or more bass, snare, and other
+instrument types": four pads — Kick (36), Snare (38), Hat (42), Other (45) — expandable later, not
+a full GM drum map in v1. `samplePath` empty means silent, the same safe default this project
+already uses for an audio clip with no file assigned.
+
+**Engine:** new `engine::DrumKitNode`, built the way `SynthInstrumentNode` already wraps
+`juce::Synthesiser` — reusing its polyphony/sample-accurate dispatch rather than inventing a new
+voice-pool. A custom `DrumSampleVoice : juce::SynthesiserVoice` looks up the triggered note's
+assigned `ClipData` on `startNote()` (via a small hot-swappable per-node pad mapping — same
+lock-free message→audio hand-off pattern already proven twice this session, in
+`AudioFilePlayerNode`'s clip-list swap and `AudioEngine`'s decode cache) and plays it once to the
+end, ignoring note-off — a one-shot, standard drum-machine behaviour, not a sustained voice.
+Reuses `AudioEngine::decodeOrGetCached` so assigning one sample to several pads (or tracks) never
+double-decodes. `InstrumentTrack` gains a `DrumKitNode drumKit` alongside the existing
+`synth`/`audioPlayer`, used only when the track's type is `Drum` — the same "every pool slot has
+every node type, only one is actually driven" shape the class's own doc comment already describes.
+
+**UI:** a small drum-kit editor (a strip alongside the piano roll when a Drum track is selected) —
+one row per pad, its assigned sample name, a "Load..." button, *and* accepting a drag straight from
+`FileBrowserPanel`'s file tree (reusing the exact `DragAndDropTarget`-by-sourceComponent-type
+pattern `ArrangementView` already established) — replacing a pad's sound becomes "drag a new file
+onto that row." The step grid for a Drum track shows pad names on the gutter (previous subsection)
+instead of pitch names, and shouldn't scroll across octaves — a fixed handful of pads, no pitch
+concept to scroll through.
+
+**Verification:** exactly what the bounce tool already does well — render a pattern (kick on 1/3,
+snare on 2/4) through `DrumKitNode` and assert non-silence in the expected windows, in the style of
+the existing `audioTrackWorks`/`multiClipAudioGates` checks.
+
+---
+
+## 18. Appendix: reference reading
 
 - **Real-time audio programming:** Ross Bencina, *"Real-time audio programming 101: time waits for
   nothing"* (the no-locks/no-allocations canon).

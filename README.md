@@ -154,8 +154,22 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > tests and the full bounce-tool check suite are unchanged — try moving a panel or adding a bookmark,
 > then quitting and relaunching, to confirm both come back where you left them.
 >
-> That closes out every item from the docking-system and file-management-pane plans. See
-> [`docs/PLAN.md`](docs/PLAN.md) for the full roadmap and what's next.
+> That closes out every item from the docking-system and file-management-pane plans.
+>
+> **First item of the next plan is done: the piano roll now labels its own rows.** Every row shows
+> its pitch ("C4", "C#4", ...) in a left-hand gutter, the same way the arrangement view already
+> names its track lanes — previously there was no way to tell which row was which pitch besides
+> counting black/white key shading. Two small pure-math helpers moved out to reusable, tested
+> homes rather than staying as private, untested `PianoRoll` details: `engine::MidiNote.h` gained
+> `midiNoteName()` and `isBlackKey()`, and the row↔pitch conversion math itself moved into a new
+> `PianoRollGeometry` (mirroring `TimelineGeometry`) — all unit-tested headless for the first time
+> (7 new test cases, 57 total). Hover-row highlighting and heavier octave-boundary lines came along
+> for free; scrolling/zoom and drag-to-resize notes were deliberately left out of this pass. Pure UI
+> change, zero engine/model impact — the bounce tool's full check suite, including
+> `rmsDry=0.149266`, is unchanged. The rendering itself needs a live look to confirm it reads well.
+>
+> Next: MIDI import/export, file manager 2.0, and drum kits. See [`docs/PLAN.md`](docs/PLAN.md) for
+> the full roadmap.
 
 ## Tech stack
 
