@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "FileGrid.h"
+#include "Icons.h"
 
 namespace looper
 {
@@ -65,6 +66,7 @@ class FileBrowserPanel final : public juce::Component,
 public:
     std::function<void(const juce::File&)> onFilePreview;      // double-click
     std::function<void()>                  onBookmarksChanged; // added or removed one
+    std::function<void()>                  onFavoritesChanged; // starred or unstarred a file in the grid
 
     FileBrowserPanel()
         : audioFilter_("*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3;*.m4a;*.mp4", "*", "Audio files"),
@@ -84,8 +86,9 @@ public:
         fileTree_.addListener(this);
         addAndMakeVisible(fileTree_);
 
-        fileGrid_.onFilePreview = [this](const juce::File& file) { if (onFilePreview) onFilePreview(file); };
-        fileGrid_.onRightClick  = [this](const juce::File& file) { showContextMenuFor(file); };
+        fileGrid_.onFilePreview      = [this](const juce::File& file) { if (onFilePreview) onFilePreview(file); };
+        fileGrid_.onRightClick       = [this](const juce::File& file) { showContextMenuFor(file); };
+        fileGrid_.onFavoritesChanged = [this] { if (onFavoritesChanged) onFavoritesChanged(); };
         addAndMakeVisible(fileGrid_);
         fileGrid_.setDirectory(recordingsDirectory_);
 
@@ -104,6 +107,31 @@ public:
         addBookmarkButton_.setTooltip("Bookmark the folder currently being browsed");
         addBookmarkButton_.onClick = [this] { promptAddBookmark(); };
         addAndMakeVisible(addBookmarkButton_);
+
+        {
+            auto sidebarOn  = icons::fromSvg(icons::kSidebarOn);
+            auto sidebarOff = icons::fromSvg(icons::kSidebarOff);
+            toggleTreeButton_.setImages(sidebarOff.get(), nullptr, nullptr, nullptr, sidebarOn.get());
+        }
+        toggleTreeButton_.setClickingTogglesState(true);
+        toggleTreeButton_.setToggleState(true, juce::dontSendNotification); // tree starts visible
+        toggleTreeButton_.setTooltip("Show/hide the folder tree");
+        toggleTreeButton_.onClick = [this]
+        {
+            treeVisible_ = toggleTreeButton_.getToggleState();
+            fileTree_.setVisible(treeVisible_);
+            resized();
+        };
+        addAndMakeVisible(toggleTreeButton_);
+
+        {
+            auto folderAddOn  = icons::fromSvg(icons::kFolderAddOn);
+            auto folderAddOff = icons::fromSvg(icons::kFolderAddOff);
+            newFolderButton_.setImages(folderAddOff.get(), folderAddOn.get());
+        }
+        newFolderButton_.setTooltip("New folder in the current directory");
+        newFolderButton_.onClick = [this] { promptNewFolder(directoryList_.getDirectory()); };
+        addAndMakeVisible(newFolderButton_);
     }
 
     ~FileBrowserPanel() override
@@ -144,6 +172,10 @@ public:
     }
     const std::vector<juce::File>& bookmarks() const { return bookmarks_; }
 
+    // Starred files (see FileGrid) — the owner persists these too.
+    void setFavorites(const std::vector<juce::File>& favorites) { fileGrid_.setFavorites(favorites); }
+    std::vector<juce::File> favorites() const { return fileGrid_.favorites(); }
+
     void paint(juce::Graphics& g) override
     {
         g.fillAll(juce::Colour(0xff1e1e22));
@@ -156,6 +188,10 @@ public:
         auto placesRow = area.removeFromTop(24);
         addBookmarkButton_.setBounds(placesRow.removeFromRight(24));
         placesRow.removeFromRight(4);
+        toggleTreeButton_.setBounds(placesRow.removeFromLeft(24));
+        placesRow.removeFromLeft(4);
+        newFolderButton_.setBounds(placesRow.removeFromLeft(24));
+        placesRow.removeFromLeft(4);
         if (projectRootButton_.isVisible())
         {
             projectRootButton_.setBounds(placesRow.removeFromLeft(placesRow.getWidth() / 3).reduced(2, 0));
@@ -176,10 +212,14 @@ public:
 
         // Tree (top ~55%) and detail grid (bottom ~45%), a fixed split rather
         // than a draggable one — keeps this addition contained; see
-        // docs/PLAN.md for the cut.
-        const int treeHeight = (int) (area.getHeight() * 0.55f);
-        fileTree_.setBounds(area.removeFromTop(treeHeight));
-        area.removeFromTop(4);
+        // docs/PLAN.md for the cut. Hiding the tree (toggleTreeButton_) gives
+        // the grid the full remaining height instead.
+        if (treeVisible_)
+        {
+            const int treeHeight = (int) (area.getHeight() * 0.55f);
+            fileTree_.setBounds(area.removeFromTop(treeHeight));
+            area.removeFromTop(4);
+        }
         fileGrid_.setBounds(area);
     }
 
@@ -347,6 +387,9 @@ private:
     juce::TextButton recordingsButton_  { "Recordings" };
     juce::TextButton projectRootButton_ { "Project" };
     juce::TextButton addBookmarkButton_ { "+" };
+    juce::DrawableButton toggleTreeButton_ { "ToggleTree", juce::DrawableButton::ImageFitted };
+    juce::DrawableButton newFolderButton_  { "NewFolder", juce::DrawableButton::ImageFitted };
+    bool             treeVisible_ = true;
     juce::File       recordingsDirectory_;
     juce::File       projectRootFolder_;
 

@@ -38,22 +38,32 @@ MainComponent::MainComponent()
     // Panels start out split across the regions (see below) so file
     // management, arrangement, and mixer tools are all visible at the same
     // time; dragging a tab onto another region moves that panel there.
-    addAndMakeVisible(dockRegionFiles_);
-    addAndMakeVisible(paneResizerFiles_);
-    addAndMakeVisible(leftPane_);
-    addAndMakeVisible(paneResizer_);
-    addAndMakeVisible(dockRegionA_);
-    addAndMakeVisible(paneResizer2_);
-    addAndMakeVisible(dockRegionB_);
+    mainWorkspaceArea_.addAndMakeVisible(dockRegionFiles_);
+    mainWorkspaceArea_.addAndMakeVisible(paneResizerFiles_);
+    mainWorkspaceArea_.addAndMakeVisible(dockRegionTransport_);
+    mainWorkspaceArea_.addAndMakeVisible(paneResizer_);
+    mainWorkspaceArea_.addAndMakeVisible(dockRegionA_);
+    mainWorkspaceArea_.addAndMakeVisible(paneResizer2_);
+    mainWorkspaceArea_.addAndMakeVisible(dockRegionB_);
+    mainWorkspaceArea_.onResized = [this] { layoutMainWorkspaceArea(); };
     paneLayout_.setItemLayout(0, 180, 320, 220);   // dock region (Files): min/max/preferred
     paneLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed width
-    paneLayout_.setItemLayout(2, 220, 380, 260);   // left pane (transport): min/max/preferred
+    paneLayout_.setItemLayout(2, 220, 380, 260);   // dock region (Transport): min/max/preferred
     paneLayout_.setItemLayout(3, 8, 8, 8);         // divider: fixed width
-    paneLayout_.setItemLayout(4, 400, -1.0, -1.0); // dock region A (Arrange/Edit): flexible
+    paneLayout_.setItemLayout(4, 400, -1.0, -1.0); // dock region A (Tracks/Edit): flexible
     paneLayout_.setItemLayout(5, 8, 8, 8);         // divider: fixed width
     paneLayout_.setItemLayout(6, 260, 520, 340);   // dock region B (Mixer): min/max/preferred
 
-    for (auto* region : { &dockRegionFiles_, &dockRegionA_, &dockRegionB_ })
+    // Outer split: the horizontal row above, stacked over a region for the
+    // on-screen keyboard — same dockable system, just the other axis.
+    addAndMakeVisible(mainWorkspaceArea_);
+    addAndMakeVisible(outerResizer_);
+    addAndMakeVisible(dockRegionKeyboard_);
+    outerLayout_.setItemLayout(0, 300, -1.0, -1.0); // main workspace: flexible
+    outerLayout_.setItemLayout(1, 8, 8, 8);         // divider: fixed height
+    outerLayout_.setItemLayout(2, 90, 220, 110);    // dock region (Keyboard): min/max/preferred
+
+    for (auto* region : { &dockRegionFiles_, &dockRegionTransport_, &dockRegionA_, &dockRegionB_, &dockRegionKeyboard_ })
         region->onForeignPanelDropped = [this](const juce::String& name, DockRegion& target)
         {
             movePanelBetweenRegions(name, target);
@@ -92,6 +102,7 @@ MainComponent::MainComponent()
     leftPane_.addAndMakeVisible(stopButton);
     leftPane_.addAndMakeVisible(recordButton);
     leftPane_.addAndMakeVisible(loopButton);
+    leftPane_.onResized = [this] { layoutLeftPane(); };
 
     // ---- sliders ----
     tempoSlider.setRange(40.0, 240.0, 0.1);
@@ -121,6 +132,24 @@ MainComponent::MainComponent()
     addDrumTrackButton_.onClick = [this] { addDrumTrack(); };
     mixerView_.addAndMakeVisible(addDrumTrackButton_);
 
+    // ---- master panel: collapsible (see toggleMasterPanelButton_) since at
+    // narrow widths it was clipping against the track strips ----
+    mixerView_.addAndMakeVisible(masterPanel_);
+    masterPanel_.onResized = [this] { layoutMasterPanel(); };
+    masterPanelVisible_ = settings_.getValue("masterPanelVisible", "1") != "0";
+    masterPanel_.setVisible(masterPanelVisible_);
+    toggleMasterPanelButton_.setButtonText(masterPanelVisible_ ? "Hide Master" : "Show Master");
+    toggleMasterPanelButton_.onClick = [this]
+    {
+        masterPanelVisible_ = ! masterPanelVisible_;
+        masterPanel_.setVisible(masterPanelVisible_);
+        toggleMasterPanelButton_.setButtonText(masterPanelVisible_ ? "Hide Master" : "Show Master");
+        settings_.setValue("masterPanelVisible", masterPanelVisible_ ? "1" : "0");
+        settings_.saveIfNeeded();
+        layoutMixerView();
+    };
+    mixerView_.addAndMakeVisible(toggleMasterPanelButton_);
+
     masterSlider.setRange(-60.0, 6.0, 0.1);
     masterSlider.setValue(0.0, juce::dontSendNotification);
     masterSlider.setTextValueSuffix(" dB");
@@ -134,7 +163,7 @@ MainComponent::MainComponent()
             history_.mutableCurrent().masterGainDb.addPoint(beat, db);
         }
     };
-    mixerView_.addAndMakeVisible(masterSlider);
+    masterPanel_.addAndMakeVisible(masterSlider);
     masterLabel.attachToComponent(&masterSlider, true);
 
     // ---- master filter (stored in the document) ----
@@ -144,7 +173,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.enabled = on;
         engine_.setMasterFilterEnabled(on);
     };
-    mixerView_.addAndMakeVisible(filterButton);
+    masterPanel_.addAndMakeVisible(filterButton);
 
     filterModeBox_.addItem("Low-pass", 1);
     filterModeBox_.addItem("High-pass", 2);
@@ -156,7 +185,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.mode = mode;
         engine_.setMasterFilterMode(mode);
     };
-    mixerView_.addAndMakeVisible(filterModeBox_);
+    masterPanel_.addAndMakeVisible(filterModeBox_);
 
     filterCutoffSlider.setRange(20.0, 18000.0, 1.0);
     filterCutoffSlider.setSkewFactorFromMidPoint(1000.0);
@@ -168,7 +197,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.cutoff = hz;
         engine_.setMasterFilterCutoff(hz);
     };
-    mixerView_.addAndMakeVisible(filterCutoffSlider);
+    masterPanel_.addAndMakeVisible(filterCutoffSlider);
 
     filterResoSlider.setRange(0.1, 5.0, 0.01);
     filterResoSlider.setValue(0.707, juce::dontSendNotification);
@@ -179,7 +208,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.resonance = q;
         engine_.setMasterFilterResonance(q);
     };
-    mixerView_.addAndMakeVisible(filterResoSlider);
+    masterPanel_.addAndMakeVisible(filterResoSlider);
 
     // ---- master delay (stored in the document, so it saves + restores) ----
     delayButton.onClick = [this]
@@ -188,7 +217,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.enabled = on;
         engine_.setMasterDelayEnabled(on);
     };
-    mixerView_.addAndMakeVisible(delayButton);
+    masterPanel_.addAndMakeVisible(delayButton);
 
     delayTimeSlider.setRange(20.0, 1000.0, 1.0);
     delayTimeSlider.setValue(300.0, juce::dontSendNotification);
@@ -199,7 +228,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.timeMs = ms;
         engine_.setMasterDelayTimeMs(ms);
     };
-    mixerView_.addAndMakeVisible(delayTimeSlider);
+    masterPanel_.addAndMakeVisible(delayTimeSlider);
 
     delayFbSlider.setRange(0.0, 95.0, 1.0);
     delayFbSlider.setValue(35.0, juce::dontSendNotification);
@@ -210,7 +239,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.feedback = fb;
         engine_.setMasterDelayFeedback(fb);
     };
-    mixerView_.addAndMakeVisible(delayFbSlider);
+    masterPanel_.addAndMakeVisible(delayFbSlider);
 
     delayMixSlider.setRange(0.0, 100.0, 1.0);
     delayMixSlider.setValue(30.0, juce::dontSendNotification);
@@ -221,7 +250,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.mix = mix;
         engine_.setMasterDelayMix(mix);
     };
-    mixerView_.addAndMakeVisible(delayMixSlider);
+    masterPanel_.addAndMakeVisible(delayMixSlider);
 
     // ---- master reverb (stored in the document) ----
     reverbButton.onClick = [this]
@@ -230,7 +259,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.enabled = on;
         engine_.setMasterReverbEnabled(on);
     };
-    mixerView_.addAndMakeVisible(reverbButton);
+    masterPanel_.addAndMakeVisible(reverbButton);
 
     reverbRoomSlider.setRange(0.0, 100.0, 1.0);
     reverbRoomSlider.setValue(50.0, juce::dontSendNotification);
@@ -241,7 +270,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.roomSize = v;
         engine_.setMasterReverbRoomSize(v);
     };
-    mixerView_.addAndMakeVisible(reverbRoomSlider);
+    masterPanel_.addAndMakeVisible(reverbRoomSlider);
 
     reverbDampSlider.setRange(0.0, 100.0, 1.0);
     reverbDampSlider.setValue(50.0, juce::dontSendNotification);
@@ -252,7 +281,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.damping = v;
         engine_.setMasterReverbDamping(v);
     };
-    mixerView_.addAndMakeVisible(reverbDampSlider);
+    masterPanel_.addAndMakeVisible(reverbDampSlider);
 
     reverbMixSlider.setRange(0.0, 100.0, 1.0);
     reverbMixSlider.setValue(30.0, juce::dontSendNotification);
@@ -263,7 +292,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.mix = v;
         engine_.setMasterReverbMix(v);
     };
-    mixerView_.addAndMakeVisible(reverbMixSlider);
+    masterPanel_.addAndMakeVisible(reverbMixSlider);
 
     // ---- send bus: a shared reverb-or-delay every track can send into (stored in the document) ----
     sendBusButton.onClick = [this]
@@ -272,7 +301,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.enabled = on;
         engine_.setSendBusEnabled(on);
     };
-    mixerView_.addAndMakeVisible(sendBusButton);
+    masterPanel_.addAndMakeVisible(sendBusButton);
 
     sendEffectTypeBox_.addItem("Reverb", 1);
     sendEffectTypeBox_.addItem("Delay", 2);
@@ -285,7 +314,7 @@ MainComponent::MainComponent()
         engine_.setSendBusEffectType((int) type);
         updateSendBusEffectVisibility();
     };
-    mixerView_.addAndMakeVisible(sendEffectTypeBox_);
+    masterPanel_.addAndMakeVisible(sendEffectTypeBox_);
 
     sendRoomSlider.setRange(0.0, 100.0, 1.0);
     sendRoomSlider.setValue(60.0, juce::dontSendNotification);
@@ -296,7 +325,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.roomSize = v;
         engine_.setSendBusRoomSize(v);
     };
-    mixerView_.addAndMakeVisible(sendRoomSlider);
+    masterPanel_.addAndMakeVisible(sendRoomSlider);
 
     sendDampSlider.setRange(0.0, 100.0, 1.0);
     sendDampSlider.setValue(40.0, juce::dontSendNotification);
@@ -307,7 +336,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.damping = v;
         engine_.setSendBusDamping(v);
     };
-    mixerView_.addAndMakeVisible(sendDampSlider);
+    masterPanel_.addAndMakeVisible(sendDampSlider);
 
     sendDelayTimeSlider.setRange(20.0, 1000.0, 1.0);
     sendDelayTimeSlider.setValue(300.0, juce::dontSendNotification);
@@ -318,7 +347,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.delayTimeMs = ms;
         engine_.setSendBusDelayTimeMs(ms);
     };
-    mixerView_.addAndMakeVisible(sendDelayTimeSlider);
+    masterPanel_.addAndMakeVisible(sendDelayTimeSlider);
 
     sendDelayFbSlider.setRange(0.0, 95.0, 1.0);
     sendDelayFbSlider.setValue(35.0, juce::dontSendNotification);
@@ -329,7 +358,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.delayFeedback = fb;
         engine_.setSendBusDelayFeedback(fb);
     };
-    mixerView_.addAndMakeVisible(sendDelayFbSlider);
+    masterPanel_.addAndMakeVisible(sendDelayFbSlider);
 
     sendReturnSlider.setRange(0.0, 100.0, 1.0);
     sendReturnSlider.setValue(50.0, juce::dontSendNotification);
@@ -340,7 +369,7 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.returnLevel = v;
         engine_.setSendBusReturnLevel(v);
     };
-    mixerView_.addAndMakeVisible(sendReturnSlider);
+    masterPanel_.addAndMakeVisible(sendReturnSlider);
 
     // ---- gain automation: arm, then move the master fader or a track's fader
     // while playing (Rec Auto arms both; Clr Auto clears both, the master lane
@@ -353,10 +382,10 @@ MainComponent::MainComponent()
         if (selectedTrackIndex_ >= 0 && selectedTrackIndex_ < (int) song.tracks.size())
             song.tracks[(size_t) selectedTrackIndex_].gainAutomation.clear();
     };
-    mixerView_.addAndMakeVisible(autoRecButton);
-    mixerView_.addAndMakeVisible(autoClearButton);
+    masterPanel_.addAndMakeVisible(autoRecButton);
+    masterPanel_.addAndMakeVisible(autoClearButton);
 
-    mixerView_.addAndMakeVisible(meter_);
+    masterPanel_.addAndMakeVisible(meter_);
 
     // ---- per-track channel strips ----
     for (int i = 0; i < engine_.maxTracks(); ++i)
@@ -374,6 +403,7 @@ MainComponent::MainComponent()
     mixerView_.onResized = [this] { layoutMixerView(); };
 
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
+    pianoRoll_.onNotePreview = [this](int noteNumber) { previewNote(noteNumber); };
 
     // ---- edit tab: a header showing which track/clip is open, the drum-kit
     // editor (only shown for a Drum track — see refreshPianoRollForSelected),
@@ -428,15 +458,18 @@ MainComponent::MainComponent()
         syncEngineTracks(); // pushes every track's whole clip list, including this move
     };
 
-    // Default docking layout: Files gets its own region, Arrange + Edit share
-    // region A, Mixer gets its own region B — so file management, mixer, and
-    // arrangement tools are all visible at once out of the box. Drag any
-    // tab's header onto another region to move it there instead.
+    // Default docking layout: Files, Transport, and Keyboard each get their
+    // own region; Tracks + Edit share region A; Mixer gets its own region B
+    // — so file management, transport, mixer, and track tools are all
+    // visible at once out of the box. Drag any tab's header onto another
+    // region to move it there instead.
     dockRegionFiles_.addPanel("Files", fileBrowser_);
-    dockRegionA_.addPanel("Arrange", arrangeTab_);
-    dockRegionA_.addPanel("Edit", editTab_);
-    dockRegionA_.showPanel("Edit"); // start on the note editor
+    dockRegionTransport_.addPanel("Transport", leftPane_);
+    dockRegionA_.addPanel("Tracks", arrangeTab_);
+    dockRegionA_.addPanel("Keys", editTab_);
+    dockRegionA_.showPanel("Keys"); // start on the note editor
     dockRegionB_.addPanel("Mixer", mixerView_);
+    dockRegionKeyboard_.addPanel("Keyboard", keyboard_);
     loadDockLayout(); // re-home panels per last session's saved layout, if any
 
     fileBrowser_.setRecordingsDirectory(recordingsDirectory());
@@ -459,12 +492,26 @@ MainComponent::MainComponent()
         settings_.saveIfNeeded();
     };
 
+    {
+        std::vector<juce::File> favorites;
+        for (const auto& line : juce::StringArray::fromLines(settings_.getValue("fileBrowserFavorites")))
+            if (line.isNotEmpty())
+                favorites.push_back(juce::File(line));
+        fileBrowser_.setFavorites(favorites);
+    }
+    fileBrowser_.onFavoritesChanged = [this]
+    {
+        juce::StringArray lines;
+        for (const auto& f : fileBrowser_.favorites())
+            lines.add(f.getFullPathName());
+        settings_.setValue("fileBrowserFavorites", lines.joinIntoString("\n"));
+        settings_.saveIfNeeded();
+    };
+
     arrangementView_.onFileDropped = [this](const juce::File& file, double dropBeat, int trackIndex)
     {
         importAudioFileAtBeat(file, dropBeat, trackIndex);
     };
-
-    addAndMakeVisible(keyboard_);
 
     // Mirror the initial document into the engine + UI.
     syncEngineTracks();
@@ -854,6 +901,21 @@ void MainComponent::refreshPianoRollForSelected()
     }
 
     layoutEditTab(); // the drum-kit editor's visibility just changed, which affects layout
+}
+
+/** Briefly sounds @p noteNumber through whichever track is currently armed —
+    the same live-MIDI path the on-screen keyboard already uses (see
+    InstrumentTrack::render's receivesLiveMidi routing), so it plays through
+    that track's actual instrument: the synth pitch for an Instrument track,
+    or the matching pad's sample for a Drum track. Fired when clicking to add
+    a note in the piano roll, so pitches (or pads) can be found by ear. */
+void MainComponent::previewNote(int noteNumber)
+{
+    engine_.keyboardState().noteOn(1, noteNumber, 0.8f);
+    juce::Timer::callAfterDelay(150, [this, noteNumber]
+    {
+        engine_.keyboardState().noteOff(1, noteNumber, 0.8f);
+    });
 }
 
 void MainComponent::updateEditingLabel()
@@ -1664,17 +1726,26 @@ void MainComponent::resized()
     auto full = getLocalBounds();
     menuBar_.setBounds(full.removeFromTop(24));
 
-    keyboard_.setBounds(full.removeFromBottom(64));
-    full.removeFromBottom(10);
+    // Outer split: the horizontal dock-region row, stacked over the
+    // Keyboard region. mainWorkspaceArea_'s own onResized runs the inner
+    // horizontal layout (see layoutMainWorkspaceArea) once it has bounds.
+    juce::Component* outerItems[] = { &mainWorkspaceArea_, &outerResizer_, &dockRegionKeyboard_ };
+    outerLayout_.layOutComponents(outerItems, 3, full.getX(), full.getY(),
+                                  full.getWidth(), full.getHeight(),
+                                  true,  // stacked vertically
+                                  true); // and stretch each to the full width
+}
 
-    juce::Component* panes[] = { &dockRegionFiles_, &paneResizerFiles_, &leftPane_, &paneResizer_,
+void MainComponent::layoutMainWorkspaceArea()
+{
+    auto area = mainWorkspaceArea_.getLocalBounds();
+
+    juce::Component* panes[] = { &dockRegionFiles_, &paneResizerFiles_, &dockRegionTransport_, &paneResizer_,
                                 &dockRegionA_,      &paneResizer2_,     &dockRegionB_ };
-    paneLayout_.layOutComponents(panes, 7, full.getX(), full.getY(),
-                                 full.getWidth(), full.getHeight(),
+    paneLayout_.layOutComponents(panes, 7, area.getX(), area.getY(),
+                                 area.getWidth(), area.getHeight(),
                                  false,  // side-by-side, not stacked
                                  true);  // and stretch each to the full height
-
-    layoutLeftPane();
 }
 
 void MainComponent::layoutLeftPane()
@@ -1701,17 +1772,19 @@ void MainComponent::layoutLeftPane()
 void MainComponent::movePanelBetweenRegions(const juce::String& panelName, DockRegion& target)
 {
     DockRegion* source = nullptr;
-    for (auto* region : { &dockRegionFiles_, &dockRegionA_, &dockRegionB_ })
+    for (auto* region : { &dockRegionFiles_, &dockRegionTransport_, &dockRegionA_, &dockRegionB_, &dockRegionKeyboard_ })
         if (region->hasPanel(panelName))
             source = region;
     if (source == nullptr || source == &target)
         return;
 
     juce::Component* content = nullptr;
-    if (panelName == "Files")        content = &fileBrowser_;
-    else if (panelName == "Arrange") content = &arrangeTab_;
-    else if (panelName == "Edit")    content = &editTab_;
-    else if (panelName == "Mixer")   content = &mixerView_;
+    if (panelName == "Files")            content = &fileBrowser_;
+    else if (panelName == "Transport")   content = &leftPane_;
+    else if (panelName == "Tracks")      content = &arrangeTab_;
+    else if (panelName == "Keys")        content = &editTab_;
+    else if (panelName == "Mixer")       content = &mixerView_;
+    else if (panelName == "Keyboard")    content = &keyboard_;
     if (content == nullptr)
         return;
 
@@ -1725,15 +1798,17 @@ void MainComponent::movePanelBetweenRegions(const juce::String& panelName, DockR
 namespace
 {
     struct KnownPanel { const char* name; };
-    constexpr KnownPanel kKnownPanels[] = { { "Files" }, { "Arrange" }, { "Edit" }, { "Mixer" } };
-    constexpr const char* kRegionKeys[] = { "Files", "A", "B" };
+    constexpr KnownPanel kKnownPanels[] =
+        { { "Files" }, { "Transport" }, { "Tracks" }, { "Keys" }, { "Mixer" }, { "Keyboard" } };
+    constexpr const char* kRegionKeys[] = { "Files", "Transport", "A", "B", "Keyboard" };
 }
 
 void MainComponent::loadDockLayout()
 {
-    DockRegion* regionsByKey[] = { &dockRegionFiles_, &dockRegionA_, &dockRegionB_ };
+    DockRegion* regionsByKey[] = { &dockRegionFiles_, &dockRegionTransport_, &dockRegionA_, &dockRegionB_,
+                                   &dockRegionKeyboard_ };
 
-    juce::Component* contentFor[] = { &fileBrowser_, &arrangeTab_, &editTab_, &mixerView_ };
+    juce::Component* contentFor[] = { &fileBrowser_, &leftPane_, &arrangeTab_, &editTab_, &mixerView_, &keyboard_ };
 
     for (size_t i = 0; i < std::size(kKnownPanels); ++i)
     {
@@ -1767,7 +1842,8 @@ void MainComponent::loadDockLayout()
 
 void MainComponent::saveDockLayout()
 {
-    DockRegion* regionsByKey[] = { &dockRegionFiles_, &dockRegionA_, &dockRegionB_ };
+    DockRegion* regionsByKey[] = { &dockRegionFiles_, &dockRegionTransport_, &dockRegionA_, &dockRegionB_,
+                                   &dockRegionKeyboard_ };
 
     for (const auto& panel : kKnownPanels)
         for (size_t r = 0; r < std::size(kRegionKeys); ++r)
@@ -1823,11 +1899,41 @@ void MainComponent::layoutMixerView()
     addTrackButton.setBounds(toolbar.removeFromLeft(100));
     toolbar.removeFromLeft(6);
     addDrumTrackButton_.setBounds(toolbar.removeFromLeft(100));
+    toolbar.removeFromLeft(6);
+    toggleMasterPanelButton_.setBounds(toolbar.removeFromRight(110));
     area.removeFromTop(8);
 
-    // ---- master strip: master fader/automation, filter, delay, reverb, meter ----
-    auto masterArea = area.removeFromRight(300);
-    area.removeFromRight(12);
+    // The master panel (fader/automation, filter, delay, reverb, send bus,
+    // meter) is collapsible — see toggleMasterPanelButton_ — since at
+    // narrow widths its fixed 300px was clipping against the track strips.
+    // Hidden, it claims no width at all, so every track strip gets more room.
+    if (masterPanelVisible_)
+    {
+        auto masterArea = area.removeFromRight(300);
+        area.removeFromRight(12);
+        masterPanel_.setBounds(masterArea); // triggers layoutMasterPanel() via onResized
+    }
+
+    // ---- per-track channel strips, filling the remaining width ----
+    const int stripWidth = 96;
+    const int gap        = 6;
+    int       x          = area.getX();
+    const int n           = trackCount();
+
+    for (int i = 0; i < engine_.maxTracks(); ++i)
+    {
+        auto* strip = trackStrips_[i];
+        if (i < n)
+        {
+            strip->setBounds(x, area.getY(), stripWidth, area.getHeight());
+            x += stripWidth + gap;
+        }
+    }
+}
+
+void MainComponent::layoutMasterPanel()
+{
+    auto masterArea = masterPanel_.getLocalBounds();
 
     auto masterRow = masterArea.removeFromTop(26);
     autoRecButton.setBounds(masterRow.removeFromRight(76));
@@ -1890,22 +1996,6 @@ void MainComponent::layoutMixerView()
     masterArea.removeFromTop(8);
 
     meter_.setBounds(masterArea.removeFromTop(44));
-
-    // ---- per-track channel strips, filling the remaining width ----
-    const int stripWidth = 96;
-    const int gap        = 6;
-    int       x          = area.getX();
-    const int n           = trackCount();
-
-    for (int i = 0; i < engine_.maxTracks(); ++i)
-    {
-        auto* strip = trackStrips_[i];
-        if (i < n)
-        {
-            strip->setBounds(x, area.getY(), stripWidth, area.getHeight());
-            x += stripWidth + gap;
-        }
-    }
 }
 
 } // namespace looper

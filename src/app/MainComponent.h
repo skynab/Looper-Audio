@@ -91,6 +91,7 @@ private:
     void                   assignDrumSample(int padIndex, const juce::File& file);
     void                   syncEngineTracks();
     void                   refreshPianoRollForSelected();
+    void                   previewNote(int noteNumber);
     void                   updateDelayControls();
     void                   updateFilterControls();
     void                   updateReverbControls();
@@ -106,10 +107,12 @@ private:
     void                   addClipToSelectedTrack();
     void                   updateEditingLabel();
     void                   layoutLeftPane();
+    void                   layoutMainWorkspaceArea();
     void                   movePanelBetweenRegions(const juce::String& panelName, DockRegion& target);
     void                   loadDockLayout();
     void                   saveDockLayout();
     void                   layoutMixerView();
+    void                   layoutMasterPanel();
     void                   layoutArrangeTab();
     void                   layoutEditTab();
     int                    trackCount() const;
@@ -128,24 +131,33 @@ private:
 
     juce::MenuBarComponent          menuBar_;
 
-    // Resizable workspace: a Files region, a transport sidebar, then two more
-    // dockable regions side by side — each region a tab group, separated by
-    // draggable dividers. Panels (Files, Arrange, Edit, Mixer) start out split
-    // across the regions so arrangement and mixer tools are visible at once;
-    // dragging a tab header onto another region moves that panel there.
-    DockRegion                        dockRegionFiles_, dockRegionA_, dockRegionB_;
+    // Resizable workspace: a horizontal row of dockable regions (Files,
+    // Transport, two more side by side) inside mainWorkspaceArea_, with a
+    // fifth region for the on-screen keyboard stacked below it — every
+    // region a tab group, separated by draggable dividers. Panels (Files,
+    // Transport, Arrange, Edit, Mixer, Keyboard) start out split across the
+    // regions so every tool is visible at once; dragging a tab header onto
+    // another region moves that panel there, regardless of which of the
+    // two splits (horizontal row or the outer vertical one) it's in.
+    DockRegion                        dockRegionFiles_, dockRegionTransport_, dockRegionA_, dockRegionB_;
+    DockRegion                        dockRegionKeyboard_;
     FileBrowserPanel                  fileBrowser_;
-    juce::Component                   leftPane_;
-    juce::StretchableLayoutManager    paneLayout_;
+    CallbackComponent                 leftPane_;
+    CallbackComponent                 mainWorkspaceArea_; // holds the horizontal row above
+    juce::StretchableLayoutManager    paneLayout_;         // the horizontal row
     juce::StretchableLayoutResizerBar paneResizerFiles_ { &paneLayout_, 1, true };
     juce::StretchableLayoutResizerBar paneResizer_      { &paneLayout_, 3, true };
     juce::StretchableLayoutResizerBar paneResizer2_     { &paneLayout_, 5, true };
+    juce::StretchableLayoutManager    outerLayout_; // vertical: mainWorkspaceArea_ over dockRegionKeyboard_
+    juce::StretchableLayoutResizerBar outerResizer_ { &outerLayout_, 1, false };
 
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };
     juce::TextButton   recordButton   { "Record" };
     juce::TextButton   addTrackButton { "Add Track" };
     juce::TextButton   addDrumTrackButton_ { "Add Drum" };
+    juce::TextButton   toggleMasterPanelButton_ { "Hide Master" };
+    bool               masterPanelVisible_ = true;
     juce::ToggleButton loopButton      { "Loop" };
 
     juce::Slider       tempoSlider, masterSlider;
@@ -184,6 +196,7 @@ private:
     juce::TextButton                   addClipButton_  { "Add Clip" };
 
     CallbackComponent                  mixerView_;
+    CallbackComponent                  masterPanel_; // collapsible via toggleMasterPanelButton_
     juce::OwnedArray<MixerStrip>       trackStrips_;
     std::unique_ptr<juce::FileChooser> chooser_;
 

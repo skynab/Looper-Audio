@@ -7,9 +7,11 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <vector>
 
 #include "FileTypeColors.h"
+#include "Icons.h"
 
 namespace looper
 {
@@ -31,14 +33,17 @@ class FileGrid final : public juce::Component,
                        private juce::TableListBoxModel
 {
 public:
-    std::function<void(const juce::File&)> onFilePreview;  // double-click
-    std::function<void(const juce::File&)> onRightClick;   // right-click a row
+    std::function<void(const juce::File&)> onFilePreview;      // double-click
+    std::function<void(const juce::File&)> onRightClick;       // right-click a row
+    std::function<void()>                  onFavoritesChanged; // starred or unstarred one
 
     FileGrid()
+        : starOn_(icons::fromSvg(icons::kStarOn)), starOff_(icons::fromSvg(icons::kStarOutlineOff))
     {
         formatManager_.registerBasicFormats();
 
         auto& header = table_.getHeader();
+        header.addColumn({}, kFavColumnId, 26, 26, 26, juce::TableHeaderComponent::notResizableOrSortable);
         header.addColumn("Name", 1, 170, 60, -1);
         header.addColumn("Type", 2, 64, 50, 100);
         header.addColumn("Size", 3, 72, 50, 120);
@@ -49,6 +54,24 @@ public:
         table_.setModel(this);
         table_.setMultipleSelectionEnabled(false);
         addAndMakeVisible(table_);
+    }
+
+    // User-editable favorites (see class doc) — the owner persists these,
+    // this class only holds, displays, and toggles them.
+    void setFavorites(const std::vector<juce::File>& favorites)
+    {
+        favorites_.clear();
+        for (const auto& f : favorites)
+            favorites_.insert(f.getFullPathName());
+        table_.repaint();
+    }
+
+    std::vector<juce::File> favorites() const
+    {
+        std::vector<juce::File> result;
+        for (const auto& path : favorites_)
+            result.push_back(juce::File(path));
+        return result;
     }
 
     /** Shows @p dir's files (not its subfolders — the tree handles those). */
@@ -74,8 +97,21 @@ public:
     void resized() override { table_.setBounds(getLocalBounds()); }
 
 private:
+    static constexpr int kFavColumnId = 6;
     static constexpr const char* kWildcard =
         "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3;*.m4a;*.mp4;*.mid;*.midi;*.looper";
+
+    bool isFavorite(const juce::File& file) const { return favorites_.count(file.getFullPathName()) > 0; }
+
+    void toggleFavorite(const juce::File& file)
+    {
+        const auto path = file.getFullPathName();
+        if (! favorites_.erase(path))
+            favorites_.insert(path);
+        table_.repaint();
+        if (onFavoritesChanged)
+            onFavoritesChanged();
+    }
 
     void sortEntries()
     {
@@ -149,6 +185,15 @@ private:
         const auto& file = entries_[(size_t) rowNumber];
         const auto  kind = classifyFile(file);
 
+        if (columnId == kFavColumnId)
+        {
+            auto* star = isFavorite(file) ? starOn_.get() : starOff_.get();
+            if (star != nullptr)
+                star->drawWithin(g, { 2.0f, 2.0f, (float) width - 4.0f, (float) height - 4.0f },
+                                 juce::RectanglePlacement::centred, 1.0f);
+            return;
+        }
+
         juce::String text;
         switch (columnId)
         {
@@ -170,10 +215,20 @@ private:
             onFilePreview(entries_[(size_t) rowNumber]);
     }
 
-    void cellClicked(int rowNumber, int, const juce::MouseEvent& e) override
+    void cellClicked(int rowNumber, int columnId, const juce::MouseEvent& e) override
     {
-        if (e.mods.isPopupMenu() && rowNumber >= 0 && rowNumber < (int) entries_.size() && onRightClick)
-            onRightClick(entries_[(size_t) rowNumber]);
+        if (rowNumber < 0 || rowNumber >= (int) entries_.size())
+            return;
+
+        if (e.mods.isPopupMenu())
+        {
+            if (onRightClick)
+                onRightClick(entries_[(size_t) rowNumber]);
+            return;
+        }
+
+        if (columnId == kFavColumnId)
+            toggleFavorite(entries_[(size_t) rowNumber]);
     }
 
     void sortOrderChanged(int, bool) override
@@ -188,6 +243,8 @@ private:
     juce::File                   directory_;
     std::vector<juce::File>      entries_;
     std::map<juce::String, double> durationCache_;
+    std::set<juce::String>       favorites_; // full paths of starred files
+    std::unique_ptr<juce::Drawable> starOn_, starOff_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FileGrid)
 };

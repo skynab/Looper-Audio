@@ -30,6 +30,7 @@ public:
     PianoRoll() { seedDemo(); }
 
     std::function<void(const engine::Pattern&)> onChange;
+    std::function<void(int noteNumber)>         onNotePreview; // fired when a note is *added* by clicking
 
     const engine::Pattern& pattern() const noexcept { return pattern_; }
 
@@ -92,9 +93,15 @@ public:
                                });
 
         if (it != pattern_.notes.end())
+        {
             pattern_.notes.erase(it);
+        }
         else
+        {
             pattern_.notes.push_back({ start, geometry_.stepBeats, noteNumber, 0.8f });
+            if (onNotePreview)
+                onNotePreview(noteNumber); // only on add, not on removing an existing note
+        }
 
         repaint();
         if (onChange)
