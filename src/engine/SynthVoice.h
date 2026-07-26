@@ -5,6 +5,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "engine/MidiNote.h"
+#include "engine/Oscillator.h"
 #include "engine/StateVariableFilter.h"
 
 namespace looper::engine
@@ -93,7 +94,9 @@ public:
         if (! adsr_.isActive())
             return;
 
-        const double increment = juce::MathConstants<double>::twoPi * frequency_ / getSampleRate();
+        // Held as a member so renderWaveform() can see it: PolyBLEP needs to
+        // know how far one sample advances the phase to size its correction.
+        increment_ = juce::MathConstants<double>::twoPi * frequency_ / getSampleRate();
 
         for (int i = 0; i < numSamples; ++i)
         {
@@ -102,7 +105,7 @@ public:
             if (filterEnabled_)
                 sample = filter_.processSample(sample);
 
-            phase_ += increment;
+            phase_ += increment_;
             if (phase_ >= juce::MathConstants<double>::twoPi)
                 phase_ -= juce::MathConstants<double>::twoPi;
 
@@ -118,26 +121,41 @@ public:
     }
 
 private:
-    /** Naive (non-band-limited) waveform generation from the current phase —
-        matches this engine's existing phase-1 style (see OscillatorNode's
-        plain std::sin); anti-aliasing can follow later without changing this
-        voice's shape. */
+    /** Band-limited waveform generation (see engine::Oscillator, where the
+        anti-aliasing lives and is measured).
+
+        The sine case deliberately still reads the radian phase directly
+        rather than going through Oscillator: it is the default waveform, and
+        computing it as sin(2*pi*normalised) instead would round differently
+        and shift every existing project's output — including the bounce
+        tool's rmsDry sentinel — for no audible gain. Sine has no harmonics to
+        band-limit, so there is nothing to gain by routing it through. */
     float renderWaveform() const noexcept
     {
-        const double norm = phase_ / juce::MathConstants<double>::twoPi; // 0..1
+        if (waveform_ == Waveform::Sine)
+            return (float) std::sin(phase_);
+
+        constexpr double twoPi = juce::MathConstants<double>::twoPi;
+        const double normalisedPhase     = phase_ / twoPi;
+        const double normalisedIncrement = increment_ / twoPi;
 
         switch (waveform_)
         {
-            case Waveform::Sine:     return (float) std::sin(phase_);
-            case Waveform::Saw:      return (float) (2.0 * norm - 1.0);
-            case Waveform::Square:   return norm < 0.5 ? 1.0f : -1.0f;
-            case Waveform::Triangle: return (float) (4.0 * std::abs(norm - 0.5) - 1.0);
+            case Waveform::Saw:
+                return Oscillator::sample(Oscillator::Waveform::Saw, normalisedPhase, normalisedIncrement);
+            case Waveform::Square:
+                return Oscillator::sample(Oscillator::Waveform::Square, normalisedPhase, normalisedIncrement);
+            case Waveform::Triangle:
+                return Oscillator::sample(Oscillator::Waveform::Triangle, normalisedPhase, normalisedIncrement);
+            case Waveform::Sine:
+                break; // handled above
         }
         return 0.0f;
     }
 
     juce::ADSR adsr_;
     double     phase_     = 0.0;
+    double     increment_ = 0.0; // radians per sample, refreshed each block
     double     frequency_ = 440.0;
     float      level_     = 0.0f;
 
