@@ -12,8 +12,7 @@
 #include "model/Song.h"
 
 #include "ArrangementView.h"
-#include "CenterSplitArea.h"
-#include "DockRegion.h"
+#include "DockWorkspace.h"
 #include "DrumsPane.h"
 #include "FileBrowserPanel.h"
 #include "LevelMeter.h"
@@ -116,9 +115,7 @@ private:
     void                   addClipToSelectedTrack();
     void                   updateEditingLabel();
     void                   layoutLeftPane();
-    void                   layoutMiddleColumn();
-    void                   movePanelBetweenRegions(const juce::String& panelName, DockRegion& target);
-    void                   updateRightRegionVisibility();
+    void                   buildDefaultDockLayout();
     void                   loadDockLayout();
     void                   saveDockLayout();
     void                   layoutMixerView();
@@ -141,28 +138,13 @@ private:
 
     juce::MenuBarComponent          menuBar_;
 
-    // Resizable workspace: Left and Right sidebars span the full height;
-    // between them, a Center area (optionally split in two — see
-    // CenterSplitArea) sits above a Bottom strip. Right auto-hides (zero
-    // width) whenever it has no panels — see updateRightRegionVisibility().
-    // Every region is a tab group; dragging a tab header onto another
-    // region (including CenterSplitArea's two sub-regions) moves it there.
-    // Defaults: Left = Files, Center = Tracks/Keys/Mixer, Bottom =
-    // Transport/Keyboard, Right = empty.
-    DockRegion         dockRegionLeft_;
-    CenterSplitArea    centerSplit_;
-    DockRegion         dockRegionBottom_;
-    DockRegion         dockRegionRight_;
+    // The whole dockable workspace: a tree of tab groups the user arranges by
+    // dragging tabs (onto a region's middle to add a tab there, onto an edge
+    // to split it). See DockWorkspace; the default arrangement this app ships
+    // with is built in buildDefaultDockLayout().
+    DockWorkspace      workspace_;
     FileBrowserPanel   fileBrowser_;
     CallbackComponent  leftPane_; // the transport controls (Play/Stop/...), a panel like any other
-
-    CallbackComponent middleColumn_; // holds centerSplit_ stacked over dockRegionBottom_
-    juce::StretchableLayoutManager    middleLayout_;
-    juce::StretchableLayoutResizerBar middleResizer_ { &middleLayout_, 1, false };
-
-    juce::StretchableLayoutManager    outerLayout_; // Left | middleColumn_ | Right
-    juce::StretchableLayoutResizerBar leftResizer_  { &outerLayout_, 1, true };
-    juce::StretchableLayoutResizerBar rightResizer_ { &outerLayout_, 3, true };
 
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };

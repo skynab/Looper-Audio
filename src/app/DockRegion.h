@@ -8,6 +8,13 @@
 
 namespace looper
 {
+/** Where within a DockRegion a dragged panel was dropped, which decides what
+    happens to it: Centre adds it to that region as another tab, while the
+    four edges split the region in that direction and put it in the new half
+    (see DockWorkspace::movePanel). This is the "drag a tab to the edge of a
+    pane to split it" gesture every modern editor uses. */
+enum class DropZone { Centre, Left, Right, Top, Bottom };
+
 /**
     A single tab header: click to activate its panel, drag it onto a different
     DockRegion's header strip to move the panel there. Deliberately not a
@@ -63,8 +70,8 @@ private:
     hosted panel) plus the currently-active panel's content below it. Panels
     can be dragged from one DockRegion's header strip onto another's to move
     them there — the actual re-parenting is coordinated by whoever owns two or
-    more DockRegions (see MainComponent::movePanelBetweenRegions), since a
-    region only knows about its own panels.
+    more DockRegions (see DockWorkspace::movePanel), since a region only
+    knows about its own panels, not the tree it sits in.
 
     A DockRegion never owns the panel Components passed to addPanel() (they're
     expected to outlive it, e.g. as members of the owning MainComponent) — it
@@ -75,12 +82,16 @@ class DockRegion final : public juce::Component,
                          public juce::DragAndDropTarget
 {
 public:
+    static constexpr int kHeaderHeight = 26;
+
     // Fired when a panel dragged FROM ELSEWHERE is dropped on this region.
     // `panelName` identifies which panel (matches the name it was added under
-    // in whichever region currently hosts it); the owner is expected to look
-    // up that panel's Component, remove it from its current region, and
-    // addPanel() it here.
-    std::function<void(const juce::String& panelName, DockRegion& target)> onForeignPanelDropped;
+    // in whichever region currently hosts it) and `zone` says whether it was
+    // dropped in the middle (make it another tab here) or against an edge
+    // (split this region and put it in the new half). The owner does the
+    // actual re-homing — see DockWorkspace::movePanel — since a region only
+    // knows about its own panels, not the tree it sits in.
+    std::function<void(const juce::String& panelName, DockRegion& target, DropZone zone)> onForeignPanelDropped;
 
     void addPanel(const juce::String& name, juce::Component& content)
     {
@@ -139,9 +150,9 @@ public:
 
     int numPanels() const { return (int) panels_.size(); }
 
-    /** Every panel name currently hosted here, in tab order. Used when
-        merging one region's panels into another (see
-        CenterSplitArea::unsplit). */
+    /** Every panel name currently hosted here, in tab order — used when
+        saving the layout, and when emptying a region (see
+        DockWorkspace::resetToSingleRegion). */
     std::vector<juce::String> panelNames() const
     {
         std::vector<juce::String> names;
@@ -186,19 +197,58 @@ public:
 
     void paint(juce::Graphics& g) override
     {
-        if (dragHighlight_)
+        // While a panel is being dragged over us, shade exactly the area it
+        // would end up occupying — the whole region for a Centre drop, or the
+        // half it would split off for an edge drop. Showing the actual
+        // resulting shape is what makes the edge gesture discoverable.
+        if (dragActive_)
         {
-            g.setColour(juce::Colours::white.withAlpha(0.08f));
-            g.fillRect(getLocalBounds());
+            g.setColour(juce::Colours::white.withAlpha(0.10f));
+            g.fillRect(highlightBounds());
+            g.setColour(juce::Colours::orange.withAlpha(0.8f));
+            g.drawRect(highlightBounds(), 2);
         }
         g.setColour(juce::Colours::black.withAlpha(0.4f));
         g.drawRect(getLocalBounds());
     }
 
+    /** Which zone a point in this region's local coordinates falls in. A drop
+        anywhere on the header strip always means Centre — dropping onto a tab
+        bar unambiguously means "put it here as a tab", and treating that as a
+        Top-edge split would make the most natural gesture do the surprising
+        thing. */
+    DropZone zoneAt(juce::Point<int> localPosition) const
+    {
+        if (localPosition.y < kHeaderHeight)
+            return DropZone::Centre;
+
+        auto body = getLocalBounds().withTrimmedTop(kHeaderHeight);
+        if (body.getWidth() <= 0 || body.getHeight() <= 0)
+            return DropZone::Centre;
+
+        const float x = (float) (localPosition.x - body.getX()) / (float) body.getWidth();
+        const float y = (float) (localPosition.y - body.getY()) / (float) body.getHeight();
+
+        // Distance to each edge, as a fraction; the nearest one wins unless
+        // the point is comfortably inside, which means Centre.
+        const float toLeft = x, toRight = 1.0f - x, toTop = y, toBottom = 1.0f - y;
+        const float nearest = juce::jmin(toLeft, toRight, toTop, toBottom);
+        if (nearest > kEdgeFraction)
+            return DropZone::Centre;
+
+        // `nearest` is by construction one of the four, so the first of these
+        // that holds identifies it — compared with <= rather than == to keep
+        // clear of exact float equality.
+        if (toLeft <= nearest)  return DropZone::Left;
+        if (toRight <= nearest) return DropZone::Right;
+        if (toTop <= nearest)   return DropZone::Top;
+        return DropZone::Bottom;
+    }
+
     void resized() override
     {
         auto area = getLocalBounds();
-        auto headerRow  = area.removeFromTop(26);
+        auto headerRow  = area.removeFromTop(kHeaderHeight);
         const int headerWidth = panels_.empty()
                                      ? 0
                                      : juce::jmin(140, headerRow.getWidth() / (int) panels_.size());
@@ -218,21 +268,63 @@ public:
         // so they fall through to whichever ArrangementView is underneath.
         if (dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get()) != nullptr)
             return false;
-        return details.description.isString() && ! hasPanel(details.description.toString());
+        if (! details.description.isString())
+            return false;
+
+        // A panel we already host is still a valid drag *if* we hold more
+        // than one, since dropping it on one of our edges splits it out into
+        // its own pane beside us. Only a region's sole panel has nowhere to
+        // go, and rejecting that keeps it from being dragged out into a split
+        // that would immediately collapse back.
+        return ! hasPanel(details.description.toString()) || numPanels() > 1;
     }
 
-    void itemDragEnter(const SourceDetails&) override { dragHighlight_ = true; repaint(); }
-    void itemDragExit(const SourceDetails&) override { dragHighlight_ = false; repaint(); }
+    void itemDragEnter(const SourceDetails& details) override
+    {
+        dragActive_ = true;
+        dropZone_   = zoneAt(details.localPosition);
+        repaint();
+    }
+
+    void itemDragMove(const SourceDetails& details) override
+    {
+        const auto zone = zoneAt(details.localPosition);
+        if (zone != dropZone_)
+        {
+            dropZone_ = zone;
+            repaint();
+        }
+    }
+
+    void itemDragExit(const SourceDetails&) override { dragActive_ = false; repaint(); }
 
     void itemDropped(const SourceDetails& details) override
     {
-        dragHighlight_ = false;
+        const auto zone = zoneAt(details.localPosition);
+        dragActive_ = false;
         repaint();
         if (onForeignPanelDropped)
-            onForeignPanelDropped(details.description.toString(), *this);
+            onForeignPanelDropped(details.description.toString(), *this, zone);
     }
 
 private:
+    static constexpr float kEdgeFraction = 0.25f; // how deep the edge zones reach in
+
+    /** The area a drop would land in, used for the drag highlight. */
+    juce::Rectangle<int> highlightBounds() const
+    {
+        auto body = getLocalBounds().withTrimmedTop(kHeaderHeight);
+        switch (dropZone_)
+        {
+            case DropZone::Left:   return body.withWidth(body.getWidth() / 2);
+            case DropZone::Right:  return body.withTrimmedLeft(body.getWidth() / 2);
+            case DropZone::Top:    return body.withHeight(body.getHeight() / 2);
+            case DropZone::Bottom: return body.withTrimmedTop(body.getHeight() / 2);
+            case DropZone::Centre: break;
+        }
+        return getLocalBounds();
+    }
+
     struct Panel
     {
         juce::String                   name;
@@ -241,8 +333,9 @@ private:
     };
 
     std::vector<Panel> panels_;
-    int                 activeIndex_   = 0;
-    bool                dragHighlight_ = false;
+    int                 activeIndex_ = 0;
+    bool                dragActive_  = false;
+    DropZone            dropZone_    = DropZone::Centre;
 };
 
 } // namespace looper
