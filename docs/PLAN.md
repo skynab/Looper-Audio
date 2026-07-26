@@ -917,9 +917,9 @@ The ordering beyond here, with the reasoning:
   automatable parameter is an enumerator plus the code that applies it. Gain, **pan** (which didn't
   exist as a parameter at all and had to be added first) and send level are automatable; the export
   path automates gain and pan sample-accurately. Insert-effect and synth parameters are the obvious
-  next enumerators and need no new machinery. **Playback is still coarse** — message-thread at 30 Hz,
-  so fast moves are stepped when playing even though an export is sample-accurate. Fixing that means
-  handing lanes to the audio thread, which is its own piece of work and the main thing left here.
+  next enumerators and need no new machinery. Playback is **sample-accurate** as of the follow-up
+  work: tracks carry their own curves and ramp them across each block, which also let the offline
+  renderer's separate isolation path be deleted — export and playback now run the same code.
 - **Session view: clip launching + scenes** — the loop-first identity §1 is built around, and still
   entirely absent. Held until the items above land, because clip launching is far more compelling
   once clips are properly editable.
