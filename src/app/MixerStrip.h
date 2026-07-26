@@ -24,6 +24,7 @@ public:
     std::function<void(bool)>  onMuteChange;
     std::function<void(bool)>  onSoloChange;
     std::function<void(float)> onSendChange;
+    std::function<void(float)> onPanChange;
     std::function<void()>      onSelect;
 
     MixerStrip()
@@ -55,6 +56,19 @@ public:
         sendLabel_.setInterceptsMouseClicks(false, false);
         addAndMakeVisible(sendLabel_);
 
+        panSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
+        panSlider_.setRange(-100.0, 100.0, 1.0);
+        panSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        panSlider_.setDoubleClickReturnValue(true, 0.0); // double-click re-centres
+        panSlider_.onValueChange = [this] { if (onPanChange) onPanChange((float) (panSlider_.getValue() / 100.0)); };
+        addAndMakeVisible(panSlider_);
+
+        panLabel_.setText("Pan", juce::dontSendNotification);
+        panLabel_.setFont(juce::Font(juce::FontOptions(10.0f)));
+        panLabel_.setJustificationType(juce::Justification::centredLeft);
+        panLabel_.setInterceptsMouseClicks(false, false);
+        addAndMakeVisible(panLabel_);
+
         gainSlider_.setSliderStyle(juce::Slider::LinearVertical);
         gainSlider_.setRange(-60.0, 6.0, 0.1);
         gainSlider_.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 72, 20);
@@ -70,6 +84,7 @@ public:
     void setMuted(bool muted)  { muteButton_.setToggleState(muted, juce::dontSendNotification); }
     void setSoloed(bool solo)  { soloButton_.setToggleState(solo, juce::dontSendNotification); }
     void setSendLevel(float level) { sendSlider_.setValue(level * 100.0, juce::dontSendNotification); }
+    void setPan(float pan)         { panSlider_.setValue(pan * 100.0, juce::dontSendNotification); }
     void setSelected(bool sel) { if (selected_ != sel) { selected_ = sel; repaint(); } }
     void setLevel(int channel, float linearPeak) { meter_.setLevel(channel, linearPeak); }
 
@@ -107,6 +122,11 @@ public:
         auto sendRow = area.removeFromTop(16);
         sendLabel_.setBounds(sendRow.removeFromLeft(30));
         sendSlider_.setBounds(sendRow);
+        area.removeFromTop(2);
+
+        auto panRow = area.removeFromTop(16);
+        panLabel_.setBounds(panRow.removeFromLeft(30));
+        panSlider_.setBounds(panRow);
         area.removeFromTop(6);
 
         auto meterArea = area.removeFromRight(20);
@@ -121,6 +141,8 @@ private:
     juce::TextButton soloButton_ { "S" };
     juce::Label      sendLabel_;
     juce::Slider     sendSlider_;
+    juce::Label      panLabel_;
+    juce::Slider     panSlider_;
     juce::Slider     gainSlider_;
     LevelMeter       meter_;
     bool             selected_ = false;

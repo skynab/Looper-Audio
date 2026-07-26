@@ -68,6 +68,7 @@ struct InstrumentTrack
     std::atomic<bool>        solo        { false };
     std::atomic<bool>        isDrumTrack { false }; // true: notes drive drumKit, not synth
     std::atomic<float>       gainDb      { 0.0f };
+    std::atomic<float>       pan         { 0.0f }; // -1 = hard left, 0 = centre, +1 = hard right
     std::atomic<float>       sendLevel   { 0.0f }; // 0..1, pre-fader
     juce::MidiBuffer         trackMidi;
     juce::AudioBuffer<float> scratch;
@@ -136,10 +137,23 @@ struct InstrumentTrack
         const float gain     = juce::Decibels::decibelsToGain(gainDb.load(std::memory_order_relaxed));
         const float send     = sendLevel.load(std::memory_order_relaxed);
         const int   channels = juce::jmin(mix.getNumChannels(), scratch.getNumChannels());
+
+        // A linear pan law with a unity centre, the same one the drum pads
+        // use: at pan 0 both sides stay at 1.0, so a centred track sums
+        // bit-identically to how it did before panning existed. An
+        // equal-power law would drop every centred track to ~0.707.
+        const float panPosition = juce::jlimit(-1.0f, 1.0f, pan.load(std::memory_order_relaxed));
+        const float panLeft     = panPosition <= 0.0f ? 1.0f : 1.0f - panPosition;
+        const float panRight    = panPosition >= 0.0f ? 1.0f : 1.0f + panPosition;
+
         for (int ch = 0; ch < channels; ++ch)
         {
-            mix.addFrom(ch, 0, scratch, ch, 0, numSamples, gain);
+            const float channelGain = gain * (ch == 0 ? panLeft : (ch == 1 ? panRight : 1.0f));
+            mix.addFrom(ch, 0, scratch, ch, 0, numSamples, channelGain);
 
+            // The send stays pre-fader *and* pre-pan: it's a mono-ish aux
+            // feed, and panning it would move the track's reverb around the
+            // stereo field independently of the track, which isn't wanted.
             if (send > 0.0f && ch < sendBus.getNumChannels())
                 sendBus.addFrom(ch, 0, scratch, ch, 0, numSamples, send);
 
@@ -148,7 +162,7 @@ struct InstrumentTrack
                 float peak = 0.0f;
                 const float* data = scratch.getReadPointer(ch);
                 for (int i = 0; i < numSamples; ++i)
-                    peak = std::max(peak, std::abs(data[i]) * gain);
+                    peak = std::max(peak, std::abs(data[i]) * channelGain);
                 channelPeak_[ch].store(peak, std::memory_order_relaxed);
             }
         }

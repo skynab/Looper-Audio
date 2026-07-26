@@ -24,6 +24,7 @@ struct Track
     std::string       name;
     TrackType         type   = TrackType::Instrument;
     float             gainDb     = 0.0f;
+    float             pan        = 0.0f; // -1 = hard left, 0 = centre, +1 = hard right
     bool              muted      = false;
     bool              solo       = false;
     float             sendLevel  = 0.0f; // 0..1, pre-fader send to the shared send bus

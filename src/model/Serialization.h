@@ -35,8 +35,9 @@ namespace looper::model
       11  the format before per-track synths
       12  + SYNTH (per-track model::SynthSettings)
       13  DPAD carries per-pad gain/pan/pitch/mute/solo before its sample path
-      14  + TFX (per-track insert filter/delay/reverb) */
-inline constexpr int kFormatVersion = 14;
+      14  + TFX (per-track insert filter/delay/reverb)
+      15  TRACK carries pan before its (rest-of-line) name */
+inline constexpr int kFormatVersion = 15;
 namespace detail
 {
     inline std::string num(double v)
@@ -91,6 +92,7 @@ inline std::string serialize(const Song& song)
         out << "TRACK " << track.id << " " << (int) track.type << " "
             << detail::num((double) track.gainDb) << " " << (track.muted ? 1 : 0)
             << " " << (track.solo ? 1 : 0) << " " << detail::num((double) track.sendLevel)
+            << " " << detail::num((double) track.pan)
             << " " << track.name << "\n";
         out << "TAUTO " << track.gainAutomation.points().size() << "\n";
         for (const auto& p : track.gainAutomation.points())
@@ -301,6 +303,17 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             track.muted     = muteInt != 0;
             track.solo      = soloInt != 0;
             track.sendLevel = (float) sendLevel;
+
+            // Pan joined this record in v15, ahead of the rest-of-line name.
+            // Like DPAD, the field count can't be used to detect it, so the
+            // version decides.
+            if (version >= 15)
+            {
+                double pan = 0.0;
+                ts >> pan;
+                track.pan = (float) pan;
+            }
+
             std::string name;
             std::getline(ts, name);
             track.name = detail::trimLeadingSpace(std::move(name));

@@ -65,6 +65,8 @@ static Song makeSampleSong()
     // reallocate the vector and invalidate it).
     s.tracks[0].solo      = true;
     s.tracks[0].sendLevel = 0.65f;
+    s.tracks[0].pan       = -0.75f;
+    s.tracks[1].pan       = 0.5f;
     s.tracks[1].muted     = true;
     s.tracks[0].gainAutomation.addPoint(0.0, -20.0f);
     s.tracks[0].gainAutomation.addPoint(4.0, 0.0f);
@@ -204,6 +206,9 @@ TEST_CASE("A project from before per-track synths still opens", "[model][io]")
     REQUIRE_FALSE(track.insertFilter.enabled);
     REQUIRE_FALSE(track.insertDelay.enabled);
     REQUIRE_FALSE(track.insertReverb.enabled);
+
+    // Pan joined TRACK in v15; this file predates it, so it reads as centred.
+    REQUIRE(track.pan == 0.0f);
 }
 
 TEST_CASE("A current-format file still round-trips after the version work", "[model][io]")

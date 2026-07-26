@@ -156,6 +156,7 @@ public:
     void setTrackMuted(int index, bool muted);
     void setTrackSolo(int index, bool solo);
     void setTrackGainDb(int index, float gainDb);
+    void setTrackPan(int index, float pan);
     void setTrackSendLevel(int index, float level);
     void setArmedTrack(int index);
 

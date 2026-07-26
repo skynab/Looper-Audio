@@ -215,6 +215,12 @@ void AudioEngine::setTrackGainDb(int index, float gainDb)
         tracks_[(size_t) index].gainDb.store(gainDb, std::memory_order_relaxed);
 }
 
+void AudioEngine::setTrackPan(int index, float pan)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].pan.store(juce::jlimit(-1.0f, 1.0f, pan), std::memory_order_relaxed);
+}
+
 void AudioEngine::setTrackSendLevel(int index, float level)
 {
     if (index >= 0 && index < kMaxTracks)

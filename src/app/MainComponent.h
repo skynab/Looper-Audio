@@ -114,6 +114,7 @@ private:
     void                   setTrackGain(int index, float gainDb);
     void                   setTrackMuted(int index, bool muted);
     void                   setTrackSolo(int index, bool solo);
+    void                   setTrackPan(int index, float pan);
     void                   setTrackSendLevel(int index, float level);
     void                   selectTrack(int index);
     void                   selectTrackAndClip(int trackIndex, int clipIndex);

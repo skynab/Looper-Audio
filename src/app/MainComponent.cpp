@@ -398,6 +398,7 @@ MainComponent::MainComponent()
         strip->onMuteChange = [this, i](bool m)   { setTrackMuted(i, m); };
         strip->onSoloChange = [this, i](bool s)   { setTrackSolo(i, s); };
         strip->onSendChange = [this, i](float lv) { setTrackSendLevel(i, lv); };
+        strip->onPanChange  = [this, i](float p)  { setTrackPan(i, p); };
         strip->onSelect     = [this, i]           { selectTrack(i); };
         trackStrips_.add(strip);
         mixerView_.addAndMakeVisible(strip);
@@ -1273,6 +1274,7 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackMuted(i, track.muted);
         engine_.setTrackSolo(i, track.solo);
         engine_.setTrackGainDb(i, track.gainDb);
+        engine_.setTrackPan(i, track.pan);
         engine_.setTrackSendLevel(i, track.sendLevel);
 
         const auto& synth = track.synthSettings;
@@ -1524,6 +1526,7 @@ void MainComponent::updateMixerStrips()
             strip->setMuted(track.muted);
             strip->setSoloed(track.solo);
             strip->setSendLevel(track.sendLevel);
+            strip->setPan(track.pan);
         }
         strip->setSelected(i == selectedTrackIndex_);
     }
@@ -1639,6 +1642,14 @@ void MainComponent::setTrackSolo(int index, bool solo)
     if (index >= 0 && index < (int) song.tracks.size())
         song.tracks[(size_t) index].solo = solo;
     engine_.setTrackSolo(index, solo);
+}
+
+void MainComponent::setTrackPan(int index, float pan)
+{
+    auto& song = history_.mutableCurrent();
+    if (index >= 0 && index < (int) song.tracks.size())
+        song.tracks[(size_t) index].pan = pan;
+    engine_.setTrackPan(index, pan);
 }
 
 void MainComponent::setTrackSendLevel(int index, float level)

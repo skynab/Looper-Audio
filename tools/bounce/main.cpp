@@ -387,6 +387,64 @@ int main(int argc, char** argv)
         drumPadPitchWorks = before > 0.01f && after < 1.0e-5f;
     }
 
+    // Per-track pan check: the same part hard-panned left must vanish from
+    // the right channel while staying present on the left, and a centred
+    // track must be identical on both — the unity-centre pan law is what
+    // keeps every existing project's balance unchanged.
+    bool trackPanWorks = false;
+    {
+        auto renderPanned = [&](float panPosition)
+        {
+            const int totalSamples = (int) (sampleRate * 2.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+            track.pan.store(panPosition);
+
+            ClipSlot slot;
+            slot.pattern     = arp;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+
+            return std::make_pair(mix.getRMSLevel(0, 0, totalSamples), mix.getRMSLevel(1, 0, totalSamples));
+        };
+
+        const auto centred = renderPanned(0.0f);
+        const auto left    = renderPanned(-1.0f);
+
+        trackPanWorks = centred.first > 0.01f
+                     && std::abs(centred.first - centred.second) < 1.0e-6f // centre is balanced
+                     && left.first > 0.01f                                  // still there on the left
+                     && left.second < 1.0e-6f                               // gone from the right
+                     && std::abs(left.first - centred.first) < 1.0e-6f;     // and unchanged in level
+    }
+
     // Per-track insert check: the same part rendered through one track twice,
     // once with that track's own insert low-pass enabled well below the note
     // content. Proves the insert chain is actually in the per-track path —
@@ -668,6 +726,7 @@ int main(int argc, char** argv)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
               << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
+              << "  trackPanWorks=" << (trackPanWorks ? 1 : 0)
               << "  trackInsertFilterWorks=" << (trackInsertFilterWorks ? 1 : 0)
               << "  metronomeWorks=" << (metronomeWorks ? 1 : 0)
               << "  metronomeSilentWhenOff=" << (metronomeSilentWhenOff ? 1 : 0)
@@ -696,7 +755,7 @@ int main(int argc, char** argv)
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && drumPadMixWorks && drumPadPitchWorks
-                 && trackInsertFilterWorks
+                 && trackPanWorks && trackInsertFilterWorks
                  && metronomeWorks && metronomeSilentWhenOff && recorderWorks;
     return ok ? 0 : 2;
 }
