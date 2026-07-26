@@ -71,3 +71,63 @@ TEST_CASE("PianoRollGeometry xForStep and yForRow agree with cellAt", "[app][pia
         }
     }
 }
+
+TEST_CASE("setPitchRange keeps the window inside the MIDI range", "[app][pianoroll]")
+{
+    PianoRollGeometry g;
+
+    g.setPitchRange(-20, 24);
+    REQUIRE(g.lowPitch == 0);
+
+    // The top row must never exceed 127, so lowPitch is pulled down to fit.
+    g.setPitchRange(120, 24);
+    REQUIRE(g.highestPitch() == 127);
+    REQUIRE(g.lowPitch == 128 - 24);
+}
+
+TEST_CASE("Zoom is clamped to a usable number of rows", "[app][pianoroll]")
+{
+    PianoRollGeometry g;
+
+    g.zoomBy(-1000);
+    REQUIRE(g.numRows == PianoRollGeometry::kMinRows);
+
+    g.zoomBy(1000);
+    REQUIRE(g.numRows == PianoRollGeometry::kMaxRows);
+}
+
+TEST_CASE("Zooming out near the top of the range stays in bounds", "[app][pianoroll]")
+{
+    PianoRollGeometry g;
+    g.setPitchRange(127, 12); // clamped to sit against the ceiling
+    REQUIRE(g.highestPitch() == 127);
+
+    g.zoomBy(24); // more rows have to come from below, not above 127
+    REQUIRE(g.highestPitch() == 127);
+    REQUIRE(g.lowPitch >= 0);
+}
+
+TEST_CASE("Scrolling the pitch window round-trips and clamps at the ends", "[app][pianoroll]")
+{
+    PianoRollGeometry g;
+    const int start = g.lowPitch;
+
+    g.scrollPitchBy(12);
+    REQUIRE(g.lowPitch == start + 12);
+    g.scrollPitchBy(-12);
+    REQUIRE(g.lowPitch == start);
+
+    g.scrollPitchBy(-1000);
+    REQUIRE(g.lowPitch == 0);
+    g.scrollPitchBy(1000);
+    REQUIRE(g.highestPitch() == 127);
+}
+
+TEST_CASE("pitchForRow and rowForPitch still agree after scroll and zoom", "[app][pianoroll]")
+{
+    PianoRollGeometry g;
+    g.setPitchRange(36, 18);
+
+    for (int row = 0; row < g.numRows; ++row)
+        REQUIRE(g.rowForPitch(g.pitchForRow(row)) == row);
+}
