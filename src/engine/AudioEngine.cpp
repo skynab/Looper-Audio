@@ -281,6 +281,78 @@ void AudioEngine::setTrackSynthGainDb(int index, float db)
         tracks_[(size_t) index].synth.setGainDb(db);
 }
 
+void AudioEngine::setTrackInsertFilterEnabled(int index, bool enabled)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertFilter.setEnabled(enabled);
+}
+
+void AudioEngine::setTrackInsertFilterMode(int index, int mode)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertFilter.setMode(mode);
+}
+
+void AudioEngine::setTrackInsertFilterCutoff(int index, float hz)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertFilter.setCutoff(hz);
+}
+
+void AudioEngine::setTrackInsertFilterResonance(int index, float q)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertFilter.setResonance(q);
+}
+
+void AudioEngine::setTrackInsertDelayEnabled(int index, bool enabled)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertDelay.setEnabled(enabled);
+}
+
+void AudioEngine::setTrackInsertDelayTimeMs(int index, float ms)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertDelay.setTimeMs(ms);
+}
+
+void AudioEngine::setTrackInsertDelayFeedback(int index, float amount)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertDelay.setFeedback(amount);
+}
+
+void AudioEngine::setTrackInsertDelayMix(int index, float amount)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertDelay.setMix(amount);
+}
+
+void AudioEngine::setTrackInsertReverbEnabled(int index, bool enabled)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertReverb.setEnabled(enabled);
+}
+
+void AudioEngine::setTrackInsertReverbRoomSize(int index, float v)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertReverb.setRoomSize(v);
+}
+
+void AudioEngine::setTrackInsertReverbDamping(int index, float v)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertReverb.setDamping(v);
+}
+
+void AudioEngine::setTrackInsertReverbMix(int index, float v)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].insertReverb.setMix(v);
+}
+
 void AudioEngine::setArmedTrack(int index)
 {
     armedTrack_.store(juce::jlimit(0, kMaxTracks - 1, index), std::memory_order_relaxed);

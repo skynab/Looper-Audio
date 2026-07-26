@@ -19,6 +19,7 @@
 #include "MixerStrip.h"
 #include "PianoRoll.h"
 #include "SynthEditor.h"
+#include "TrackEffectsPanel.h"
 
 namespace looper
 {
@@ -98,6 +99,10 @@ private:
     void                   refreshPianoRollForSelected();
     void                   refreshSynthEditorForSelected();
     void                   refreshDrumsPaneForSelected();
+    void                   refreshTrackEffectsForSelected();
+    void                   setTrackInsertEffects(const model::FilterSettings& filter,
+                                                 const model::DelaySettings& delay,
+                                                 const model::ReverbSettings& reverb);
     void                   setTrackSynthSettings(const model::SynthSettings& settings);
     void                   previewNote(int noteNumber);
     void                   updateDelayControls();
@@ -197,6 +202,7 @@ private:
 
     SynthEditor                        synthEditor_; // its own dock panel — see refreshSynthEditorForSelected
     DrumsPane                          drumsPane_;   // ditto — see refreshDrumsPaneForSelected
+    TrackEffectsPanel                  trackEffects_; // ditto — see refreshTrackEffectsForSelected
 
     CallbackComponent                  arrangeTab_;
     juce::Viewport                     arrangementViewport_;

@@ -86,6 +86,19 @@ static Song makeSampleSong()
     s.tracks[0].synthSettings.filterResonance = 1.5f;
     s.tracks[0].synthSettings.gainDb          = -3.0f;
 
+    s.tracks[0].insertFilter.enabled   = true;
+    s.tracks[0].insertFilter.mode      = 2;
+    s.tracks[0].insertFilter.cutoff    = 3200.0f;
+    s.tracks[0].insertFilter.resonance = 0.9f;
+    s.tracks[1].insertDelay.enabled    = true;
+    s.tracks[1].insertDelay.timeMs     = 180.0f;
+    s.tracks[1].insertDelay.feedback   = 0.55f;
+    s.tracks[1].insertDelay.mix        = 0.4f;
+    s.tracks[2].insertReverb.enabled   = true;
+    s.tracks[2].insertReverb.roomSize  = 0.8f;
+    s.tracks[2].insertReverb.damping   = 0.2f;
+    s.tracks[2].insertReverb.mix       = 0.35f;
+
     return s;
 }
 
@@ -185,6 +198,12 @@ TEST_CASE("A project from before per-track synths still opens", "[model][io]")
 
     // And the synth settings this file predates are the defaults.
     REQUIRE(track.synthSettings == SynthSettings{});
+
+    // Likewise the insert effects, added later still: all off, so a project
+    // from before they existed sounds exactly as it did.
+    REQUIRE_FALSE(track.insertFilter.enabled);
+    REQUIRE_FALSE(track.insertDelay.enabled);
+    REQUIRE_FALSE(track.insertReverb.enabled);
 }
 
 TEST_CASE("A current-format file still round-trips after the version work", "[model][io]")

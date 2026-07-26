@@ -481,6 +481,12 @@ MainComponent::MainComponent()
     };
 
     synthEditor_.onSettingsChanged = [this](const model::SynthSettings& s) { setTrackSynthSettings(s); };
+    trackEffects_.onSettingsChanged = [this](const model::FilterSettings& f,
+                                             const model::DelaySettings& d,
+                                             const model::ReverbSettings& r)
+    {
+        setTrackInsertEffects(f, d, r);
+    };
 
     workspace_.registerPanel("Files", fileBrowser_);
     workspace_.registerPanel("Transport", leftPane_);
@@ -488,6 +494,7 @@ MainComponent::MainComponent()
     workspace_.registerPanel("Keys", editTab_);
     workspace_.registerPanel("Synth", synthEditor_);
     workspace_.registerPanel("Drums", drumsPane_);
+    workspace_.registerPanel("Track FX", trackEffects_);
     workspace_.registerPanel("Mixer", mixerView_);
     workspace_.registerPanel("Keyboard", keyboard_);
     loadDockLayout(); // last session's arrangement, or the default one
@@ -544,6 +551,7 @@ MainComponent::MainComponent()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -751,6 +759,7 @@ void MainComponent::addTrack()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -782,6 +791,7 @@ void MainComponent::addDrumTrack()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -856,9 +866,57 @@ void MainComponent::addClipToSelectedTrack()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
+}
+
+/** Shows the selected track's insert effects. Unlike the Synth and Drums
+    panes this applies to *every* track type — an audio track wants a filter
+    as much as an instrument one does. */
+void MainComponent::refreshTrackEffectsForSelected()
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+    {
+        trackEffects_.setNoTrackSelected();
+        return;
+    }
+
+    const auto& track = history_.current().tracks[(size_t) selectedTrackIndex_];
+    trackEffects_.setSettings(track.insertFilter, track.insertDelay, track.insertReverb);
+}
+
+/** Live tweak from the Track FX pane — updates the document in place (not a
+    separate undo step per knob notch) and mirrors it into the engine, the
+    same pattern the mixer faders and the Synth pane use. */
+void MainComponent::setTrackInsertEffects(const model::FilterSettings& filter,
+                                          const model::DelaySettings& delay,
+                                          const model::ReverbSettings& reverb)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const int index = selectedTrackIndex_;
+    auto&     track = history_.mutableCurrent().tracks[(size_t) index];
+    track.insertFilter = filter;
+    track.insertDelay  = delay;
+    track.insertReverb = reverb;
+
+    engine_.setTrackInsertFilterEnabled(index, filter.enabled);
+    engine_.setTrackInsertFilterMode(index, filter.mode);
+    engine_.setTrackInsertFilterCutoff(index, filter.cutoff);
+    engine_.setTrackInsertFilterResonance(index, filter.resonance);
+
+    engine_.setTrackInsertDelayEnabled(index, delay.enabled);
+    engine_.setTrackInsertDelayTimeMs(index, delay.timeMs);
+    engine_.setTrackInsertDelayFeedback(index, delay.feedback);
+    engine_.setTrackInsertDelayMix(index, delay.mix);
+
+    engine_.setTrackInsertReverbEnabled(index, reverb.enabled);
+    engine_.setTrackInsertReverbRoomSize(index, reverb.roomSize);
+    engine_.setTrackInsertReverbDamping(index, reverb.damping);
+    engine_.setTrackInsertReverbMix(index, reverb.mix);
 }
 
 /** Copies the piano roll's selected notes, or the whole pattern if nothing
@@ -916,6 +974,7 @@ void MainComponent::pasteNotes()
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
 }
 
 /** Copies the selected clip whole — pattern, length and all. */
@@ -965,6 +1024,7 @@ void MainComponent::pasteClip()
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -1003,6 +1063,7 @@ void MainComponent::duplicateClip()
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -1035,6 +1096,7 @@ void MainComponent::quantizeNotes(double swingAmount)
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
 
     // Reloading the pattern clears the selection, which would silently widen
     // a follow-up Swing to the whole part. Quantizing never adds, removes or
@@ -1104,6 +1166,7 @@ void MainComponent::setPatternBars(int bars)
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     arrangementView_.setSong(history_.current());
     updateEditingLabel();
 }
@@ -1223,6 +1286,21 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackSynthFilterCutoff(i, synth.filterCutoff);
         engine_.setTrackSynthFilterResonance(i, synth.filterResonance);
         engine_.setTrackSynthGainDb(i, synth.gainDb);
+
+        engine_.setTrackInsertFilterEnabled(i, track.insertFilter.enabled);
+        engine_.setTrackInsertFilterMode(i, track.insertFilter.mode);
+        engine_.setTrackInsertFilterCutoff(i, track.insertFilter.cutoff);
+        engine_.setTrackInsertFilterResonance(i, track.insertFilter.resonance);
+
+        engine_.setTrackInsertDelayEnabled(i, track.insertDelay.enabled);
+        engine_.setTrackInsertDelayTimeMs(i, track.insertDelay.timeMs);
+        engine_.setTrackInsertDelayFeedback(i, track.insertDelay.feedback);
+        engine_.setTrackInsertDelayMix(i, track.insertDelay.mix);
+
+        engine_.setTrackInsertReverbEnabled(i, track.insertReverb.enabled);
+        engine_.setTrackInsertReverbRoomSize(i, track.insertReverb.roomSize);
+        engine_.setTrackInsertReverbDamping(i, track.insertReverb.damping);
+        engine_.setTrackInsertReverbMix(i, track.insertReverb.mix);
     }
     engine_.setActiveTrackCount(n);
 }
@@ -1312,6 +1390,7 @@ void MainComponent::addDrumPad()
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
 }
 
 /** Removes a pad, along with any notes that triggered it — leaving orphaned
@@ -1345,6 +1424,7 @@ void MainComponent::removeDrumPad(int padIndex)
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
 }
 
 /** Shows the Synth pane's controls for the selected track's timbre, or a
@@ -1587,6 +1667,7 @@ void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     updateMixerStrips(); // refreshes the selection highlight
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -1616,6 +1697,7 @@ void MainComponent::refreshFromModel()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -1869,6 +1951,7 @@ void MainComponent::selectNewlyAddedTrack(int newTrackIndex)
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
+    refreshTrackEffectsForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -2298,6 +2381,7 @@ void MainComponent::buildDefaultDockLayout()
         workspace_.addPanel(*bottom, "Keys");
         workspace_.addPanel(*bottom, "Synth");
         workspace_.addPanel(*bottom, "Drums");
+        workspace_.addPanel(*bottom, "Track FX");
         bottom->showPanel("Keys");
 
         if (auto* transport = workspace_.splitRegion(*bottom, DropZone::Bottom, 0.68))

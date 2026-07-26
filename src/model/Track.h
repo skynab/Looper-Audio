@@ -6,6 +6,7 @@
 #include "model/AutomationLane.h"
 #include "model/Clip.h"
 #include "model/DrumKit.h"
+#include "model/Effects.h"
 #include "model/SynthSettings.h"
 
 namespace looper::model
@@ -30,6 +31,21 @@ struct Track
     AutomationLane    gainAutomation; // this track's gain (dB) over beats; empty = static gainDb only
     DrumKit           drumKit; // only meaningful when type == Drum; empty pads otherwise
     SynthSettings     synthSettings; // only meaningful when type == Instrument
+
+    // This track's own insert effects, applied to its output before its fader
+    // (and so before its send too). The same three effects the master bus
+    // has, in the same fixed order — filter, then delay, then reverb — each
+    // switchable on its own and all disabled by default, so a track that has
+    // never been touched sounds exactly as it did before inserts existed.
+    //
+    // Deliberately a fixed trio rather than a general chain: it needs no
+    // real-time graph surgery, which is the rule the whole engine is built
+    // on. Arbitrary ordering and duplicate effects want a proper slot
+    // abstraction, and that's better designed alongside plugin hosting, which
+    // forces the question anyway.
+    FilterSettings    insertFilter;
+    DelaySettings     insertDelay;
+    ReverbSettings    insertReverb;
 
     bool operator==(const Track&) const = default;
 };

@@ -12,6 +12,7 @@
 #include "engine/DelayEffect.h"
 #include "engine/DrumKitNode.h"
 #include "engine/FilterEffect.h"
+#include "engine/InstrumentTrack.h"
 #include "engine/Metronome.h"
 #include "engine/MidiFileIO.h"
 #include "engine/OfflineRenderer.h"
@@ -386,6 +387,66 @@ int main(int argc, char** argv)
         drumPadPitchWorks = before > 0.01f && after < 1.0e-5f;
     }
 
+    // Per-track insert check: the same part rendered through one track twice,
+    // once with that track's own insert low-pass enabled well below the note
+    // content. Proves the insert chain is actually in the per-track path —
+    // the existing rmsDry sentinel already proves the other half, that
+    // *disabled* inserts leave the signal bit-identical, since OfflineRenderer
+    // renders through InstrumentTrack and now runs three (bypassed) inserts
+    // per block.
+    bool trackInsertFilterWorks = false;
+    {
+        auto renderOneTrack = [&](bool filterEnabled)
+        {
+            const int totalSamples = (int) (sampleRate * 2.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+            track.insertFilter.setEnabled(filterEnabled);
+            track.insertFilter.setMode(0); // low-pass
+            track.insertFilter.setCutoff(150.0f);
+            track.insertFilter.setResonance(0.707f);
+
+            ClipSlot slot;
+            slot.pattern     = arp;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                = sampleRate;
+                context.numSamples                = n;
+                context.transport.playing         = true;
+                context.transport.playheadSamples = pos;
+                context.transport.bpm             = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+
+            return mix.getRMSLevel(0, 0, totalSamples);
+        };
+
+        const float plain    = renderOneTrack(false);
+        const float filtered = renderOneTrack(true);
+
+        trackInsertFilterWorks = plain > 0.01f && filtered < plain * 0.9f;
+    }
+
     // Metronome check: at 120bpm a beat lands every 0.5s, so the click must
     // be audible right at each beat and silent between them. Also confirms
     // the accent logic runs without disturbing the beat grid.
@@ -607,6 +668,7 @@ int main(int argc, char** argv)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
               << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
+              << "  trackInsertFilterWorks=" << (trackInsertFilterWorks ? 1 : 0)
               << "  metronomeWorks=" << (metronomeWorks ? 1 : 0)
               << "  metronomeSilentWhenOff=" << (metronomeSilentWhenOff ? 1 : 0)
               << "  recorderWorks=" << (recorderWorks ? 1 : 0) << "\n";
@@ -634,6 +696,7 @@ int main(int argc, char** argv)
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && drumPadMixWorks && drumPadPitchWorks
+                 && trackInsertFilterWorks
                  && metronomeWorks && metronomeSilentWhenOff && recorderWorks;
     return ok ? 0 : 2;
 }

@@ -6,7 +6,10 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "engine/AudioFilePlayerNode.h"
+#include "engine/DelayEffect.h"
 #include "engine/DrumKitNode.h"
+#include "engine/FilterEffect.h"
+#include "engine/ReverbEffect.h"
 #include "engine/ProcessContext.h"
 #include "engine/Sequencer.h"
 #include "engine/SynthInstrumentNode.h"
@@ -51,6 +54,15 @@ struct InstrumentTrack
     DrumKitNode              drumKit;
     Sequencer                sequencer;
     AudioFilePlayerNode      audioPlayer;
+
+    // This track's insert chain, in fixed order, applied to its own output
+    // before the fader (and therefore before the send too, so a send carries
+    // the processed signal — the usual behaviour). Each passes audio through
+    // untouched while disabled, which is how they all start, so a track with
+    // no inserts configured costs three branch-and-returns per block.
+    FilterEffect             insertFilter;
+    DelayEffect              insertDelay;
+    ReverbEffect             insertReverb;
     std::atomic<bool>        active      { false };
     std::atomic<bool>        muted       { false };
     std::atomic<bool>        solo        { false };
@@ -66,6 +78,9 @@ struct InstrumentTrack
         synth.prepare(sampleRate, blockSize);
         drumKit.prepare(sampleRate, blockSize);
         audioPlayer.prepare(sampleRate, blockSize);
+        insertFilter.prepare(sampleRate, blockSize);
+        insertDelay.prepare(sampleRate, blockSize);
+        insertReverb.prepare(sampleRate, blockSize);
         trackMidi.ensureSize(2048);
         scratch.setSize(2, juce::jmax(1, blockSize));
     }
@@ -110,6 +125,13 @@ struct InstrumentTrack
         else
             synth.process(scratch, trackMidi, context);
         audioPlayer.process(scratch, trackMidi, context); // adds in; midi is ignored
+
+        // Inserts run on the summed track output, before gain and before the
+        // send is taken — so lowering the fader doesn't change the effect, and
+        // the send carries the processed sound.
+        insertFilter.process(scratch);
+        insertDelay.process(scratch);
+        insertReverb.process(scratch);
 
         const float gain     = juce::Decibels::decibelsToGain(gainDb.load(std::memory_order_relaxed));
         const float send     = sendLevel.load(std::memory_order_relaxed);

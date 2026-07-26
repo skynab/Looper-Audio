@@ -34,8 +34,9 @@ namespace looper::model
 /** Bumped whenever the format changes. History worth knowing:
       11  the format before per-track synths
       12  + SYNTH (per-track model::SynthSettings)
-      13  DPAD carries per-pad gain/pan/pitch/mute/solo before its sample path */
-inline constexpr int kFormatVersion = 13;
+      13  DPAD carries per-pad gain/pan/pitch/mute/solo before its sample path
+      14  + TFX (per-track insert filter/delay/reverb) */
+inline constexpr int kFormatVersion = 14;
 namespace detail
 {
     inline std::string num(double v)
@@ -114,6 +115,18 @@ inline std::string serialize(const Song& song)
             << (synth.filterEnabled ? 1 : 0) << " " << synth.filterMode << " "
             << detail::num((double) synth.filterCutoff) << " " << detail::num((double) synth.filterResonance) << " "
             << detail::num((double) synth.gainDb) << "\n";
+
+        const auto& fx = track.insertFilter;
+        out << "TFX " << (fx.enabled ? 1 : 0) << " " << fx.mode << " "
+            << detail::num((double) fx.cutoff) << " " << detail::num((double) fx.resonance) << " "
+            << (track.insertDelay.enabled ? 1 : 0) << " "
+            << detail::num((double) track.insertDelay.timeMs) << " "
+            << detail::num((double) track.insertDelay.feedback) << " "
+            << detail::num((double) track.insertDelay.mix) << " "
+            << (track.insertReverb.enabled ? 1 : 0) << " "
+            << detail::num((double) track.insertReverb.roomSize) << " "
+            << detail::num((double) track.insertReverb.damping) << " "
+            << detail::num((double) track.insertReverb.mix) << "\n";
 
         out << "CLIPS " << track.clips.size() << "\n";
 
@@ -358,6 +371,31 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             track.synthSettings.filterCutoff    = (float) filterCutoff;
             track.synthSettings.filterResonance = (float) filterResonance;
             track.synthSettings.gainDb          = (float) gainDb;
+        }
+
+        if (readTagged("TFX", rest)) // added in v14; older files keep the defaults
+        {
+            std::istringstream fs(rest);
+            int    filterOn = 0, filterMode = 0, delayOn = 0, reverbOn = 0;
+            double cutoff = 0.0, resonance = 0.0;
+            double delayTime = 0.0, delayFeedback = 0.0, delayMix = 0.0;
+            double room = 0.0, damping = 0.0, reverbMix = 0.0;
+            fs >> filterOn >> filterMode >> cutoff >> resonance
+               >> delayOn >> delayTime >> delayFeedback >> delayMix
+               >> reverbOn >> room >> damping >> reverbMix;
+
+            track.insertFilter.enabled   = filterOn != 0;
+            track.insertFilter.mode      = filterMode;
+            track.insertFilter.cutoff    = (float) cutoff;
+            track.insertFilter.resonance = (float) resonance;
+            track.insertDelay.enabled    = delayOn != 0;
+            track.insertDelay.timeMs     = (float) delayTime;
+            track.insertDelay.feedback   = (float) delayFeedback;
+            track.insertDelay.mix        = (float) delayMix;
+            track.insertReverb.enabled   = reverbOn != 0;
+            track.insertReverb.roomSize  = (float) room;
+            track.insertReverb.damping   = (float) damping;
+            track.insertReverb.mix       = (float) reverbMix;
         }
 
         if (! readTagged("CLIPS", rest))

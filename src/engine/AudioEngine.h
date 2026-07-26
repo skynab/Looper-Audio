@@ -173,6 +173,24 @@ public:
     void setTrackSynthFilterResonance(int index, float q);
     void setTrackSynthGainDb(int index, float db);
 
+    // Per-track insert effects (see InstrumentTrack) — the same three the
+    // master bus has, in the same fixed order, but applied to one track's
+    // output before its fader.
+    void setTrackInsertFilterEnabled(int index, bool enabled);
+    void setTrackInsertFilterMode(int index, int mode);
+    void setTrackInsertFilterCutoff(int index, float hz);
+    void setTrackInsertFilterResonance(int index, float q);
+
+    void setTrackInsertDelayEnabled(int index, bool enabled);
+    void setTrackInsertDelayTimeMs(int index, float ms);
+    void setTrackInsertDelayFeedback(int index, float amount);
+    void setTrackInsertDelayMix(int index, float amount);
+
+    void setTrackInsertReverbEnabled(int index, bool enabled);
+    void setTrackInsertReverbRoomSize(int index, float v);
+    void setTrackInsertReverbDamping(int index, float v);
+    void setTrackInsertReverbMix(int index, float v);
+
     // Master effects (thread-safe atomics; safe to call from the message thread).
     void setMasterFilterEnabled(bool enabled)  { masterFilter_.setEnabled(enabled); }
     void setMasterFilterMode(int mode)         { masterFilter_.setMode(mode); }
