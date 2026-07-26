@@ -39,13 +39,23 @@ struct AudioClipSpec
     double     lengthBeats = 0.0;
 };
 
-/** One drum pad to load onto a track: a note number plus the file to play
-    when it's triggered (File{} = no sample assigned, pad stays silent). See
+/** One drum pad to load onto a track: a note number, the file to play when
+    it's triggered (File{} = no sample assigned, pad stays silent), and that
+    pad's mix settings. `muted` is the *effective* mute — the caller resolves
+    the kit's solo state into it (see MainComponent::syncEngineTracks), the
+    same "solo overrides, mute always wins" rule tracks use, so the audio
+    thread never has to scan the other pads. Defaults are a no-op, so a spec
+    built without touching them behaves as it did before these existed. See
     AudioEngine::setTrackDrumKit. */
 struct DrumPadSpec
 {
     int        noteNumber = -1;
     juce::File file;
+
+    float gainDb         = 0.0f;
+    float pan            = 0.0f;
+    float pitchSemitones = 0.0f;
+    bool  muted          = false;
 };
 
 /**

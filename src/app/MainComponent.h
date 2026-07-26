@@ -14,7 +14,7 @@
 #include "ArrangementView.h"
 #include "CenterSplitArea.h"
 #include "DockRegion.h"
-#include "DrumKitEditor.h"
+#include "DrumsPane.h"
 #include "FileBrowserPanel.h"
 #include "LevelMeter.h"
 #include "MixerStrip.h"
@@ -91,9 +91,14 @@ private:
     void                   addTrack();
     void                   addDrumTrack();
     void                   assignDrumSample(int padIndex, const juce::File& file);
+    void                   setDrumPadMix(int padIndex, const model::DrumPad& pad);
+    void                   addDrumPad();
+    void                   removeDrumPad(int padIndex);
+    int                    selectedDrumTrackIndex() const;
     void                   syncEngineTracks();
     void                   refreshPianoRollForSelected();
     void                   refreshSynthEditorForSelected();
+    void                   refreshDrumsPaneForSelected();
     void                   setTrackSynthSettings(const model::SynthSettings& settings);
     void                   previewNote(int noteNumber);
     void                   updateDelayControls();
@@ -193,10 +198,10 @@ private:
 
     CallbackComponent                  editTab_;
     juce::Label                        editingLabel_;
-    DrumKitEditor                      drumKitEditor_;
     PianoRoll                          pianoRoll_;
 
     SynthEditor                        synthEditor_; // its own dock panel — see refreshSynthEditorForSelected
+    DrumsPane                          drumsPane_;   // ditto — see refreshDrumsPaneForSelected
 
     CallbackComponent                  arrangeTab_;
     juce::Viewport                     arrangementViewport_;

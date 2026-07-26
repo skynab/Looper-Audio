@@ -404,19 +404,23 @@ MainComponent::MainComponent()
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
     pianoRoll_.onNotePreview = [this](int noteNumber) { previewNote(noteNumber); };
 
-    // ---- edit tab: a header showing which track/clip is open, the drum-kit
-    // editor (only shown for a Drum track — see refreshPianoRollForSelected),
-    // and the piano roll/step grid ----
+    // ---- edit tab: a header showing which track/clip is open, and the piano
+    // roll (which switches to pad-per-row drum mode for a Drum track — see
+    // refreshPianoRollForSelected). Editing the kit itself lives in the
+    // Drums pane instead. ----
     editingLabel_.setFont(juce::Font(juce::FontOptions(13.0f)));
     editTab_.addAndMakeVisible(editingLabel_);
-    drumKitEditor_.onSampleAssigned = [this](int padIndex, const juce::File& file)
-    {
-        assignDrumSample(padIndex, file);
-    };
-    editTab_.addChildComponent(drumKitEditor_);
-    drumKitEditor_.setVisible(false); // hidden until a Drum track is selected (see refreshPianoRollForSelected)
     editTab_.addAndMakeVisible(pianoRoll_);
     editTab_.onResized = [this] { layoutEditTab(); };
+
+    // ---- drums pane: the kit's sounds on the left, its rhythm on the right ----
+    drumsPane_.connectCallbacks();
+    drumsPane_.onSampleAssigned = [this](int padIndex, const juce::File& file) { assignDrumSample(padIndex, file); };
+    drumsPane_.onPadMixChanged  = [this](int padIndex, const model::DrumPad& pad) { setDrumPadMix(padIndex, pad); };
+    drumsPane_.onPadAdded       = [this] { addDrumPad(); };
+    drumsPane_.onPadRemoved     = [this](int padIndex) { removeDrumPad(padIndex); };
+    drumsPane_.onPatternChanged = [this](const engine::Pattern& p) { editPattern(p); };
+    drumsPane_.onNotePreview    = [this](int noteNumber) { previewNote(noteNumber); };
 
     // ---- arrange tab: a zoomable/scrollable timeline, click to seek ----
     arrangementViewport_.setViewedComponent(&arrangementView_, false);
@@ -459,8 +463,8 @@ MainComponent::MainComponent()
 
     synthEditor_.onSettingsChanged = [this](const model::SynthSettings& s) { setTrackSynthSettings(s); };
 
-    // Default docking layout: Left = Files; Center = Tracks/Keys/Synth/Mixer
-    // together; Bottom = Transport/Keyboard together; Right starts empty
+    // Default docking layout: Left = Files; Center = Tracks/Keys/Synth/Drums/
+    // Mixer together; Bottom = Transport/Keyboard together; Right starts empty
     // (and hidden — see updateRightRegionVisibility). Drag any tab's header
     // onto another region — including the Center's own second half, once
     // split via the View menu — to move it there instead.
@@ -468,6 +472,7 @@ MainComponent::MainComponent()
     centerSplit_.primary_.addPanel("Tracks", arrangeTab_);
     centerSplit_.primary_.addPanel("Keys", editTab_);
     centerSplit_.primary_.addPanel("Synth", synthEditor_);
+    centerSplit_.primary_.addPanel("Drums", drumsPane_);
     centerSplit_.primary_.addPanel("Mixer", mixerView_);
     centerSplit_.primary_.showPanel("Keys"); // start on the note editor
     dockRegionBottom_.addPanel("Transport", leftPane_);
@@ -520,6 +525,7 @@ MainComponent::MainComponent()
     engine_.setArmedTrack(0);
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -705,6 +711,7 @@ void MainComponent::addTrack()
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -735,6 +742,7 @@ void MainComponent::addDrumTrack()
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -763,8 +771,9 @@ void MainComponent::assignDrumSample(int padIndex, const juce::File& file)
     });
 
     syncEngineTracks();
-    refreshPianoRollForSelected(); // also refreshes the drum-kit editor's row display
+    refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected(); // redraws the pad's row with its new sample name
 }
 
 /** Adds a new clip to the currently selected track, positioned 2 beats after
@@ -807,6 +816,7 @@ void MainComponent::addClipToSelectedTrack()
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -877,12 +887,23 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackIsDrum(i, track.type == model::TrackType::Drum);
         if (track.type == model::TrackType::Drum)
         {
+            // Pad solo is resolved here rather than on the audio thread: the
+            // whole pad map is rebuilt and swapped on any kit change anyway,
+            // so the engine only ever needs the effective mute. Same
+            // "solo overrides, mute always wins" rule as track solo.
+            const bool anyPadSoloed = std::any_of(track.drumKit.pads.begin(), track.drumKit.pads.end(),
+                                                  [](const model::DrumPad& p) { return p.solo; });
+
             std::vector<engine::DrumPadSpec> padSpecs;
             for (const auto& pad : track.drumKit.pads)
             {
                 engine::DrumPadSpec spec;
-                spec.noteNumber = pad.noteNumber;
-                spec.file       = pad.samplePath.empty() ? juce::File() : juce::File(pad.samplePath);
+                spec.noteNumber     = pad.noteNumber;
+                spec.file           = pad.samplePath.empty() ? juce::File() : juce::File(pad.samplePath);
+                spec.gainDb         = pad.gainDb;
+                spec.pan            = pad.pan;
+                spec.pitchSemitones = pad.pitchSemitones;
+                spec.muted          = pad.muted || (anyPadSoloed && ! pad.solo);
                 padSpecs.push_back(spec);
             }
             engine_.setTrackDrumKit(i, padSpecs);
@@ -916,19 +937,115 @@ void MainComponent::refreshPianoRollForSelected()
                      && history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Drum;
 
     if (isDrum)
-    {
-        const auto& pads = history_.current().tracks[(size_t) selectedTrackIndex_].drumKit.pads;
-        pianoRoll_.setDrumPads(pads);
-        drumKitEditor_.setPads(pads);
-        drumKitEditor_.setVisible(true);
-    }
+        pianoRoll_.setDrumPads(history_.current().tracks[(size_t) selectedTrackIndex_].drumKit.pads);
     else
-    {
         pianoRoll_.setMelodicMode();
-        drumKitEditor_.setVisible(false);
+}
+
+/** Shows the Drums pane's kit and step grid for the selected track, or a
+    placeholder if it isn't a Drum track — the same gating
+    refreshSynthEditorForSelected does for Instrument tracks. */
+void MainComponent::refreshDrumsPaneForSelected()
+{
+    const int trackIndex = selectedDrumTrackIndex();
+    if (trackIndex < 0)
+    {
+        drumsPane_.setNoDrumTrackSelected();
+        return;
     }
 
-    layoutEditTab(); // the drum-kit editor's visibility just changed, which affects layout
+    drumsPane_.setKit(history_.current().tracks[(size_t) trackIndex].drumKit.pads, currentPattern());
+}
+
+/** The selected track's index if it's a Drum track, or -1 — the one check
+    every drum-kit edit below needs before touching the document. */
+int MainComponent::selectedDrumTrackIndex() const
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return -1;
+    return history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Drum
+               ? selectedTrackIndex_ : -1;
+}
+
+/** Live tweak of one pad's mute/solo/gain/pan/pitch — updates the document in
+    place (not a separate undo step), same as a mixer fader. Deliberately does
+    not rebuild the kit editor's rows: they hold the very slider being dragged
+    (see DrumKitEditor::setPads); only the step grid, which dims muted pads,
+    needs refreshing. */
+void MainComponent::setDrumPadMix(int padIndex, const model::DrumPad& pad)
+{
+    const int trackIndex = selectedDrumTrackIndex();
+    if (trackIndex < 0)
+        return;
+
+    auto& pads = history_.mutableCurrent().tracks[(size_t) trackIndex].drumKit.pads;
+    if (padIndex < 0 || padIndex >= (int) pads.size())
+        return;
+
+    pads[(size_t) padIndex] = pad;
+    syncEngineTracks(); // rebuilds this track's pad map with the new mix settings
+    drumsPane_.refreshPadsForMixChange(pads);
+}
+
+/** Adds a pad to the selected kit, on the next free MIDI note above the
+    highest one it already uses — a structural edit, so it goes through
+    history_ like adding a track or clip. */
+void MainComponent::addDrumPad()
+{
+    const int trackIndex = selectedDrumTrackIndex();
+    if (trackIndex < 0)
+        return;
+
+    history_.edit("Add drum pad", [trackIndex](model::Song& s)
+    {
+        auto& pads = s.tracks[(size_t) trackIndex].drumKit.pads;
+
+        int highestNote = 35; // one below the usual GM kick, so an empty kit starts at 36
+        for (const auto& pad : pads)
+            highestNote = juce::jmax(highestNote, pad.noteNumber);
+
+        model::DrumPad pad;
+        pad.noteNumber = juce::jmin(127, highestNote + 1);
+        pad.label      = "Pad " + std::to_string(pads.size() + 1);
+        pads.push_back(pad);
+    });
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshDrumsPaneForSelected();
+}
+
+/** Removes a pad, along with any notes that triggered it — leaving orphaned
+    hits behind would show up as a silent row nothing can play. Never removes
+    the last pad (the editor's Remove button is disabled at one pad). */
+void MainComponent::removeDrumPad(int padIndex)
+{
+    const int trackIndex = selectedDrumTrackIndex();
+    if (trackIndex < 0)
+        return;
+
+    history_.edit("Remove drum pad", [trackIndex, padIndex](model::Song& s)
+    {
+        auto& track = s.tracks[(size_t) trackIndex];
+        auto& pads  = track.drumKit.pads;
+        if (padIndex < 0 || padIndex >= (int) pads.size() || pads.size() <= 1)
+            return;
+
+        const int removedNote = pads[(size_t) padIndex].noteNumber;
+        pads.erase(pads.begin() + padIndex);
+
+        for (auto& clip : track.clips)
+        {
+            auto& notes = clip.pattern.notes;
+            notes.erase(std::remove_if(notes.begin(), notes.end(),
+                                       [removedNote](const engine::Note& n) { return n.noteNumber == removedNote; }),
+                        notes.end());
+        }
+    });
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshDrumsPaneForSelected();
 }
 
 /** Shows the Synth pane's controls for the selected track's timbre, or a
@@ -1170,6 +1287,7 @@ void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
     updateMixerStrips(); // refreshes the selection highlight
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -1190,6 +1308,7 @@ void MainComponent::refreshFromModel()
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -1442,6 +1561,7 @@ void MainComponent::selectNewlyAddedTrack(int newTrackIndex)
     engine_.setArmedTrack(selectedTrackIndex_);
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -1742,6 +1862,20 @@ void MainComponent::timerCallback()
 
     arrangementView_.setPlayheadBeats(uiTempoMap_.ppqFromSamples(playhead));
 
+    // The step grid's playhead walks the pattern's own loop, so it needs the
+    // position relative to the open clip's start rather than the song's.
+    {
+        const auto&  song      = history_.current();
+        double       clipStart = 0.0;
+        if (selectedTrackIndex_ >= 0 && selectedTrackIndex_ < (int) song.tracks.size())
+        {
+            const auto& clips = song.tracks[(size_t) selectedTrackIndex_].clips;
+            if (selectedClipIndex_ >= 0 && selectedClipIndex_ < (int) clips.size())
+                clipStart = clips[(size_t) selectedClipIndex_].startBeats;
+        }
+        drumsPane_.setPlayheadBeats(uiTempoMap_.ppqFromSamples(playhead) - clipStart, engine_.isPlaying());
+    }
+
     // Gain automation playback (coarse, message-thread; sample-accurate on
     // export — see bounceProject()). Master and per-track lanes both apply.
     if (! recordAutomation_ && engine_.isPlaying())
@@ -1854,6 +1988,7 @@ void MainComponent::movePanelBetweenRegions(const juce::String& panelName, DockR
     else if (panelName == "Tracks")      content = &arrangeTab_;
     else if (panelName == "Keys")        content = &editTab_;
     else if (panelName == "Synth")       content = &synthEditor_;
+    else if (panelName == "Drums")       content = &drumsPane_;
     else if (panelName == "Mixer")       content = &mixerView_;
     else if (panelName == "Keyboard")    content = &keyboard_;
     if (content == nullptr)
@@ -1871,7 +2006,8 @@ namespace
 {
     struct KnownPanel { const char* name; };
     constexpr KnownPanel kKnownPanels[] =
-        { { "Files" }, { "Transport" }, { "Tracks" }, { "Keys" }, { "Synth" }, { "Mixer" }, { "Keyboard" } };
+        { { "Files" }, { "Transport" }, { "Tracks" }, { "Keys" }, { "Synth" }, { "Drums" },
+          { "Mixer" }, { "Keyboard" } };
     constexpr const char* kRegionKeys[] = { "Left", "CenterPrimary", "CenterSecondary", "Bottom", "Right" };
 }
 
@@ -1887,7 +2023,8 @@ void MainComponent::loadDockLayout()
     DockRegion* regionsByKey[] = { &dockRegionLeft_, &centerSplit_.primary_, &centerSplit_.secondary_,
                                    &dockRegionBottom_, &dockRegionRight_ };
 
-    juce::Component* contentFor[] = { &fileBrowser_, &leftPane_, &arrangeTab_, &editTab_, &synthEditor_, &mixerView_, &keyboard_ };
+    juce::Component* contentFor[] = { &fileBrowser_, &leftPane_, &arrangeTab_, &editTab_, &synthEditor_,
+                                      &drumsPane_, &mixerView_, &keyboard_ };
 
     for (size_t i = 0; i < std::size(kKnownPanels); ++i)
     {
@@ -1976,14 +2113,6 @@ void MainComponent::layoutEditTab()
 {
     auto area = editTab_.getLocalBounds();
     editingLabel_.setBounds(area.removeFromTop(22).reduced(6, 0));
-
-    if (drumKitEditor_.isVisible())
-    {
-        const int kitHeight = juce::jmin(140, area.getHeight() / 3);
-        drumKitEditor_.setBounds(area.removeFromTop(kitHeight));
-        area.removeFromTop(4);
-    }
-
     pianoRoll_.setBounds(area);
 }
 

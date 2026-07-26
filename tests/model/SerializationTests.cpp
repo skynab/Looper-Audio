@@ -69,6 +69,11 @@ static Song makeSampleSong()
     s.tracks[0].gainAutomation.addPoint(0.0, -20.0f);
     s.tracks[0].gainAutomation.addPoint(4.0, 0.0f);
     s.tracks[2].drumKit.pads[0].samplePath = "samples/Kick 808.wav"; // with a space, deliberately
+    s.tracks[2].drumKit.pads[0].gainDb         = -2.5f;
+    s.tracks[2].drumKit.pads[0].pitchSemitones = -3.0f;
+    s.tracks[2].drumKit.pads[0].solo           = true;
+    s.tracks[2].drumKit.pads[1].pan            = 0.4f;
+    s.tracks[2].drumKit.pads[1].muted          = true;
 
     s.tracks[0].synthSettings.waveform        = 2; // square
     s.tracks[0].synthSettings.attackMs        = 12.0f;

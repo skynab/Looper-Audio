@@ -3,6 +3,7 @@
 #include "rt/RealtimeGuard.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <memory>
 
@@ -150,7 +151,15 @@ void AudioEngine::setTrackDrumKit(int index, const std::vector<DrumPadSpec>& pad
         std::shared_ptr<ClipData> clip;
         if (pad.file != juce::File{})
             clip = decodeOrGetCached(pad.file); // nullptr on failure — the pad just stays silent
-        map->push_back({ pad.noteNumber, clip });
+
+        DrumPadAssignment assignment;
+        assignment.noteNumber = pad.noteNumber;
+        assignment.clipData   = std::move(clip);
+        assignment.gain       = juce::Decibels::decibelsToGain(pad.gainDb);
+        assignment.pan        = juce::jlimit(-1.0f, 1.0f, pad.pan);
+        assignment.pitchRatio = std::pow(2.0f, pad.pitchSemitones / 12.0f);
+        assignment.muted      = pad.muted;
+        map->push_back(std::move(assignment));
     }
 
     auto& track = tracks_[(size_t) index];

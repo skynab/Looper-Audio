@@ -37,7 +37,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 12\n";
+    out << "LOOPER 13\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -79,8 +79,14 @@ inline std::string serialize(const Song& song)
         for (const auto& pad : track.drumKit.pads)
             // label is a space-free token (no pad-rename UI exists yet, so
             // this always holds); samplePath is the rest of the line, like
-            // clip.audioFile/track.name, since a real file path can have spaces.
-            out << "DPAD " << pad.noteNumber << " " << pad.label << " " << pad.samplePath << "\n";
+            // clip.audioFile/track.name, since a real file path can have
+            // spaces — so every fixed-width field has to precede it.
+            out << "DPAD " << pad.noteNumber << " " << pad.label << " "
+                << detail::num((double) pad.gainDb) << " "
+                << detail::num((double) pad.pan) << " "
+                << detail::num((double) pad.pitchSemitones) << " "
+                << (pad.muted ? 1 : 0) << " " << (pad.solo ? 1 : 0) << " "
+                << pad.samplePath << "\n";
 
         const auto& synth = track.synthSettings;
         out << "SYNTH " << synth.waveform << " "
@@ -252,7 +258,14 @@ inline bool deserialize(const std::string& text, Song& out)
                 if (! readTagged("DPAD", rest)) return false;
                 std::istringstream ps(rest);
                 DrumPad pad;
-                ps >> pad.noteNumber >> pad.label;
+                double  gainDb = 0.0, pan = 0.0, pitchSemitones = 0.0;
+                int     muted = 0, solo = 0;
+                ps >> pad.noteNumber >> pad.label >> gainDb >> pan >> pitchSemitones >> muted >> solo;
+                pad.gainDb         = (float) gainDb;
+                pad.pan            = (float) pan;
+                pad.pitchSemitones = (float) pitchSemitones;
+                pad.muted          = muted != 0;
+                pad.solo           = solo != 0;
                 std::string samplePath;
                 std::getline(ps, samplePath);
                 pad.samplePath = detail::trimLeadingSpace(std::move(samplePath));

@@ -12,15 +12,27 @@
 
 namespace looper::engine
 {
-/** One pad's live assignment: a MIDI note number and the decoded sample that
-    plays when it's triggered (nullptr = no sample assigned, silent). Shared
-    (not owned outright) so the same decoded file can back several pads, or
-    the same pad across tracks, without re-decoding — see
-    AudioEngine::decodeOrGetCached. */
+/** One pad's live assignment: a MIDI note number, the decoded sample that
+    plays when it's triggered (nullptr = no sample assigned, silent), and that
+    pad's own mix settings. Shared (not owned outright) so the same decoded
+    file can back several pads, or the same pad across tracks, without
+    re-decoding — see AudioEngine::decodeOrGetCached.
+
+    The mix fields default to a no-op (unity gain, centred, no transposition,
+    not muted), so a pad map built without touching them behaves exactly as it
+    did before they existed. `muted` here is already the *effective* mute —
+    the caller folds the kit's solo state into it (see
+    AudioEngine::setTrackDrumKit), so the audio thread never has to scan the
+    other pads to decide whether this one should sound. */
 struct DrumPadAssignment
 {
     int                       noteNumber = -1;
     std::shared_ptr<ClipData> clipData;
+
+    float gain       = 1.0f; // linear
+    float pan        = 0.0f; // -1 = hard left, 0 = centre, +1 = hard right
+    float pitchRatio = 1.0f; // playback-speed multiplier (2^(semitones/12))
+    bool  muted      = false;
 };
 
 /** A whole kit's current pad→sample mapping, swapped as one unit — same
@@ -47,9 +59,31 @@ public:
 
     void startNote(int midiNoteNumber, float velocity, juce::SynthesiserSound*, int /*pitchWheel*/) override
     {
-        currentClip_ = sampleFor(midiNoteNumber);
+        // The pad's mix settings are captured here, at trigger time, rather
+        // than read per-sample: a one-shot that's already in flight keeps the
+        // gain/pan/pitch it started with, even if the pad map is swapped
+        // underneath it mid-hit.
+        const auto* pad = padFor(midiNoteNumber);
+
+        if (pad == nullptr || pad->muted)
+        {
+            currentClip_ = nullptr;
+            clearCurrentNote();
+            return;
+        }
+
+        currentClip_ = pad->clipData.get();
         position_    = 0.0;
         velocity_    = velocity;
+        gain_        = pad->gain;
+        pitchRatio_  = pad->pitchRatio;
+
+        // A linear pan law with a unity centre — at pan 0 both sides stay at
+        // 1.0, so a centred pad is bit-identical to the un-panned behaviour
+        // this voice had before panning existed (an equal-power law would
+        // drop the centre to ~0.707 and quietly change every existing kit).
+        panLeft_  = pad->pan <= 0.0f ? 1.0f : 1.0f - pad->pan;
+        panRight_ = pad->pan >= 0.0f ? 1.0f : 1.0f + pad->pan;
     }
 
     void stopNote(float /*velocity*/, bool allowTailOff) override
@@ -77,9 +111,12 @@ public:
         }
 
         const double deviceRate = getSampleRate();
-        const double ratio      = (currentClip_->sourceSampleRate > 0.0 && deviceRate > 0.0)
+        // The pad's transposition is folded straight into the read speed —
+        // resampling, so a pitched-down hit is also a longer one, the usual
+        // one-shot sampler behaviour.
+        const double ratio      = ((currentClip_->sourceSampleRate > 0.0 && deviceRate > 0.0)
                                       ? currentClip_->sourceSampleRate / deviceRate
-                                      : 1.0;
+                                      : 1.0) * (double) pitchRatio_;
         const int    length     = currentClip_->lengthSamples;
         const int    fileChans  = currentClip_->numChannels;
         const int    outChans   = output.getNumChannels();
@@ -96,7 +133,9 @@ public:
             {
                 const int    srcCh  = juce::jmin(ch, fileChans - 1);
                 const float* srcPtr = currentClip_->audio.getReadPointer(srcCh);
-                output.addSample(ch, startSample + i, sampleLinear(srcPtr, length, position_) * velocity_);
+                const float  pan    = (ch == 0) ? panLeft_ : (ch == 1 ? panRight_ : 1.0f);
+                output.addSample(ch, startSample + i,
+                                 sampleLinear(srcPtr, length, position_) * velocity_ * gain_ * pan);
             }
 
             position_ += ratio;
@@ -104,12 +143,16 @@ public:
     }
 
 private:
-    const ClipData* sampleFor(int noteNumber); // defined below, after DrumKitNode
+    const DrumPadAssignment* padFor(int noteNumber); // defined below, after DrumKitNode
 
     DrumKitNode&     owner_;
     const ClipData*  currentClip_ = nullptr;
     double           position_    = 0.0;
     float            velocity_    = 1.0f;
+    float            gain_        = 1.0f;
+    float            panLeft_     = 1.0f;
+    float            panRight_    = 1.0f;
+    float            pitchRatio_  = 1.0f;
 };
 
 /** The sound every DrumSampleVoice can play — any note, any channel; which
@@ -181,16 +224,18 @@ public:
     }
 
     // ---- audio thread ----
-    /** Read-only lookup for DrumSampleVoice::startNote — never copies the
-        shared_ptr (only ever reads the raw pointer), so no atomic refcount
-        touch happens on the audio thread. */
-    const ClipData* sampleFor(int noteNumber) const noexcept
+    /** Read-only lookup for DrumSampleVoice::startNote — hands back the whole
+        pad (sample plus its mix settings) by pointer, never copying the
+        shared_ptr, so no atomic refcount touch happens on the audio thread.
+        The returned pointer stays valid for the block: the pad map is only
+        ever swapped at the top of process(). */
+    const DrumPadAssignment* padFor(int noteNumber) const noexcept
     {
         if (current_ == nullptr)
             return nullptr;
         for (const auto& pad : *current_)
             if (pad.noteNumber == noteNumber)
-                return pad.clipData.get();
+                return &pad;
         return nullptr;
     }
 
@@ -209,9 +254,9 @@ inline bool DrumSampleVoice::canPlaySound(juce::SynthesiserSound* sound)
     return dynamic_cast<DrumKitSound*>(sound) != nullptr;
 }
 
-inline const ClipData* DrumSampleVoice::sampleFor(int noteNumber)
+inline const DrumPadAssignment* DrumSampleVoice::padFor(int noteNumber)
 {
-    return owner_.sampleFor(noteNumber);
+    return owner_.padFor(noteNumber);
 }
 
 } // namespace looper::engine

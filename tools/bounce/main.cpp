@@ -325,6 +325,66 @@ int main(int argc, char** argv)
                           && rmsKick2 > 0.01f && rmsSnare2 > 0.01f
                           && rmsGapAndHat < 1.0e-5f;
 
+    // Per-pad mix check: the same pattern again, but with the kick pulled
+    // down 6dB and panned hard left, and the snare muted. Verifies each of
+    // gain/pan/mute independently against the un-mixed render above.
+    bool drumPadMixWorks = false;
+    {
+        std::vector<DrumPadAssignment> mixedPads;
+
+        DrumPadAssignment kick;
+        kick.noteNumber = 36;
+        kick.clipData   = std::make_shared<ClipData>(drumHit);
+        kick.gain       = juce::Decibels::decibelsToGain(-6.0f);
+        kick.pan        = -1.0f; // hard left
+        mixedPads.push_back(std::move(kick));
+
+        DrumPadAssignment snare;
+        snare.noteNumber = 38;
+        snare.clipData   = std::make_shared<ClipData>(drumHit);
+        snare.muted      = true;
+        mixedPads.push_back(std::move(snare));
+
+        const auto  mixed          = OfflineRenderer::renderDrumPattern(mixedPads, drumPattern, bpm, sampleRate, 2.0);
+        const float mixedKickLeft  = mixed.getRMSLevel(0, 0, shortWin);
+        const float mixedKickRight = mixed.getRMSLevel(1, 0, shortWin);
+        const float mixedSnare     = mixed.getRMSLevel(0, (int) (0.5 * sampleRate), shortWin);
+
+        // -6dB is a ~0.5 amplitude ratio against the same hit rendered flat.
+        const float gainRatioKick = rmsKick1 > 0.0f ? mixedKickLeft / rmsKick1 : 0.0f;
+
+        drumPadMixWorks = gainRatioKick > 0.47f && gainRatioKick < 0.53f // gain applied
+                       && mixedKickRight < 1.0e-5f                        // panned fully off the right
+                       && mixedKickLeft > 0.01f                           // ...but still present on the left
+                       && mixedSnare < 1.0e-5f;                           // muted pad is silent
+    }
+
+    // Per-pad pitch check: the same one-shot transposed up an octave must
+    // read through the sample twice as fast, so it ends around half as far
+    // in — audible as a shorter, higher hit.
+    bool drumPadPitchWorks = false;
+    {
+        std::vector<DrumPadAssignment> pitchedPads;
+        DrumPadAssignment kick;
+        kick.noteNumber = 36;
+        kick.clipData   = std::make_shared<ClipData>(drumHit);
+        kick.pitchRatio = 2.0f; // +12 semitones
+        pitchedPads.push_back(std::move(kick));
+
+        Pattern onlyKick;
+        onlyKick.lengthBeats = 4.0;
+        onlyKick.notes.push_back({ 0.0, 0.1, 36, 1.0f });
+
+        const auto  pitched = OfflineRenderer::renderDrumPattern(pitchedPads, onlyKick, bpm, sampleRate, 1.0);
+        const int   win     = (int) (0.02 * sampleRate);
+        // The 0.15s source is consumed in ~0.075s at double speed: still
+        // sounding just before that, silent just after.
+        const float before  = pitched.getRMSLevel(0, (int) (0.05 * sampleRate), win);
+        const float after   = pitched.getRMSLevel(0, (int) (0.09 * sampleRate), win);
+
+        drumPadPitchWorks = before > 0.01f && after < 1.0e-5f;
+    }
+
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
 
@@ -476,6 +536,8 @@ int main(int argc, char** argv)
               << "  multiClipAudioGates=" << (multiClipAudioGates ? 1 : 0)
               << "  midiRoundTripWorks=" << (midiRoundTripWorks ? 1 : 0)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
+              << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
+              << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
               << "  recorderWorks=" << (recorderWorks ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
@@ -489,7 +551,8 @@ int main(int argc, char** argv)
     // track likewise each sounding only in their own window, a MIDI file
     // export/import round trip that preserves tempo and every note, a drum
     // kit playing the right pad's one-shot sample at the right times while
-    // an unassigned pad stays silent, and the recorder's capture/handoff
+    // an unassigned pad stays silent, per-pad gain/pan/mute and transposition
+    // each doing what they say against that same kit, and the recorder's capture/handoff
     // logic (fed synthetic input, since there's no live mic here) together
     // confirm
     // the full render/gain/fx/automation/solo/clip/send-bus/audio/midi/drum/record path.
@@ -498,6 +561,7 @@ int main(int argc, char** argv)
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
                  && perTrackAutomationWorks
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
-                 && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks && recorderWorks;
+                 && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
+                 && drumPadMixWorks && drumPadPitchWorks && recorderWorks;
     return ok ? 0 : 2;
 }
