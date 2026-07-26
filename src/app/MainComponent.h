@@ -80,6 +80,7 @@ private:
     void                   previewAudioFile(const juce::File& file);
     void                   importMidiFileDialog();
     void                   exportMidiFileDialog();
+    void                   setProjectRootFolderDialog();
     void                   toggleRecording();
     void                   finishRecordingIfReady();
     juce::File             recordingsDirectory() const;

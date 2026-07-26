@@ -505,6 +505,8 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(9, "Export MIDI...");
         menu.addItem(5, "Bounce to WAV...");
         menu.addSeparator();
+        menu.addItem(13, "Set Project Root Folder...");
+        menu.addSeparator();
         menu.addItem(6, "Audio Settings...");
     }
     else if (topLevelMenuIndex == 1) // Edit
@@ -534,6 +536,7 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 10: history_.undo(); refreshFromModel(); break;
         case 11: history_.redo(); refreshFromModel(); break;
         case 12: pianoRoll_.clear(); break;
+        case 13: setProjectRootFolderDialog(); break;
         default: break;
     }
 }
@@ -961,6 +964,9 @@ void MainComponent::refreshFromModel()
     updateFilterControls();
     updateReverbControls();
     updateSendBusControls();
+    fileBrowser_.setProjectRootFolder(history_.current().projectRootFolder.empty()
+                                          ? juce::File{}
+                                          : juce::File(history_.current().projectRootFolder));
     updateEditingLabel();
 }
 
@@ -1069,6 +1075,25 @@ void MainComponent::exportMidiFileDialog()
         clipLabel.setText(ok ? "Exported: " + file.getFileName()
                              : juce::String("MIDI export failed (no instrument track has any notes)"),
                           juce::dontSendNotification);
+    });
+}
+
+void MainComponent::setProjectRootFolderDialog()
+{
+    chooser_ = std::make_unique<juce::FileChooser>("Set project root folder", juce::File{});
+    const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories;
+
+    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    {
+        const auto dir = fc.getResult();
+        if (dir == juce::File{} || ! dir.isDirectory())
+            return;
+
+        const auto path = dir.getFullPathName().toStdString();
+        history_.edit("Set project root folder", [path](model::Song& s) { s.projectRootFolder = path; });
+
+        fileBrowser_.setProjectRootFolder(dir);
+        clipLabel.setText("Project root folder set to: " + dir.getFullPathName(), juce::dontSendNotification);
     });
 }
 

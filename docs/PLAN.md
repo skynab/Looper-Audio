@@ -657,41 +657,56 @@ under the check's 0.01 margin). Passed on the first run; all 57 unit tests and t
 full check suite, including `rmsDry=0.149266`, are unchanged (no engine/model impact beyond the new
 module itself).
 
-### File manager 2.0
+### File manager 2.0 (implemented)
 
-The plain `juce::FileTreeComponent` list becomes a two-pane file manager: a folder tree on the left,
-a sortable, color-coded file **grid** on the right, plus folder operations and a per-project root
-folder.
+The plain `juce::FileTreeComponent` list became a two-pane file manager: the existing folder tree
+on top (unchanged — still the drag-into-arrangement source), a sortable, color-coded file **grid**
+below it, plus folder operations and a per-project root folder.
 
-**Grid:** `juce::TableListBox` + a custom `FileGridModel : juce::TableListBoxModel`. Columns: Name /
-Type / Size / Modified / Duration (audio only, probed lazily the same lightweight way
-`AudioEngine::probeDurationSeconds` already reads a file's header without decoding it). Sortable by
-column out of the box (`TableListBox` supports this natively).
+**What was built:** `src/app/FileGrid.h` — `juce::TableListBox` + `FileGrid : private
+juce::TableListBoxModel`. Columns: Name / Type / Size / Modified / Duration (audio only, probed
+lazily via the grid's own `juce::AudioFormatManager` — a file-header read, not a full decode — and
+cached per path so re-sorting never re-probes). Sortable by column natively via `TableListBox`.
+`src/app/FileTypeColors.h` — `classifyFile()`/`colourForFileKind()`/`labelForFileKind()`: audio
+extensions one hue, `.mid`/`.midi` another, `.looper` project files a third, unrecognized dimmed —
+used for both the grid's Type-column text color and a subtle per-row background tint (folders get
+their own color too, for the tree).
 
-**Color coding:** one small `getFileColour(const juce::File&)` classifier — audio extensions one
-hue, `.mid`/`.midi` another, `.looper` project files a third, unrecognized dimmed — used for the
-grid's type swatch and row tint.
+**Layout call — simpler than first planned:** rather than splitting into a folders-only tree +
+files-only grid (which would have needed a second drag-and-drop source, since `ArrangementView`/
+`DockRegion` currently recognize file drags by `FileTreeComponent`'s *type*), the existing
+`FileTreeComponent` was left exactly as it was — same filter, same drag-out, same double-click
+preview — and the grid was added *underneath* it as a detail companion, showing whichever folder
+was last clicked in the tree (or navigated to via Places). This kept the one already-proven,
+working drag mechanism as the only one, at the cost of the grid not itself being a drag source in
+this pass. A fixed 55/45 vertical split, not a draggable divider, for the same "keep this addition
+contained" reason.
 
-**Layout:** left = a directories-only tree (reuse the proven `FileTreeComponent` + a
-`WildcardFileFilter` scoped to folders, rather than writing a new tree widget); right = the grid,
-showing the selected folder's contents. The existing Home/Recordings/user-bookmark buttons stay
-above the tree unchanged.
+**Folder management:** right-click either the tree or the grid opens a `juce::PopupMenu`: New
+Folder, Rename, Delete. New Folder/Rename use a manually-owned `juce::AlertWindow` (not
+`deleteWhenDismissed = true`) because JUCE deletes an auto-delete-on-dismiss `AlertWindow` *before*
+calling back — reading `getTextEditorContents()` in that callback would be a dangling-pointer bug,
+so the panel owns the dialog itself, reads it, then resets it. Delete uses
+`AlertWindow::showAsync` with a plain `MessageBoxOptions` confirm ("Permanently delete ... this
+cannot be undone.") before calling `File::deleteRecursively()` — no custom lifetime handling
+needed there since nothing is read back from the dialog afterward.
 
-**Folder management:** right-click (tree and grid) opens a `juce::PopupMenu`: New Folder
-(`File::createDirectory()`), Rename (`moveFileTo()`), Delete (`deleteRecursively()`) — Delete is a
-real destructive filesystem operation and needs an explicit "are you sure" confirmation before it
-runs, and real live testing before it's trusted, not just headless review.
+**Project root folder:** `model::Song::projectRootFolder` (`std::string`, empty = unset) —
+serialization bumped to `LOOPER 10` (a `PROJECTROOT <path>` line, the path as the rest of the line
+like `audioFile`/track `name` already are, since a real folder path can contain spaces — the
+round-trip test was updated with a path that deliberately has one). Set via **File > Set Project
+Root Folder...**; once set it shows as an extra, always-present "Places" button in
+`FileBrowserPanel` (hidden via `setVisible(false)` *after* `addAndMakeVisible`, not before —
+`addAndMakeVisible` unconditionally forces visibility true, so setting it false first and then
+calling `addAndMakeVisible` would silently undo it; a real bug caught in review before it shipped).
+Synced from `MainComponent::refreshFromModel()`, so it updates on new/open project and on
+undo/redo, same as every other per-song UI sync already grouped there.
 
-**Project root folder:** a new `model::Song` field, `std::string projectRootFolder` (empty =
-unset) — project-specific data, so it belongs in the document (round-trips with `.looper` saves),
-not an app-level preference. Set via a "Set Project Root Folder..." picker; once set, it becomes an
-always-present, visually distinct "Places" entry above Home/Recordings/bookmarks, and a natural
-default starting directory for recordings/bounces (nice-to-have, not required for v1). Needs a
-serialization bump (`LOOPER 9` → `10`) and a round-trip test update — same mechanical pattern as
-adding `SendBusSettings.effectType` earlier.
-
-**Verification:** mostly filesystem/UI logic, not audio — verify via compilation + careful review;
-the destructive folder operations specifically need live, manual testing before trusting them.
+**Verification:** mostly filesystem/UI logic, not audio — all 57 unit tests (including the updated
+serialization round-trip) and the bounce tool's full check suite, including `rmsDry=0.149266`, are
+unchanged (no engine impact). The destructive folder operations, the grid's rendering/sorting, and
+the dialog flows are all JUCE-dependent and need a live try before being trusted — Delete
+especially, given it's irreversible.
 
 ### Piano roll: key-name gutter (implemented)
 

@@ -29,6 +29,11 @@ struct Song
     SendBusSettings    sendBus;
     AutomationLane     masterGainDb; // master gain automation (dB over beats)
 
+    // Project-specific data, not an app preference — round-trips with the
+    // project so it's the same on every machine that opens it. Empty =
+    // unset. See the file-manager's "Places" entry for it.
+    std::string projectRootFolder;
+
     bool operator==(const Song&) const = default;
 };
 

@@ -30,6 +30,7 @@ static Song makeSampleSong()
     s.sendBus.delayTimeMs   = 250.0f;
     s.sendBus.delayFeedback = 0.4f;
     s.sendBus.returnLevel   = 0.45f;
+    s.projectRootFolder     = "/Users/test/My Looper Projects"; // with a space, deliberately
     s.masterGainDb.addPoint(0.0, -40.0f);
     s.masterGainDb.addPoint(4.0, 0.0f);
     s.masterGainDb.addPoint(8.0, -6.0f);

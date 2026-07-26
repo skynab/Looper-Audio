@@ -37,7 +37,7 @@ namespace detail
 inline std::string serialize(const Song& song)
 {
     std::ostringstream out;
-    out << "LOOPER 9\n";
+    out << "LOOPER 10\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
@@ -60,6 +60,7 @@ inline std::string serialize(const Song& song)
         << detail::num((double) song.sendBus.delayTimeMs) << " "
         << detail::num((double) song.sendBus.delayFeedback) << " "
         << detail::num((double) song.sendBus.returnLevel) << "\n";
+    out << "PROJECTROOT " << song.projectRootFolder << "\n";
     out << "AUTO " << song.masterGainDb.points().size() << "\n";
     for (const auto& p : song.masterGainDb.points())
         out << "APT " << detail::num(p.beat) << " " << detail::num((double) p.value) << "\n";
@@ -173,6 +174,9 @@ inline bool deserialize(const std::string& text, Song& out)
         song.sendBus.delayFeedback = (float) delayFeedback;
         song.sendBus.returnLevel   = (float) returnLevel;
     }
+
+    if (! readTagged("PROJECTROOT", rest)) return false;
+    song.projectRootFolder = rest;
 
     if (! readTagged("AUTO", rest)) return false;
     {

@@ -1,0 +1,195 @@
+#pragma once
+
+#include <juce_audio_formats/juce_audio_formats.h>
+#include <juce_gui_basics/juce_gui_basics.h>
+
+#include <algorithm>
+#include <functional>
+#include <map>
+#include <memory>
+#include <vector>
+
+#include "FileTypeColors.h"
+
+namespace looper
+{
+/**
+    A sortable, color-coded detail view of one folder's files — Name / Type /
+    Size / Modified / Duration — the "grid of information" companion to the
+    folder tree in FileBrowserPanel. Shows files only; the tree handles
+    folder navigation. Duration is probed lazily (a file header read, not a
+    full decode — the same lightweight technique
+    AudioEngine::probeDurationSeconds already uses) and only for files
+    classified as audio, and cached per path so re-sorting never re-probes.
+
+    Deliberately not a drag source in this pass — the existing
+    FileBrowserPanel tree already covers drag-into-arrangement, and building
+    a second, independent drag mechanism for TableListBox rows was cut to
+    keep this addition contained; see docs/PLAN.md.
+*/
+class FileGrid final : public juce::Component,
+                       private juce::TableListBoxModel
+{
+public:
+    std::function<void(const juce::File&)> onFilePreview;  // double-click
+    std::function<void(const juce::File&)> onRightClick;   // right-click a row
+
+    FileGrid()
+    {
+        formatManager_.registerBasicFormats();
+
+        auto& header = table_.getHeader();
+        header.addColumn("Name", 1, 170, 60, -1);
+        header.addColumn("Type", 2, 64, 50, 100);
+        header.addColumn("Size", 3, 72, 50, 120);
+        header.addColumn("Modified", 4, 130, 90, 200);
+        header.addColumn("Duration", 5, 70, 50, 100);
+        header.setSortColumnId(1, true);
+
+        table_.setModel(this);
+        table_.setMultipleSelectionEnabled(false);
+        addAndMakeVisible(table_);
+    }
+
+    /** Shows @p dir's files (not its subfolders — the tree handles those). */
+    void setDirectory(const juce::File& dir)
+    {
+        directory_ = dir;
+        refresh();
+    }
+
+    void refresh()
+    {
+        entries_.clear();
+        if (directory_.isDirectory())
+        {
+            for (const auto& entry : juce::RangedDirectoryIterator(directory_, false, kWildcard, juce::File::findFiles))
+                entries_.push_back(entry.getFile());
+        }
+        sortEntries();
+        table_.updateContent();
+        table_.repaint();
+    }
+
+    void resized() override { table_.setBounds(getLocalBounds()); }
+
+private:
+    static constexpr const char* kWildcard =
+        "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3;*.m4a;*.mp4;*.mid;*.midi;*.looper";
+
+    void sortEntries()
+    {
+        const int  sortColumn = table_.getHeader().getSortColumnId();
+        const bool forwards   = table_.getHeader().isSortedForwards();
+
+        std::stable_sort(entries_.begin(), entries_.end(), [&](const juce::File& a, const juce::File& b)
+        {
+            bool less = false;
+            switch (sortColumn)
+            {
+                case 2:  less = labelForFileKind(classifyFile(a)) < labelForFileKind(classifyFile(b)); break;
+                case 3:  less = a.getSize() < b.getSize(); break;
+                case 4:  less = a.getLastModificationTime() < b.getLastModificationTime(); break;
+                case 5:  less = durationSecondsFor(a) < durationSecondsFor(b); break;
+                default: less = a.getFileName().compareIgnoreCase(b.getFileName()) < 0; break;
+            }
+            return forwards ? less : ! less;
+        });
+    }
+
+    double durationSecondsFor(const juce::File& file)
+    {
+        if (classifyFile(file) != FileKind::Audio)
+            return 0.0;
+
+        const auto path = file.getFullPathName();
+        auto       it    = durationCache_.find(path);
+        if (it != durationCache_.end())
+            return it->second;
+
+        double seconds = 0.0;
+        if (std::unique_ptr<juce::AudioFormatReader> reader(formatManager_.createReaderFor(file)); reader != nullptr
+            && reader->sampleRate > 0.0)
+            seconds = (double) reader->lengthInSamples / reader->sampleRate;
+
+        durationCache_[path] = seconds;
+        return seconds;
+    }
+
+    juce::String durationTextFor(const juce::File& file)
+    {
+        if (classifyFile(file) != FileKind::Audio)
+            return {};
+        const double seconds = durationSecondsFor(file);
+        if (seconds <= 0.0)
+            return {};
+        return juce::String::formatted("%d:%02d", (int) seconds / 60, (int) seconds % 60);
+    }
+
+    // juce::TableListBoxModel
+    int getNumRows() override { return (int) entries_.size(); }
+
+    void paintRowBackground(juce::Graphics& g, int rowNumber, int, int, bool rowIsSelected) override
+    {
+        if (rowNumber < 0 || rowNumber >= (int) entries_.size())
+            return;
+        if (rowIsSelected)
+        {
+            g.fillAll(juce::Colours::white.withAlpha(0.16f));
+            return;
+        }
+        const auto kind = classifyFile(entries_[(size_t) rowNumber]);
+        g.fillAll(colourForFileKind(kind).withAlpha((rowNumber % 2 == 1) ? 0.10f : 0.05f));
+    }
+
+    void paintCell(juce::Graphics& g, int rowNumber, int columnId, int width, int height, bool) override
+    {
+        if (rowNumber < 0 || rowNumber >= (int) entries_.size())
+            return;
+        const auto& file = entries_[(size_t) rowNumber];
+        const auto  kind = classifyFile(file);
+
+        juce::String text;
+        switch (columnId)
+        {
+            case 1: text = file.getFileName(); break;
+            case 2: text = labelForFileKind(kind); break;
+            case 3: text = file.getSize() > 0 ? juce::File::descriptionOfSizeInBytes(file.getSize()) : juce::String(); break;
+            case 4: text = file.getLastModificationTime().toString(true, true, false, true); break;
+            case 5: text = durationTextFor(file); break;
+            default: break;
+        }
+
+        g.setColour(columnId == 2 ? colourForFileKind(kind) : juce::Colours::white.withAlpha(0.85f));
+        g.drawFittedText(text, 4, 0, width - 8, height, juce::Justification::centredLeft, 1);
+    }
+
+    void cellDoubleClicked(int rowNumber, int, const juce::MouseEvent&) override
+    {
+        if (rowNumber >= 0 && rowNumber < (int) entries_.size() && onFilePreview)
+            onFilePreview(entries_[(size_t) rowNumber]);
+    }
+
+    void cellClicked(int rowNumber, int, const juce::MouseEvent& e) override
+    {
+        if (e.mods.isPopupMenu() && rowNumber >= 0 && rowNumber < (int) entries_.size() && onRightClick)
+            onRightClick(entries_[(size_t) rowNumber]);
+    }
+
+    void sortOrderChanged(int, bool) override
+    {
+        sortEntries();
+        table_.updateContent();
+        table_.repaint();
+    }
+
+    juce::TableListBox           table_;
+    juce::AudioFormatManager     formatManager_;
+    juce::File                   directory_;
+    std::vector<juce::File>      entries_;
+    std::map<juce::String, double> durationCache_;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FileGrid)
+};
+
+} // namespace looper

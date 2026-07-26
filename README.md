@@ -180,7 +180,26 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > confirm the tempo and every note's beat/pitch/velocity survived — passed first try. All 57 unit
 > tests and the bounce tool's full check suite, including `rmsDry=0.149266`, are unchanged.
 >
-> Next: file manager 2.0 and drum kits. See [`docs/PLAN.md`](docs/PLAN.md) for the full roadmap.
+> **File manager 2.0 is done** — the file-browser pane now has a sortable, color-coded detail grid
+> (`FileGrid`, `juce::TableListBox`) beneath the existing folder tree: Name/Type/Size/Modified/
+> Duration, colored by type (audio/MIDI/project/other), showing whichever folder was last clicked.
+> The existing tree keeps its drag-into-arrangement behavior completely unchanged — rather than
+> splitting it into a folders-only tree with a separate drag-capable grid, the grid was added as a
+> detail companion underneath it, so there's still exactly one drag mechanism to trust. Right-click
+> either one for **New Folder / Rename / Delete** (Delete asks for confirmation first — a real,
+> irreversible filesystem operation). Projects can now set a **root folder**
+> (`model::Song::projectRootFolder`, format bumped to `LOOPER 10`) via **File > Set Project Root
+> Folder...**, which then shows as an always-present "Places" entry. Caught in review before it
+> shipped: an ordering bug where hiding that button *before* `addAndMakeVisible` did nothing, since
+> `addAndMakeVisible` unconditionally forces visibility true — fixed by hiding it after instead. No
+> engine impact — all 57 unit tests and the bounce tool's full check suite, including
+> `rmsDry=0.149266`, are unchanged. The grid, dialogs, and folder operations are all JUCE-dependent
+> and need a live try, Delete especially since it's irreversible.
+>
+> That's every item from the MIDI/file-manager/piano-roll/drum-kit plan except drum kits — the
+> biggest one, saved for last since it benefits from this file manager's groundwork (drag a sample
+> onto a pad) and the piano roll's gutter (pad-name labels). See [`docs/PLAN.md`](docs/PLAN.md) for
+> the full roadmap.
 
 ## Tech stack
 
