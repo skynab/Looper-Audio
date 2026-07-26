@@ -173,7 +173,14 @@ bool AudioEngine::beginRecording()
     if (device == nullptr || device->getActiveInputChannels().countNumberOfSetBits() == 0)
         return false;
 
-    recorder_.arm();
+    // The count-in is expressed in samples here, on the message thread, from
+    // the tempo in force when recording starts — the audio thread only ever
+    // counts it down (see AudioRecorder::process).
+    const auto&  tempoMap      = transport_.tempoMap();
+    const double samplesPerBar = tempoMap.samplesPerBeat() * tempoMap.quartersPerBar();
+    const auto   leadIn        = (int64_t) std::llround(samplesPerBar * (double) countInBars_);
+
+    recorder_.arm(leadIn);
     return true;
 }
 
@@ -366,6 +373,12 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
     masterReverb_.process(output);
     master_.process(output, incomingMidi_, context);
 
+    // After the master bus deliberately: the click bypasses the master
+    // effects and gain, stays off the meter, and can never be exported (the
+    // offline renderer has no metronome). `force` sounds it through a
+    // count-in even when it's otherwise switched off.
+    metronome_.process(output, context, isCountingIn());
+
     transport_.advance(numSamples);
 }
 
@@ -398,6 +411,7 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     sendBusDelay_.setMix(1.0f);     // a return bus is always fully wet
 
     recorder_.prepare(sampleRate, 2, kMaxRecordSeconds);
+    metronome_.prepare(sampleRate);
 }
 
 void AudioEngine::audioDeviceStopped()

@@ -74,6 +74,36 @@ MainComponent::MainComponent()
     leftPane_.addAndMakeVisible(stopButton);
     leftPane_.addAndMakeVisible(recordButton);
     leftPane_.addAndMakeVisible(loopButton);
+
+    // Click + count-in. Both are app preferences rather than project data —
+    // how you like to record, not part of the song — so they persist through
+    // settings_ alongside the dock layout.
+    metronomeButton.onClick = [this]
+    {
+        engine_.setMetronomeEnabled(metronomeButton.getToggleState());
+        settings_.setValue("metronomeEnabled", metronomeButton.getToggleState());
+        settings_.saveIfNeeded();
+    };
+    metronomeButton.setToggleState(settings_.getBoolValue("metronomeEnabled", false),
+                                   juce::dontSendNotification);
+    engine_.setMetronomeEnabled(metronomeButton.getToggleState());
+    leftPane_.addAndMakeVisible(metronomeButton);
+
+    countInBox_.addItem("No count-in", 1);
+    countInBox_.addItem("1 bar", 2);
+    countInBox_.addItem("2 bars", 3);
+    countInBox_.onChange = [this]
+    {
+        const int bars = juce::jmax(0, countInBox_.getSelectedId() - 1);
+        engine_.setCountInBars(bars);
+        settings_.setValue("countInBars", bars);
+        settings_.saveIfNeeded();
+    };
+    countInBox_.setSelectedId(juce::jlimit(0, 2, settings_.getIntValue("countInBars", 0)) + 1,
+                              juce::dontSendNotification);
+    engine_.setCountInBars(juce::jmax(0, countInBox_.getSelectedId() - 1));
+    leftPane_.addAndMakeVisible(countInBox_);
+
     leftPane_.onResized = [this] { layoutLeftPane(); };
 
     // ---- sliders ----
@@ -1812,9 +1842,14 @@ void MainComponent::timerCallback()
     const auto    bb       = uiTempoMap_.barsBeatsFromSamples(playhead);
     const double  seconds  = sampleRate > 0.0 ? (double) playhead / sampleRate : 0.0;
 
+    // "COUNT-IN" rather than "PLAYING" while the click is counting you in —
+    // the transport is rolling but nothing is being captured yet, and that
+    // distinction is the whole point of the feature.
+    const char* transportState = engine_.isCountingIn() ? "COUNT-IN"
+                               : engine_.isPlaying()    ? "PLAYING"
+                                                        : "STOPPED";
     positionLabel.setText(juce::String::formatted("Bar %d  Beat %d   |   %.2f s   |   %s",
-                                                  bb.bar, bb.beat, seconds,
-                                                  engine_.isPlaying() ? "PLAYING" : "STOPPED"),
+                                                  bb.bar, bb.beat, seconds, transportState),
                           juce::dontSendNotification);
 
     meter_.setLevel(0, engine_.masterPeak(0));
@@ -1910,6 +1945,10 @@ void MainComponent::layoutLeftPane()
     loopButton.setBounds(row1.removeFromLeft(60));
     row1.removeFromLeft(12);
     recordButton.setBounds(row1.removeFromLeft(80));
+    row1.removeFromLeft(12);
+    metronomeButton.setBounds(row1.removeFromLeft(64));
+    row1.removeFromLeft(6);
+    countInBox_.setBounds(row1.removeFromLeft(110).reduced(0, 2));
     area.removeFromTop(8);
 
     positionLabel.setBounds(area.removeFromTop(28));

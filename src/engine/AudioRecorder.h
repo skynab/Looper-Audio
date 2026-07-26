@@ -34,14 +34,23 @@ public:
 
     // ---- message thread ----
     /** Starts a new take. Only call once any previous take has been read out
-        (isFinished() observed true) — arm() reuses the same buffer. */
-    void arm()
+        (isFinished() observed true) — arm() reuses the same buffer.
+
+        @p leadInSamples rolls the transport for that long before capture
+        begins — a count-in. The lead-in is *skipped*, not recorded, so the
+        take still starts at sample zero and drops onto the timeline where the
+        user expects; only the wait is counted. */
+    void arm(int64_t leadInSamples = 0)
     {
         take_.clear();
         writePosition_.store(0, std::memory_order_relaxed);
+        leadInRemaining_.store(juce::jmax((int64_t) 0, leadInSamples), std::memory_order_relaxed);
         finished_.store(false, std::memory_order_relaxed);
         armed_.store(true, std::memory_order_release);
     }
+
+    /** Samples of count-in still to elapse before capture starts. */
+    int64_t leadInRemaining() const noexcept { return leadInRemaining_.load(std::memory_order_relaxed); }
 
     /** Signals the audio thread to stop capturing; the take finishes on the
         next block it processes (or immediately if the transport already isn't
@@ -68,7 +77,20 @@ public:
     void process(const float* const* inputChannelData, int numInputChannels,
                 int numSamples, bool transportPlaying) noexcept
     {
-        const bool armedNow     = armed_.load(std::memory_order_acquire);
+        const bool armedNow = armed_.load(std::memory_order_acquire);
+
+        // Count-in: the transport is rolling and we're armed, but capture
+        // hasn't started yet. Deliberately not treated as "recording", so a
+        // take that is stopped during its own count-in finishes empty rather
+        // than being reported as a zero-length recording that already began.
+        int64_t leadIn = leadInRemaining_.load(std::memory_order_relaxed);
+        if (armedNow && transportPlaying && leadIn > 0)
+        {
+            leadIn = juce::jmax((int64_t) 0, leadIn - (int64_t) numSamples);
+            leadInRemaining_.store(leadIn, std::memory_order_relaxed);
+            return;
+        }
+
         const bool recordingNow = armedNow && transportPlaying;
 
         if (wasRecording_ && ! recordingNow)
@@ -95,8 +117,9 @@ public:
 private:
     juce::AudioBuffer<float> take_;
     std::atomic<int>  writePosition_ { 0 };
-    std::atomic<bool> armed_    { false };
-    std::atomic<bool> finished_ { true }; // true initially: no take pending
+    std::atomic<bool>    armed_    { false };
+    std::atomic<bool>    finished_ { true }; // true initially: no take pending
+    std::atomic<int64_t> leadInRemaining_ { 0 }; // count-in still to elapse
     bool              wasRecording_ = false; // audio-thread only
     double            sampleRate_   = 0.0;
 };

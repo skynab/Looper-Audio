@@ -12,6 +12,7 @@
 #include "engine/DelayEffect.h"
 #include "engine/DrumKitNode.h"
 #include "engine/FilterEffect.h"
+#include "engine/Metronome.h"
 #include "engine/MidiFileIO.h"
 #include "engine/OfflineRenderer.h"
 #include "engine/ReverbEffect.h"
@@ -385,6 +386,74 @@ int main(int argc, char** argv)
         drumPadPitchWorks = before > 0.01f && after < 1.0e-5f;
     }
 
+    // Metronome check: at 120bpm a beat lands every 0.5s, so the click must
+    // be audible right at each beat and silent between them. Also confirms
+    // the accent logic runs without disturbing the beat grid.
+    bool metronomeWorks = false;
+    {
+        Metronome metronome;
+        metronome.prepare(sampleRate);
+        metronome.setEnabled(true);
+        metronome.setLevel(1.0f);
+
+        const int totalSamples = (int) (sampleRate * 2.0);
+        juce::AudioBuffer<float> clickBuffer(2, totalSamples);
+        clickBuffer.clear();
+
+        constexpr int blockSize = 512;
+        for (int pos = 0; pos < totalSamples; pos += blockSize)
+        {
+            const int n = std::min(blockSize, totalSamples - pos);
+
+            ProcessContext context;
+            context.sampleRate                 = sampleRate;
+            context.numSamples                 = n;
+            context.transport.playing          = true;
+            context.transport.playheadSamples  = pos;
+            context.transport.bpm              = bpm;
+            context.transport.timeSigNumerator = 4;
+            context.transport.timeSigDenominator = 4;
+
+            // A view onto this block of the output, so the click accumulates
+            // into one buffer exactly as it does in the live callback.
+            juce::AudioBuffer<float> blockView(clickBuffer.getArrayOfWritePointers(), 2, pos, n);
+            metronome.process(blockView, context, false);
+        }
+
+        const int   win        = (int) (0.02 * sampleRate);
+        const float atBeat0    = clickBuffer.getRMSLevel(0, 0, win);
+        const float atBeat1    = clickBuffer.getRMSLevel(0, (int) (0.5 * sampleRate), win);
+        const float betweenHit = clickBuffer.getRMSLevel(0, (int) (0.25 * sampleRate), win);
+
+        metronomeWorks = atBeat0 > 0.01f && atBeat1 > 0.01f && betweenHit < 1.0e-6f;
+    }
+
+    // ...and that a disabled metronome is completely silent, which is what
+    // keeps it out of an export (OfflineRenderer has no metronome at all, so
+    // a bounce can never contain one — this guards the live path).
+    bool metronomeSilentWhenOff = false;
+    {
+        Metronome metronome;
+        metronome.prepare(sampleRate);
+        metronome.setEnabled(false);
+
+        const int totalSamples = (int) (sampleRate * 1.0);
+        juce::AudioBuffer<float> quiet(2, totalSamples);
+        quiet.clear();
+
+        ProcessContext context;
+        context.sampleRate                   = sampleRate;
+        context.numSamples                   = totalSamples;
+        context.transport.playing            = true;
+        context.transport.playheadSamples    = 0;
+        context.transport.bpm                = bpm;
+        context.transport.timeSigNumerator   = 4;
+        context.transport.timeSigDenominator = 4;
+        metronome.process(quiet, context, false);
+
+        metronomeSilentWhenOff = quiet.getRMSLevel(0, 0, totalSamples) < 1.0e-9f;
+    }
+
     const juce::File out = juce::File::getCurrentWorkingDirectory()
                                .getChildFile(argc > 1 ? argv[1] : "bounce.wav");
 
@@ -538,6 +607,8 @@ int main(int argc, char** argv)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
               << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
+              << "  metronomeWorks=" << (metronomeWorks ? 1 : 0)
+              << "  metronomeSilentWhenOff=" << (metronomeSilentWhenOff ? 1 : 0)
               << "  recorderWorks=" << (recorderWorks ? 1 : 0) << "\n";
 
     // Non-silent output, a correct -6 dB gain ratio, a delay that alters the
@@ -562,6 +633,7 @@ int main(int argc, char** argv)
                  && perTrackAutomationWorks
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
-                 && drumPadMixWorks && drumPadPitchWorks && recorderWorks;
+                 && drumPadMixWorks && drumPadPitchWorks
+                 && metronomeWorks && metronomeSilentWhenOff && recorderWorks;
     return ok ? 0 : 2;
 }

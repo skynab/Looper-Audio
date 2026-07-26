@@ -154,6 +154,8 @@ private:
     juce::TextButton   toggleMasterPanelButton_ { "Hide Master" };
     bool               masterPanelVisible_ = true;
     juce::ToggleButton loopButton      { "Loop" };
+    juce::ToggleButton metronomeButton { "Click" };
+    juce::ComboBox     countInBox_;
 
     juce::Slider       tempoSlider, masterSlider;
     juce::ToggleButton filterButton { "Filter" };

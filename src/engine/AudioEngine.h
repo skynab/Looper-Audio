@@ -23,6 +23,7 @@
 #include "engine/EngineCommand.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/MasterBusNode.h"
+#include "engine/Metronome.h"
 #include "engine/Pattern.h"
 #include "engine/Transport.h"
 
@@ -114,11 +115,29 @@ public:
         decode) stays silent. Message thread. */
     void setTrackDrumKit(int index, const std::vector<DrumPadSpec>& pads);
 
+    // Metronome (thread-safe atomics). Summed in after the master chain, so
+    // it never passes through the master effects or reaches the meter — and
+    // the offline renderer has none at all, so it can't reach a bounce.
+    void setMetronomeEnabled(bool enabled) { metronome_.setEnabled(enabled); }
+    bool isMetronomeEnabled() const        { return metronome_.isEnabled(); }
+    void setMetronomeLevel(float level)    { metronome_.setLevel(level); }
+
+    /** Bars of count-in before a recording starts capturing (0 = none). The
+        click sounds through the count-in whether or not the metronome is
+        otherwise switched on. */
+    void setCountInBars(int bars) { countInBars_ = juce::jmax(0, bars); }
+    int  countInBars() const noexcept { return countInBars_; }
+
     // ---- recording (message thread) ----
     /** Arms the recorder. Returns false (and arms nothing) if the current
         audio device has no active input channels. Capturing only actually
-        happens while the transport is playing. */
+        happens while the transport is playing, and only after any count-in
+        (see setCountInBars) has elapsed. */
     bool beginRecording();
+
+    /** True while a count-in is still running — the transport is rolling but
+        nothing is being captured yet. */
+    bool isCountingIn() const noexcept { return recorder_.leadInRemaining() > 0; }
     /** Stops capturing; the take becomes readable once isRecordingFinished(). */
     void stopRecording() { recorder_.disarm(); }
     bool isRecordingFinished() const noexcept { return recorder_.isFinished(); }
@@ -254,6 +273,8 @@ private:
     std::atomic<double> sampleRate_ { 0.0 };
 
     AudioRecorder recorder_;
+    Metronome     metronome_;
+    int           countInBars_ = 0; // message thread only; read when arming
 
     juce::String loadedClipName_;
     double       loadedClipSeconds_ = 0.0;
