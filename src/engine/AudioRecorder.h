@@ -93,9 +93,20 @@ public:
 
         const bool recordingNow = armedNow && transportPlaying;
 
+        // The take ends when capture stops...
         if (wasRecording_ && ! recordingNow)
             finished_.store(true, std::memory_order_release);
         wasRecording_ = recordingNow;
+
+        // ...and also whenever we're disarmed without ever having captured
+        // anything — stopped during a count-in, or armed and stopped before
+        // the transport rolled. Without this, finished_ is never published,
+        // isFinished() stays false forever, and the owner waits on a take
+        // that will never arrive (which leaves the UI stuck mid-record and
+        // unable to start another one). Cheap to check: finished_ starts true,
+        // so this only fires on the transition out of an armed take.
+        if (! armedNow && ! finished_.load(std::memory_order_relaxed))
+            finished_.store(true, std::memory_order_release);
 
         if (! recordingNow || inputChannelData == nullptr)
             return;

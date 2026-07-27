@@ -1502,9 +1502,17 @@ void MainComponent::setTrackSynthSettings(const model::SynthSettings& settings)
 void MainComponent::previewNote(int noteNumber)
 {
     engine_.keyboardState().noteOn(1, noteNumber, 0.8f);
-    juce::Timer::callAfterDelay(150, [this, noteNumber]
+
+    // Guarded by a SafePointer rather than capturing `this` directly: the
+    // note-off fires 150ms later, and quitting the app within that window
+    // would otherwise run this lambda against a destroyed MainComponent (and
+    // a destroyed engine). A dangling preview is easy to trigger — click a
+    // note, close the window — and would crash on the way out.
+    juce::Component::SafePointer<MainComponent> safeThis(this);
+    juce::Timer::callAfterDelay(150, [safeThis, noteNumber]
     {
-        engine_.keyboardState().noteOff(1, noteNumber, 0.8f);
+        if (auto* self = safeThis.getComponent())
+            self->engine_.keyboardState().noteOff(1, noteNumber, 0.8f);
     });
 }
 

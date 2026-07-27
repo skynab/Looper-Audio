@@ -81,8 +81,35 @@ int main(int argc, char** argv)
         const bool capacityCapped = capRecorder.isFinished()
                                  && capRecorder.takeLength() > 0 && capRecorder.takeLength() <= 45;
 
+        // Count-in: armed with a lead-in, the recorder must roll without
+        // capturing, and — critically — a take abandoned *during* its count-in
+        // must still finish. If it doesn't, isFinished() never goes true, the
+        // owner waits forever on a take that never arrives, and recording is
+        // dead until the app restarts.
+        AudioRecorder countInRecorder;
+        countInRecorder.prepare(recSampleRate, 1, 1.0);
+        countInRecorder.arm((int64_t) blockSize * 2); // two blocks of count-in
+
+        countInRecorder.process(channelPtrs, 1, blockSize, true);
+        const bool countInCapturesNothing = countInRecorder.recordedSampleCount() == 0
+                                         && countInRecorder.leadInRemaining() > 0;
+
+        countInRecorder.process(channelPtrs, 1, blockSize, true); // lead-in now elapsed
+        countInRecorder.process(channelPtrs, 1, blockSize, true); // this one captures
+        const bool capturesAfterCountIn = countInRecorder.recordedSampleCount() == blockSize;
+
+        AudioRecorder abandonedRecorder;
+        abandonedRecorder.prepare(recSampleRate, 1, 1.0);
+        abandonedRecorder.arm((int64_t) blockSize * 8); // a long count-in
+        abandonedRecorder.process(channelPtrs, 1, blockSize, true); // still counting in
+        abandonedRecorder.disarm();                                 // ...and give up
+        abandonedRecorder.process(channelPtrs, 1, blockSize, true);
+        const bool abandonedTakeFinishes = abandonedRecorder.isFinished()
+                                        && abandonedRecorder.takeLength() == 0;
+
         recorderWorks = capturesNothingWhenDisarmed && capturedThreeBlocks && notFinishedWhileRecording
-                     && finishedAfterDisarm && lengthUnchangedAfterDisarm && contentMatches && capacityCapped;
+                     && finishedAfterDisarm && lengthUnchangedAfterDisarm && contentMatches && capacityCapped
+                     && countInCapturesNothing && capturesAfterCountIn && abandonedTakeFinishes;
     }
 
     const double bpm        = 120.0;
