@@ -5,6 +5,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "engine/GuitarChords.h"
 #include "engine/MidiNote.h"
 #include "model/GuitarSettings.h"
 
@@ -32,6 +33,12 @@ public:
     std::function<void(int midiNote)>                    onFretPlayed;
     std::function<void(const model::GuitarSettings&)>    onSettingsChanged;
 
+    /** Stamps a strummed chord into the open clip. The pane hands over the
+        shape and how to strike it; the owner decides where in the pattern it
+        lands (see MainComponent::stampChord). */
+    std::function<void(const engine::ChordShape&, int fretOffset,
+                       const engine::StrumSettings&)>    onChordStamped;
+
     FretboardPane()
     {
         placeholder_.setText("Select a Guitar track to play it", juce::dontSendNotification);
@@ -50,6 +57,27 @@ public:
             box.onChange = [this] { pushSettings(); };
             addChildComponent(box);
         }
+
+        // Chord palette: one button per shape. Stamping writes real notes at
+        // real times into the clip rather than a "strum" flag, so what you get
+        // is editable afterwards — the same choice §18's swing made.
+        for (int i = 0; i < engine::kNumChordShapes; ++i)
+        {
+            auto* button = chordButtons_.add(new juce::TextButton(engine::kChordShapes[i].name));
+            button->onClick = [this, i] { stampChord(i); };
+            addChildComponent(button);
+        }
+
+        strumDirection_.addItem("Down", 1);
+        strumDirection_.addItem("Up", 2);
+        strumDirection_.setSelectedId(1, juce::dontSendNotification);
+        addChildComponent(strumDirection_);
+
+        setupSlider(strumSpread_, 0.0, 60.0, 1.0, " ms", [] {});
+        strumSpread_.setValue(18.0, juce::dontSendNotification);
+        setupSlider(strumHumanise_, 0.0, 100.0, 1.0, " %", [] {});
+        setupLabel(strumSpreadLabel_, "Spread");
+        setupLabel(strumHumaniseLabel_, "Feel");
 
         setupSlider(decay_, 0.2, 12.0, 0.1, " s", [this] { pushSettings(); });
         setupSlider(brightness_, 0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
@@ -218,6 +246,20 @@ public:
             tuningBoxes_[(size_t) s].setBounds(tuningRow.removeFromLeft(boxWidth).reduced(2));
         }
 
+        auto chordRow = area.removeFromBottom(kChordHeight);
+        {
+            auto strumRow = chordRow.removeFromBottom(22);
+            strumDirection_.setBounds(strumRow.removeFromLeft(70).reduced(1));
+            strumSpreadLabel_.setBounds(strumRow.removeFromLeft(46));
+            strumSpread_.setBounds(strumRow.removeFromLeft(juce::jmax(90, strumRow.getWidth() / 2)).reduced(2, 1));
+            strumHumaniseLabel_.setBounds(strumRow.removeFromLeft(36));
+            strumHumanise_.setBounds(strumRow.reduced(2, 1));
+
+            const int buttonWidth = juce::jmax(30, chordRow.getWidth() / juce::jmax(1, chordButtons_.size()));
+            for (auto* button : chordButtons_)
+                button->setBounds(chordRow.removeFromLeft(buttonWidth).reduced(1));
+        }
+
         auto tone = area.removeFromBottom(kToneHeight);
         auto row  = [&tone](juce::Label& label, juce::Slider& slider)
         {
@@ -236,6 +278,7 @@ private:
     static constexpr int kNumFrets      = 22; // 0 (open) through 22
     static constexpr int kTuningHeight  = 26;
     static constexpr int kToneHeight    = 5 * 22;
+    static constexpr int kChordHeight   = 26 + 22; // a row of shapes over the strum controls
     static constexpr int kLowestTuning  = 28; // E1, low enough for any drop tuning
     static constexpr int kHighestTuning = 67;
 
@@ -247,6 +290,7 @@ private:
         auto area = getLocalBounds().reduced(6);
         area.removeFromTop(kTuningHeight);
         area.removeFromBottom(kToneHeight);
+        area.removeFromBottom(kChordHeight);
         return area;
     }
 
@@ -269,6 +313,19 @@ private:
         stringOut = model::kNumGuitarStrings - 1 - row; // display is high-to-low
         fretOut   = fret;
         return true;
+    }
+
+    void stampChord(int shapeIndex)
+    {
+        if (! onChordStamped || shapeIndex < 0 || shapeIndex >= engine::kNumChordShapes)
+            return;
+
+        engine::StrumSettings strum;
+        strum.downstroke = strumDirection_.getSelectedId() != 2;
+        strum.spreadMs   = strumSpread_.getValue();
+        strum.humanise   = strumHumanise_.getValue() / 100.0;
+
+        onChordStamped(engine::kChordShapes[shapeIndex], 0, strum);
     }
 
     void setupSlider(juce::Slider& slider, double lo, double hi, double step,
@@ -325,9 +382,14 @@ private:
 
         juce::Component* tone[] = { &decayLabel_, &decay_, &brightnessLabel_, &brightness_,
                                     &pickPositionLabel_, &pickPosition_, &pickHardnessLabel_,
-                                    &pickHardness_, &muteOnReleaseLabel_, &muteOnRelease_ };
+                                    &pickHardness_, &muteOnReleaseLabel_, &muteOnRelease_,
+                                    &strumDirection_, &strumSpread_, &strumHumanise_,
+                                    &strumSpreadLabel_, &strumHumaniseLabel_ };
         for (auto* c : tone)
             c->setVisible(visible);
+
+        for (auto* button : chordButtons_)
+            button->setVisible(visible);
 
         resized();
         repaint();
@@ -344,6 +406,11 @@ private:
     std::array<juce::ComboBox, model::kNumGuitarStrings> tuningBoxes_;
     juce::Label     decayLabel_, brightnessLabel_, pickPositionLabel_, pickHardnessLabel_, muteOnReleaseLabel_;
     juce::Slider    decay_, brightness_, pickPosition_, pickHardness_, muteOnRelease_;
+
+    juce::OwnedArray<juce::TextButton> chordButtons_;
+    juce::ComboBox  strumDirection_;
+    juce::Label     strumSpreadLabel_, strumHumaniseLabel_;
+    juce::Slider    strumSpread_, strumHumanise_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FretboardPane)
 };

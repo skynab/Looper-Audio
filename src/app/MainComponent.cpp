@@ -3,6 +3,7 @@
 #include "Icons.h"
 
 #include "engine/ClipSlot.h"
+#include "engine/GuitarChords.h"
 #include "engine/NoteOps.h"
 #include "engine/MidiFileIO.h"
 #include "engine/OfflineRenderer.h"
@@ -587,6 +588,11 @@ MainComponent::MainComponent()
     // instrument the sequencer does, including the one-note-per-string cut.
     fretboard_.onFretPlayed      = [this](int note) { previewNote(note); };
     fretboard_.onSettingsChanged = [this](const model::GuitarSettings& s) { setTrackGuitarSettings(s); };
+    fretboard_.onChordStamped = [this](const engine::ChordShape& shape, int fretOffset,
+                                       const engine::StrumSettings& strum)
+    {
+        stampChord(shape, fretOffset, strum);
+    };
 
     effectChain_.onBuiltInAdded = [this](model::EffectKind kind) { addEffectSlot(kind, {}); };
     effectChain_.onPluginAdded  = [this](const engine::PluginEntry& entry)
@@ -927,6 +933,59 @@ void MainComponent::addDrumTrack()
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
     updateEditingLabel();
+}
+
+/** Writes a strummed chord into the open clip at the playhead.
+
+    Real notes at real times, not a "strum" flag: the stagger between strings
+    is most of what makes a chord sound like a hand rather than an organ, and
+    putting it in the pattern keeps it visible and editable afterwards — the
+    same choice §18's swing made, for the same reason. */
+void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
+                               const engine::StrumSettings& strum)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const auto& song  = history_.current();
+    const auto& track = song.tracks[(size_t) selectedTrackIndex_];
+    if (track.type != model::TrackType::Guitar)
+        return;
+
+    const int trackIdx = selectedTrackIndex_;
+    const int clipIdx  = selectedClipIndex_;
+    if (clipIdx < 0 || clipIdx >= (int) track.clips.size())
+        return;
+
+    // Land it on the bar the playhead is in, so stamping while stopped puts
+    // the chord where the transport is rather than always at the start.
+    const auto&  clip        = track.clips[(size_t) clipIdx];
+    const double beatsPerBar = juce::jmax(1.0, uiTempoMap_.quartersPerBar());
+    const double playhead    = uiTempoMap_.ppqFromSamples(engine_.playheadSamples()) - clip.startBeats;
+    const double wrapped     = clip.pattern.lengthBeats > 0.0
+                                 ? engine::wrapPositive(playhead, clip.pattern.lengthBeats) : 0.0;
+    const double at          = std::floor(wrapped / beatsPerBar) * beatsPerBar;
+
+    const auto notes = engine::GuitarChords::strumChord(shape, track.guitarSettings.tuning.data(),
+                                                        fretOffset, at, beatsPerBar,
+                                                        song.bpm, strum,
+                                                        (uint32_t) (chordStampSeed_++ | 1u));
+
+    history_.edit("Add chord", [trackIdx, clipIdx, &notes](model::Song& s)
+    {
+        auto& clips = s.tracks[(size_t) trackIdx].clips;
+        if (clipIdx < 0 || clipIdx >= (int) clips.size())
+            return;
+
+        auto& pattern = clips[(size_t) clipIdx].pattern;
+        for (const auto& note : notes)
+            if (note.startBeats < pattern.lengthBeats)
+                pattern.notes.push_back(note);
+    });
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshFretboardForSelected();
 }
 
 /** Same as addTrack(), but a Guitar-type track — six plucked strings in

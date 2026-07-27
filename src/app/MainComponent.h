@@ -99,6 +99,8 @@ private:
     void                   addGuitarTrack();
     void                   refreshFretboardForSelected();
     void                   setTrackGuitarSettings(const model::GuitarSettings& settings);
+    void                   stampChord(const engine::ChordShape& shape, int fretOffset,
+                                      const engine::StrumSettings& strum);
     void                   assignDrumSample(int padIndex, const juce::File& file);
     void                   setDrumPadMix(int padIndex, const model::DrumPad& pad);
     void                   addDrumPad();
@@ -250,6 +252,11 @@ private:
     std::unique_ptr<juce::FileChooser> chooser_;
 
     engine::TempoMap uiTempoMap_;
+
+    // Advanced per stamp so two identical chords humanise differently —
+    // a repeated strum that lands identically is the thing humanising is
+    // meant to avoid.
+    unsigned int chordStampSeed_ = 1;
 
     // An app-level clipboard holding model values, deliberately not the system
     // clipboard: pasting between two running copies of the app isn't worth a

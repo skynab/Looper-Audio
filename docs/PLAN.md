@@ -1089,7 +1089,7 @@ of weight:
 
 ---
 
-## 21. A guitar instrument and its pane
+## 21. A guitar instrument and its pane (implemented)
 
 A fourth track type alongside Instrument, Audio and Drum: a plucked-string
 instrument that is *played like a guitar* rather than a synth patch that happens
@@ -1292,7 +1292,8 @@ nothing it adds may touch the existing render path.
    sounds it through the armed track, so the pane plays the same instrument the sequencer
    does, cut rule included. Which notes are ringing is read from the engine rather than
    inferred, since a string keeps sounding after its note-off.
-4. **Chords and strumming**, as pattern edits.
+4. **Chords and strumming** *(implemented)*, as pattern edits — a palette of open shapes
+   (movable up the neck by a fret offset) stamped into the clip as real, staggered notes.
 
 Articulations (hammer-on, slide, bend, palm mute) come after, and are mostly a
 matter of *not* re-exciting a string while changing its delay length — the model
