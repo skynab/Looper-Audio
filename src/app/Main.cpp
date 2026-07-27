@@ -32,7 +32,24 @@ public:
         logger = nullptr;
     }
 
-    void systemRequestedQuit() override { quit(); }
+    /** Quitting discards the document like any other destructive action, so
+        it asks the same question New and Open do. The answer arrives
+        asynchronously, so this returns without quitting and the callback
+        finishes the job — a Cancel simply never calls back. */
+    void systemRequestedQuit() override
+    {
+        auto* main = mainWindow != nullptr
+                         ? dynamic_cast<MainComponent*>(mainWindow->getContentComponent())
+                         : nullptr;
+
+        if (main == nullptr)
+        {
+            quit(); // nothing open to lose
+            return;
+        }
+
+        main->confirmDiscardChanges([this] { quit(); });
+    }
 
 private:
     class MainWindow final : public juce::DocumentWindow

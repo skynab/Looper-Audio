@@ -727,7 +727,8 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
     {
         menu.addItem(1, "New Project");
         menu.addItem(2, "Open Project...");
-        menu.addItem(3, "Save Project...");
+        menu.addItem(3, "Save Project", hasUnsavedChanges() || projectFile_ == juce::File{});
+        menu.addItem(24, "Save Project As...");
         menu.addSeparator();
         menu.addItem(4, "Import Audio...");
         menu.addItem(7, "Import Audio to Track...");
@@ -787,6 +788,7 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 1:  newProject(); break;
         case 2:  openProject(); break;
         case 3:  saveProject(); break;
+        case 24: saveProjectAs(); break;
         case 4:  chooseFile(); break; // import audio (preview player)
         case 5:  bounceProject(); break;
         case 6:  showAudioSettings(); break;
@@ -818,7 +820,13 @@ void MainComponent::menuItemSelected(int menuItemID, int)
     }
 }
 
+/** Discards the current document for an empty one, asking first. */
 void MainComponent::newProject()
+{
+    confirmDiscardChanges([this] { createEmptyProject(); });
+}
+
+void MainComponent::createEmptyProject()
 {
     model::Song song;
     const int id = model::addTrack(song, model::TrackType::Instrument, "Synth 1").id;
@@ -835,6 +843,12 @@ void MainComponent::newProject()
     post(Cmd::SetTempo, song.bpm);
     refreshFromModel();
     clipLabel.setText("No clip loaded", juce::dontSendNotification);
+
+    // A brand-new project has nothing worth saving yet, so it starts clean —
+    // quitting straight after New shouldn't ask about it.
+    projectFile_  = juce::File{};
+    savedStateId_ = history_.stateId();
+    updateWindowTitle();
 }
 
 void MainComponent::showAudioSettings()
@@ -2633,28 +2647,145 @@ juce::File MainComponent::recordingsDirectory() const
     return dir;
 }
 
-void MainComponent::saveProject()
+/** True while the document differs from what's on disk. Asks the history for
+    the identity of the state it's holding rather than tracking a modified
+    flag, so undoing back to the saved state reads as saved again — see
+    History::stateId. */
+bool MainComponent::hasUnsavedChanges() const
 {
-    chooser_ = std::make_unique<juce::FileChooser>("Save project", juce::File{}, "*.looper");
+    return history_.stateId() != savedStateId_;
+}
+
+/** Puts the project's name and an unsaved marker in the title bar, which is
+    the only place either is visible. Called every timer tick, so it compares
+    before setting: DocumentWindow::setName repaints the frame. */
+void MainComponent::updateWindowTitle()
+{
+    const juce::String name = (projectFile_ == juce::File{})
+                                  ? juce::String("Untitled")
+                                  : projectFile_.getFileNameWithoutExtension();
+
+    const juce::String title = name + (hasUnsavedChanges() ? " *" : "") + " - Looper-Audio";
+    if (title == windowTitle_)
+        return;
+
+    windowTitle_ = title;
+    if (auto* window = findParentComponentOfClass<juce::DocumentWindow>())
+        window->setName(title);
+}
+
+/** The actual write, shared by Save and Save As. Marks the document clean
+    against the state that was written — not whatever it becomes later — so an
+    edit made while the file chooser was up still counts as unsaved. */
+bool MainComponent::writeProjectTo(const juce::File& file)
+{
+    const auto stateWritten = history_.stateId();
+    const std::string text  = model::serialize(history_.current());
+
+    if (! file.replaceWithText(juce::String::fromUTF8(text.c_str())))
+    {
+        clipLabel.setText("Could not save " + file.getFileName(), juce::dontSendNotification);
+        return false;
+    }
+
+    projectFile_   = file;
+    savedStateId_  = stateWritten;
+    updateWindowTitle();
+    return true;
+}
+
+/** Saves over the project's own file, falling back to Save As the first time.
+    @p onDone reports whether the document actually reached disk — the
+    discard prompt needs to know, since a cancelled save must cancel whatever
+    it was clearing the way for. */
+void MainComponent::saveProject(std::function<void(bool)> onDone)
+{
+    if (projectFile_ == juce::File{})
+    {
+        saveProjectAs(std::move(onDone));
+        return;
+    }
+
+    const bool saved = writeProjectTo(projectFile_);
+    if (onDone)
+        onDone(saved);
+}
+
+void MainComponent::saveProjectAs(std::function<void(bool)> onDone)
+{
+    chooser_ = std::make_unique<juce::FileChooser>("Save project", projectFile_, "*.looper");
     const auto flags = juce::FileBrowserComponent::saveMode
                      | juce::FileBrowserComponent::canSelectFiles
                      | juce::FileBrowserComponent::warnAboutOverwriting;
 
-    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    chooser_->launchAsync(flags, [this, onDone](const juce::FileChooser& fc)
     {
         auto file = fc.getResult();
         if (file == juce::File{})
+        {
+            if (onDone)
+                onDone(false); // dismissed the chooser: nothing was saved
             return;
+        }
 
-        file = file.withFileExtension("looper");
-        const std::string text = model::serialize(history_.current());
-        file.replaceWithText(juce::String::fromUTF8(text.c_str()));
+        const bool saved = writeProjectTo(file.withFileExtension("looper"));
+        if (onDone)
+            onDone(saved);
     });
+}
+
+/** Runs @p onProceed once it's safe to throw the current document away,
+    asking first if there's anything to lose. Everything that discards the
+    document goes through here — New, Open, and quitting — so there is one
+    place the question is asked and one place it can be got wrong.
+
+    Cancel, and a Save the user backs out of, both simply drop @p onProceed:
+    the destructive action doesn't happen. */
+void MainComponent::confirmDiscardChanges(std::function<void()> onProceed)
+{
+    if (! hasUnsavedChanges())
+    {
+        if (onProceed)
+            onProceed();
+        return;
+    }
+
+    const juce::String name = (projectFile_ == juce::File{})
+                                  ? juce::String("this project")
+                                  : projectFile_.getFileName();
+
+    juce::NativeMessageBox::showYesNoCancelBox(
+        juce::MessageBoxIconType::WarningIcon,
+        "Unsaved changes",
+        "Save changes to " + name + " before closing it?",
+        this,
+        juce::ModalCallbackFunction::create([self = juce::Component::SafePointer<MainComponent>(this),
+                                             onProceed](int result)
+        {
+            if (self == nullptr)
+                return; // the window went away while the box was up
+
+            if (result == 1) // Yes: save first, and only then go ahead
+            {
+                self->saveProject([onProceed](bool saved) { if (saved && onProceed) onProceed(); });
+            }
+            else if (result == 2) // No: discard
+            {
+                if (onProceed)
+                    onProceed();
+            }
+            // Cancel (0): stay exactly where we are.
+        }));
 }
 
 void MainComponent::openProject()
 {
-    chooser_ = std::make_unique<juce::FileChooser>("Open project", juce::File{}, "*.looper");
+    confirmDiscardChanges([this] { chooseProjectToOpen(); });
+}
+
+void MainComponent::chooseProjectToOpen()
+{
+    chooser_ = std::make_unique<juce::FileChooser>("Open project", projectFile_, "*.looper");
     const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
 
     chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
@@ -2679,6 +2810,10 @@ void MainComponent::openProject()
         uiTempoMap_.setTempo(song.bpm);
         post(Cmd::SetTempo, song.bpm);
         refreshFromModel();
+
+        projectFile_  = file;
+        savedStateId_ = history_.stateId(); // what's on screen is what's on disk
+        updateWindowTitle();
     });
 }
 
@@ -2846,6 +2981,7 @@ void MainComponent::timerCallback()
 {
     engine_.pump();
     finishRecordingIfReady();
+    updateWindowTitle();
 
     addTrackButton.setEnabled(trackCount() < engine_.maxTracks());
     addDrumTrackButton_.setEnabled(trackCount() < engine_.maxTracks());

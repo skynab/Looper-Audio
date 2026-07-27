@@ -60,6 +60,15 @@ public:
     void resized() override;
     bool keyPressed(const juce::KeyPress& key) override;
 
+    /** True while the document differs from the file it came from. */
+    bool hasUnsavedChanges() const;
+
+    /** Runs @p onProceed once it's safe to discard the current document,
+        offering to save first if there's anything to lose. Public because
+        quitting has to ask too — see LooperAudioApplication::systemRequestedQuit
+        — and every destructive path must ask the same question the same way. */
+    void confirmDiscardChanges(std::function<void()> onProceed);
+
     // juce::MenuBarModel
     juce::StringArray getMenuBarNames() override;
     juce::PopupMenu   getMenuForIndex(int topLevelMenuIndex, const juce::String& menuName) override;
@@ -80,8 +89,13 @@ private:
     void                   refreshFromModel();
     const engine::Pattern& currentPattern() const;
     void                   newProject();
-    void                   saveProject();
+    void                   createEmptyProject();
+    void                   saveProject(std::function<void(bool saved)> onDone = {});
+    void                   saveProjectAs(std::function<void(bool saved)> onDone = {});
+    bool                   writeProjectTo(const juce::File& file);
     void                   openProject();
+    void                   chooseProjectToOpen();
+    void                   updateWindowTitle();
     void                   bounceProject();
     void                   showAudioSettings();
     void                   importAudioToNewTrack();
@@ -172,6 +186,14 @@ private:
     // dock region, and the file browser's user bookmarks. Saved on the
     // panel-move/bookmark-change that produces them, not the project.
     juce::PropertiesFile settings_;
+
+    // The file this document came from and will Save over — empty until it has
+    // been saved once — plus the state id that was last written, which is what
+    // hasUnsavedChanges() compares against. windowTitle_ caches what the title
+    // bar already says, so the 30Hz timer only touches it on a real change.
+    juce::File         projectFile_;
+    unsigned long long savedStateId_ = 0;
+    juce::String       windowTitle_;
 
     juce::MenuBarComponent          menuBar_;
 
