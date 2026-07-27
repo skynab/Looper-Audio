@@ -954,7 +954,13 @@ void MainComponent::refreshTrackEffectsForSelected()
     }
 
     const auto& track = history_.current().tracks[(size_t) selectedTrackIndex_];
-    trackEffects_.setSettings(track.insertFilter, track.insertDelay, track.insertReverb);
+    const auto* filterSlot = track.firstEffect(model::EffectKind::Filter);
+    const auto* delaySlot  = track.firstEffect(model::EffectKind::Delay);
+    const auto* reverbSlot = track.firstEffect(model::EffectKind::Reverb);
+
+    trackEffects_.setSettings(filterSlot != nullptr ? filterSlot->filter : model::FilterSettings {},
+                              delaySlot  != nullptr ? delaySlot->delay   : model::DelaySettings {},
+                              reverbSlot != nullptr ? reverbSlot->reverb : model::ReverbSettings {});
 }
 
 /** Live tweak from the Track FX pane — updates the document in place (not a
@@ -969,9 +975,33 @@ void MainComponent::setTrackInsertEffects(const model::FilterSettings& filter,
 
     const int index = selectedTrackIndex_;
     auto&     track = history_.mutableCurrent().tracks[(size_t) index];
-    track.insertFilter = filter;
-    track.insertDelay  = delay;
-    track.insertReverb = reverb;
+    // Writes into the chain's first slot of each kind, creating it if the track
+    // had none — which is how a track that has never been touched grows a chain
+    // the first time a knob moves. New slots go in the old fixed trio's order
+    // (filter, delay, reverb) so nothing rearranges under an existing project.
+    auto slotFor = [&track](model::EffectKind kind) -> model::EffectSlot&
+    {
+        for (auto& slot : track.effectChain)
+            if (slot.kind == kind)
+                return slot;
+
+        model::EffectSlot created;
+        created.kind = kind;
+        track.effectChain.push_back(created);
+        return track.effectChain.back();
+    };
+
+    auto& filterSlot   = slotFor(model::EffectKind::Filter);
+    filterSlot.filter  = filter;
+    filterSlot.enabled = filter.enabled;
+
+    auto& delaySlot   = slotFor(model::EffectKind::Delay);
+    delaySlot.delay   = delay;
+    delaySlot.enabled = delay.enabled;
+
+    auto& reverbSlot   = slotFor(model::EffectKind::Reverb);
+    reverbSlot.reverb  = reverb;
+    reverbSlot.enabled = reverb.enabled;
 
     engine_.setTrackInsertFilterEnabled(index, filter.enabled);
     engine_.setTrackInsertFilterMode(index, filter.mode);
@@ -1404,20 +1434,33 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackSynthFilterResonance(i, synth.filterResonance);
         engine_.setTrackSynthGainDb(i, synth.gainDb);
 
-        engine_.setTrackInsertFilterEnabled(i, track.insertFilter.enabled);
-        engine_.setTrackInsertFilterMode(i, track.insertFilter.mode);
-        engine_.setTrackInsertFilterCutoff(i, track.insertFilter.cutoff);
-        engine_.setTrackInsertFilterResonance(i, track.insertFilter.resonance);
+        // The engine still applies one built-in of each kind — a variable-length
+        // chain, and hosted plugins, are stage 2 of §20 — so the chain's first
+        // slot of each kind drives it. Until the chain editor exists there can
+        // only be one of each anyway; a second would be ignored here, which is
+        // why the chain UI and the engine chain are planned to land together.
+        const auto* filterSlot = track.firstEffect(model::EffectKind::Filter);
+        const auto* delaySlot  = track.firstEffect(model::EffectKind::Delay);
+        const auto* reverbSlot = track.firstEffect(model::EffectKind::Reverb);
 
-        engine_.setTrackInsertDelayEnabled(i, track.insertDelay.enabled);
-        engine_.setTrackInsertDelayTimeMs(i, track.insertDelay.timeMs);
-        engine_.setTrackInsertDelayFeedback(i, track.insertDelay.feedback);
-        engine_.setTrackInsertDelayMix(i, track.insertDelay.mix);
+        const model::FilterSettings filterFx = filterSlot != nullptr ? filterSlot->filter : model::FilterSettings {};
+        const model::DelaySettings  delayFx  = delaySlot  != nullptr ? delaySlot->delay   : model::DelaySettings {};
+        const model::ReverbSettings reverbFx = reverbSlot != nullptr ? reverbSlot->reverb : model::ReverbSettings {};
 
-        engine_.setTrackInsertReverbEnabled(i, track.insertReverb.enabled);
-        engine_.setTrackInsertReverbRoomSize(i, track.insertReverb.roomSize);
-        engine_.setTrackInsertReverbDamping(i, track.insertReverb.damping);
-        engine_.setTrackInsertReverbMix(i, track.insertReverb.mix);
+        engine_.setTrackInsertFilterEnabled(i, filterFx.enabled);
+        engine_.setTrackInsertFilterMode(i, filterFx.mode);
+        engine_.setTrackInsertFilterCutoff(i, filterFx.cutoff);
+        engine_.setTrackInsertFilterResonance(i, filterFx.resonance);
+
+        engine_.setTrackInsertDelayEnabled(i, delayFx.enabled);
+        engine_.setTrackInsertDelayTimeMs(i, delayFx.timeMs);
+        engine_.setTrackInsertDelayFeedback(i, delayFx.feedback);
+        engine_.setTrackInsertDelayMix(i, delayFx.mix);
+
+        engine_.setTrackInsertReverbEnabled(i, reverbFx.enabled);
+        engine_.setTrackInsertReverbRoomSize(i, reverbFx.roomSize);
+        engine_.setTrackInsertReverbDamping(i, reverbFx.damping);
+        engine_.setTrackInsertReverbMix(i, reverbFx.mix);
     }
     engine_.setActiveTrackCount(n);
 }

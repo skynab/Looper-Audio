@@ -16,6 +16,8 @@ target_sources(LooperAudio PRIVATE
 # Trim JUCE features we don't need yet — this also removes system dependencies
 # (WebKit, libcurl) that would otherwise be required to build on Linux.
 target_compile_definitions(LooperAudio PRIVATE
+  JUCE_PLUGINHOST_VST3=1
+  JUCE_PLUGINHOST_AU=1
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0
   JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:LooperAudio,JUCE_PRODUCT_NAME>"

@@ -91,18 +91,46 @@ static Song makeSampleSong()
     s.tracks[0].synthSettings.filterResonance = 1.5f;
     s.tracks[0].synthSettings.gainDb          = -3.0f;
 
-    s.tracks[0].insertFilter.enabled   = true;
-    s.tracks[0].insertFilter.mode      = 2;
-    s.tracks[0].insertFilter.cutoff    = 3200.0f;
-    s.tracks[0].insertFilter.resonance = 0.9f;
-    s.tracks[1].insertDelay.enabled    = true;
-    s.tracks[1].insertDelay.timeMs     = 180.0f;
-    s.tracks[1].insertDelay.feedback   = 0.55f;
-    s.tracks[1].insertDelay.mix        = 0.4f;
-    s.tracks[2].insertReverb.enabled   = true;
-    s.tracks[2].insertReverb.roomSize  = 0.8f;
-    s.tracks[2].insertReverb.damping   = 0.2f;
-    s.tracks[2].insertReverb.mix       = 0.35f;
+    // An effect chain with a plugin sandwiched between two built-ins, so the
+    // round trip has to preserve both the ordering and the mixed kinds.
+    {
+        EffectSlot filterSlot;
+        filterSlot.kind             = EffectKind::Filter;
+        filterSlot.enabled          = true;
+        filterSlot.filter.enabled   = true;
+        filterSlot.filter.mode      = 2;
+        filterSlot.filter.cutoff    = 3200.0f;
+        filterSlot.filter.resonance = 0.9f;
+
+        EffectSlot pluginSlot;
+        pluginSlot.kind              = EffectKind::Plugin;
+        pluginSlot.enabled           = true;
+        pluginSlot.plugin.format     = PluginFormat::VST3;
+        pluginSlot.plugin.identifier = "/Library/Audio/Plug-Ins/VST3/Some EQ.vst3";
+        pluginSlot.plugin.name       = "Some EQ";       // with a space, deliberately
+        pluginSlot.plugin.state      = "YmFzZTY0LXN0YXRl";
+
+        EffectSlot delaySlot;
+        delaySlot.kind           = EffectKind::Delay;
+        delaySlot.enabled        = true;
+        delaySlot.delay.enabled  = true;
+        delaySlot.delay.timeMs   = 180.0f;
+        delaySlot.delay.feedback = 0.55f;
+        delaySlot.delay.mix      = 0.4f;
+
+        s.tracks[0].effectChain = { filterSlot, pluginSlot, delaySlot };
+    }
+
+    {
+        EffectSlot reverbSlot;
+        reverbSlot.kind            = EffectKind::Reverb;
+        reverbSlot.enabled         = true;
+        reverbSlot.reverb.enabled  = true;
+        reverbSlot.reverb.roomSize = 0.8f;
+        reverbSlot.reverb.damping  = 0.2f;
+        reverbSlot.reverb.mix      = 0.35f;
+        s.tracks[2].effectChain = { reverbSlot };
+    }
 
     // A session grid: two scenes, with clips in some cells and not others —
     // the empty ones matter as much, since the slot index is the scene.
@@ -170,6 +198,67 @@ TEST_CASE("A file from a newer build is refused, not part-parsed", "[model][io]"
     std::string error;
     REQUIRE_FALSE(deserialize(newer, out, &error));
     REQUIRE(error.find("newer") != std::string::npos);
+}
+
+TEST_CASE("An effect chain round-trips with its order and mixed kinds", "[model][io]")
+{
+    const Song original = makeSampleSong();
+
+    Song restored;
+    REQUIRE(deserialize(serialize(original), restored));
+
+    const auto& chain = restored.tracks[0].effectChain;
+    REQUIRE(chain.size() == 3);
+    REQUIRE(chain[0].kind == EffectKind::Filter);
+    REQUIRE(chain[1].kind == EffectKind::Plugin);
+    REQUIRE(chain[2].kind == EffectKind::Delay);
+
+    // The plugin's free-form fields survive intact, spaces and all — the
+    // document has to be able to say which plugin it wanted even on a machine
+    // that doesn't have it.
+    REQUIRE(chain[1].plugin.format == PluginFormat::VST3);
+    REQUIRE(chain[1].plugin.name == "Some EQ");
+    REQUIRE(chain[1].plugin.identifier == "/Library/Audio/Plug-Ins/VST3/Some EQ.vst3");
+    REQUIRE(chain[1].plugin.state == "YmFzZTY0LXN0YXRl");
+}
+
+TEST_CASE("A project with the old fixed effect trio migrates into the chain", "[model][io]")
+{
+    // v17 and earlier stored TFX: one filter, one delay, one reverb, always in
+    // that order. They must come back as three slots in the same order, or an
+    // existing project's effects would silently rearrange.
+    const std::string v17 =
+        "LOOPER 17\n"
+        "BPM 120\n"
+        "TSNUM 4\n"
+        "TSDEN 4\n"
+        "NEXTID 3\n"
+        "TRACKS 1\n"
+        "TRACK 1 0 0 0 0 0 0 Lead\n"
+        "TAUTOS 0\n"
+        "DRUMKIT 0\n"
+        "SYNTH 0 5 120 0.7 250 0 0 1000 0.707 0\n"
+        "TFX 1 1 900 1.4 1 275 0.5 0.45 0 0.5 0.5 0.3\n"
+        "CLIPS 0\n";
+
+    Song        restored;
+    std::string error;
+    REQUIRE(deserialize(v17, restored, &error));
+
+    const auto& chain = restored.tracks[0].effectChain;
+    REQUIRE(chain.size() == 3);
+    REQUIRE(chain[0].kind == EffectKind::Filter);
+    REQUIRE(chain[1].kind == EffectKind::Delay);
+    REQUIRE(chain[2].kind == EffectKind::Reverb);
+
+    // The filter and delay were on, the reverb off — and their settings come
+    // across, so the track sounds as it did.
+    REQUIRE(chain[0].enabled);
+    REQUIRE(chain[0].filter.mode == 1);
+    REQUIRE(chain[0].filter.cutoff == 900.0f);
+    REQUIRE(chain[1].enabled);
+    REQUIRE(chain[1].delay.timeMs == 275.0f);
+    REQUIRE_FALSE(chain[2].enabled);
 }
 
 TEST_CASE("The session grid round-trips, empty cells included", "[model][io]")
@@ -250,9 +339,8 @@ TEST_CASE("A project from before per-track synths still opens", "[model][io]")
 
     // Likewise the insert effects, added later still: all off, so a project
     // from before they existed sounds exactly as it did.
-    REQUIRE_FALSE(track.insertFilter.enabled);
-    REQUIRE_FALSE(track.insertDelay.enabled);
-    REQUIRE_FALSE(track.insertReverb.enabled);
+    // v11 predates inserts entirely, so there's no chain at all.
+    REQUIRE(track.effectChain.empty());
 
     // The session grid arrived in v17; a file this old simply has none.
     REQUIRE(restored.scenes.empty());

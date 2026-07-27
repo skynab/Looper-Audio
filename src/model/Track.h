@@ -75,20 +75,29 @@ struct Track
     DrumKit           drumKit; // only meaningful when type == Drum; empty pads otherwise
     SynthSettings     synthSettings; // only meaningful when type == Instrument
 
-    // This track's own insert effects, applied to its output before its fader
-    // (and so before its send too). The same three effects the master bus
-    // has, in the same fixed order — filter, then delay, then reverb — each
-    // switchable on its own and all disabled by default, so a track that has
+    // This track's insert effects, in order, applied to its output before the
+    // fader (and so before its send too). A slot is a built-in or a hosted
+    // plugin — see model::EffectSlot. Empty by default, so a track that has
     // never been touched sounds exactly as it did before inserts existed.
     //
-    // Deliberately a fixed trio rather than a general chain: it needs no
-    // real-time graph surgery, which is the rule the whole engine is built
-    // on. Arbitrary ordering and duplicate effects want a proper slot
-    // abstraction, and that's better designed alongside plugin hosting, which
-    // forces the question anyway.
-    FilterSettings    insertFilter;
-    DelaySettings     insertDelay;
-    ReverbSettings    insertReverb;
+    // This replaced a fixed filter/delay/reverb trio when plugin hosting
+    // arrived: a hosted plugin is an effect in the same chain as the
+    // built-ins, and keeping them apart would have meant two effect concepts
+    // each needing their own ordering, bypass, serialization and UI. Older
+    // projects migrate into three slots in the original order (see
+    // model::deserialize), so they keep sounding the same.
+    std::vector<EffectSlot> effectChain;
+
+    /** The first slot of @p kind, or nullptr. The engine still applies one
+        built-in of each kind (a variable-length chain is stage 2 of §20), so
+        this is how it finds them. */
+    const EffectSlot* firstEffect(EffectKind kind) const
+    {
+        for (const auto& slot : effectChain)
+            if (slot.kind == kind)
+                return &slot;
+        return nullptr;
+    }
 
     bool operator==(const Track&) const = default;
 

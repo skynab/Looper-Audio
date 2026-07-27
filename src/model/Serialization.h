@@ -38,8 +38,10 @@ namespace looper::model
       14  + TFX (per-track insert filter/delay/reverb)
       15  TRACK carries pan before its (rest-of-line) name
       16  TAUTO (one gain lane) -> TAUTOS/TLANE (a lane per parameter)
-      17  + SCENES/SCENE and per-track SESSION/SSLOT (the session grid) */
-inline constexpr int kFormatVersion = 17;
+      17  + SCENES/SCENE and per-track SESSION/SSLOT (the session grid)
+      18  TFX (a fixed filter/delay/reverb trio) -> FXCHAIN/FXSLOT (an
+          ordered chain whose slots may be built-ins or hosted plugins) */
+inline constexpr int kFormatVersion = 18;
 namespace detail
 {
     inline std::string num(double v)
@@ -152,17 +154,33 @@ inline std::string serialize(const Song& song)
             << detail::num((double) synth.filterCutoff) << " " << detail::num((double) synth.filterResonance) << " "
             << detail::num((double) synth.gainDb) << "\n";
 
-        const auto& fx = track.insertFilter;
-        out << "TFX " << (fx.enabled ? 1 : 0) << " " << fx.mode << " "
-            << detail::num((double) fx.cutoff) << " " << detail::num((double) fx.resonance) << " "
-            << (track.insertDelay.enabled ? 1 : 0) << " "
-            << detail::num((double) track.insertDelay.timeMs) << " "
-            << detail::num((double) track.insertDelay.feedback) << " "
-            << detail::num((double) track.insertDelay.mix) << " "
-            << (track.insertReverb.enabled ? 1 : 0) << " "
-            << detail::num((double) track.insertReverb.roomSize) << " "
-            << detail::num((double) track.insertReverb.damping) << " "
-            << detail::num((double) track.insertReverb.mix) << "\n";
+        // The effect chain, in order. A slot carries every built-in's settings
+        // regardless of its kind, so switching kind doesn't lose the others.
+        out << "FXCHAIN " << track.effectChain.size() << "\n";
+        for (const auto& slot : track.effectChain)
+        {
+            out << "FXSLOT " << (int) slot.kind << " " << (slot.enabled ? 1 : 0) << " "
+                << slot.filter.mode << " "
+                << detail::num((double) slot.filter.cutoff) << " "
+                << detail::num((double) slot.filter.resonance) << " "
+                << detail::num((double) slot.delay.timeMs) << " "
+                << detail::num((double) slot.delay.feedback) << " "
+                << detail::num((double) slot.delay.mix) << " "
+                << detail::num((double) slot.reverb.roomSize) << " "
+                << detail::num((double) slot.reverb.damping) << " "
+                << detail::num((double) slot.reverb.mix) << "\n";
+
+            if (slot.kind == EffectKind::Plugin)
+            {
+                // Split across lines because identifier, name and state are all
+                // free-form: each takes the rest of its own line rather than
+                // needing escaping.
+                out << "FXPLUGFMT " << (int) slot.plugin.format << "\n";
+                out << "FXPLUGID " << slot.plugin.identifier << "\n";
+                out << "FXPLUGNAME " << slot.plugin.name << "\n";
+                out << "FXPLUGSTATE " << slot.plugin.state << "\n";
+            }
+        }
 
         // The session grid's column for this track. Slots are written by index
         // including the empty ones, since the index is the scene.
@@ -492,7 +510,10 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             track.synthSettings.gainDb          = (float) gainDb;
         }
 
-        if (readTagged("TFX", rest)) // added in v14; older files keep the defaults
+        // v14..v17 stored a fixed filter/delay/reverb trio. Migrate it into
+        // three chain slots in that same order, so an old project comes back
+        // with its effects in the order it had them and sounding the same.
+        if (readTagged("TFX", rest))
         {
             std::istringstream fs(rest);
             int    filterOn = 0, filterMode = 0, delayOn = 0, reverbOn = 0;
@@ -503,18 +524,79 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                >> delayOn >> delayTime >> delayFeedback >> delayMix
                >> reverbOn >> room >> damping >> reverbMix;
 
-            track.insertFilter.enabled   = filterOn != 0;
-            track.insertFilter.mode      = filterMode;
-            track.insertFilter.cutoff    = (float) cutoff;
-            track.insertFilter.resonance = (float) resonance;
-            track.insertDelay.enabled    = delayOn != 0;
-            track.insertDelay.timeMs     = (float) delayTime;
-            track.insertDelay.feedback   = (float) delayFeedback;
-            track.insertDelay.mix        = (float) delayMix;
-            track.insertReverb.enabled   = reverbOn != 0;
-            track.insertReverb.roomSize  = (float) room;
-            track.insertReverb.damping   = (float) damping;
-            track.insertReverb.mix       = (float) reverbMix;
+            EffectSlot filterSlot;
+            filterSlot.kind             = EffectKind::Filter;
+            filterSlot.enabled          = filterOn != 0;
+            filterSlot.filter.enabled   = filterOn != 0;
+            filterSlot.filter.mode      = filterMode;
+            filterSlot.filter.cutoff    = (float) cutoff;
+            filterSlot.filter.resonance = (float) resonance;
+
+            EffectSlot delaySlot;
+            delaySlot.kind           = EffectKind::Delay;
+            delaySlot.enabled        = delayOn != 0;
+            delaySlot.delay.enabled  = delayOn != 0;
+            delaySlot.delay.timeMs   = (float) delayTime;
+            delaySlot.delay.feedback = (float) delayFeedback;
+            delaySlot.delay.mix      = (float) delayMix;
+
+            EffectSlot reverbSlot;
+            reverbSlot.kind            = EffectKind::Reverb;
+            reverbSlot.enabled         = reverbOn != 0;
+            reverbSlot.reverb.enabled  = reverbOn != 0;
+            reverbSlot.reverb.roomSize = (float) room;
+            reverbSlot.reverb.damping  = (float) damping;
+            reverbSlot.reverb.mix      = (float) reverbMix;
+
+            track.effectChain.push_back(filterSlot);
+            track.effectChain.push_back(delaySlot);
+            track.effectChain.push_back(reverbSlot);
+        }
+        else if (readTagged("FXCHAIN", rest)) // v18 onward
+        {
+            const int slotCount = std::atoi(rest.c_str());
+            for (int s = 0; s < slotCount; ++s)
+            {
+                if (! readTagged("FXSLOT", rest)) return fail("truncated effect chain");
+
+                std::istringstream ss(rest);
+                int    kind = 0, enabled = 0, filterMode = 0;
+                double cutoff = 0.0, resonance = 0.0;
+                double delayTime = 0.0, delayFeedback = 0.0, delayMix = 0.0;
+                double room = 0.0, damping = 0.0, reverbMix = 0.0;
+                ss >> kind >> enabled >> filterMode >> cutoff >> resonance
+                   >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix;
+
+                EffectSlot slot;
+                slot.kind              = (EffectKind) kind;
+                slot.enabled           = enabled != 0;
+                slot.filter.enabled    = slot.enabled && slot.kind == EffectKind::Filter;
+                slot.filter.mode       = filterMode;
+                slot.filter.cutoff     = (float) cutoff;
+                slot.filter.resonance  = (float) resonance;
+                slot.delay.enabled     = slot.enabled && slot.kind == EffectKind::Delay;
+                slot.delay.timeMs      = (float) delayTime;
+                slot.delay.feedback    = (float) delayFeedback;
+                slot.delay.mix         = (float) delayMix;
+                slot.reverb.enabled    = slot.enabled && slot.kind == EffectKind::Reverb;
+                slot.reverb.roomSize   = (float) room;
+                slot.reverb.damping    = (float) damping;
+                slot.reverb.mix        = (float) reverbMix;
+
+                if (slot.kind == EffectKind::Plugin)
+                {
+                    if (! readTagged("FXPLUGFMT", rest))   return fail("truncated plugin slot");
+                    slot.plugin.format = (PluginFormat) std::atoi(rest.c_str());
+                    if (! readTagged("FXPLUGID", rest))    return fail("truncated plugin slot");
+                    slot.plugin.identifier = rest;
+                    if (! readTagged("FXPLUGNAME", rest))  return fail("truncated plugin slot");
+                    slot.plugin.name = rest;
+                    if (! readTagged("FXPLUGSTATE", rest)) return fail("truncated plugin slot");
+                    slot.plugin.state = rest;
+                }
+
+                track.effectChain.push_back(std::move(slot));
+            }
         }
 
         if (readTagged("SESSION", rest)) // added in v17

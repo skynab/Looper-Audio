@@ -33,7 +33,8 @@ This is a living document. As sections mature they should graduate into their ow
 17. [Next planned features: MIDI I/O, file manager 2.0, piano-roll & drum tools](#17-next-planned-features-midi-io-file-manager-20-piano-roll--drum-tools)
 18. [Next planned features: project-format versioning, metronome, editable clips & notes](#18-next-planned-features-project-format-versioning-metronome-editable-clips--notes)
 19. [Session view: clip launching and scenes](#19-session-view-clip-launching-and-scenes)
-20. [Appendix: reference reading](#20-appendix-reference-reading)
+20. [Plugin hosting](#20-plugin-hosting)
+21. [Appendix: reference reading](#21-appendix-reference-reading)
 
 ---
 
@@ -1005,7 +1006,82 @@ Three independently verifiable stages, in this order:
 
 ---
 
-## 20. Appendix: reference reading
+## 20. Plugin hosting
+
+VST3 and Audio Unit hosting — the thing that turns a fixed set of built-in
+effects into an open one, and (per §15) the single biggest multiplier available.
+
+**Feasibility, checked before planning rather than assumed.** JUCE 8 bundles the
+VST3 SDK under `juce_audio_processors_headless/format_types/VST3_SDK` (it moved
+there from `juce_audio_processors`, which is where an obvious first look fails to
+find it), and AU hosting on macOS needs only system frameworks. Building the app
+with `JUCE_PLUGINHOST_VST3=1` and `JUCE_PLUGINHOST_AU=1` compiles clean, so no
+external SDK and no new dependency is required. Those defines are in
+`src/app/CMakeLists.txt` from stage 1 onward.
+
+### The decision this forces: one effect chain, not two
+
+§18 shipped per-track effects as a *fixed trio* — filter, then delay, then reverb
+— and said the general, reorderable chain "is better designed alongside plugin
+hosting, which forces the question anyway." It does: a hosted plugin is an effect
+in the same chain as the built-ins, and bolting a separate "plugin list"
+alongside the trio would leave two effect concepts that each need their own
+ordering, bypass, serialization and UI.
+
+So the model becomes a **list of effect slots**, each slot being either a
+built-in (filter/delay/reverb) or a hosted plugin. A slot keeps *all* the
+built-in settings regardless of which kind it currently is, so switching kind
+doesn't lose the others — the same pattern `SendBusSettings` already uses for its
+reverb-or-delay choice.
+
+### What the document stores for a plugin
+
+Deliberately **JUCE-free**: a format tag, the identifier JUCE uses to find the
+plugin again, a display name, and an opaque state blob. Three reasons, in order
+of weight:
+
+1. `looper_tests` links Catch2 only, so anything JUCE-typed can't be tested
+   headlessly — and this is a serialization-shaped problem, exactly the kind that
+   needs tests.
+2. The document should survive a plugin being missing. Storing a name means a
+   project that references a plugin this machine doesn't have can say *which* one
+   rather than silently dropping it.
+3. `juce::PluginDescription` is a UI/engine concern; converting at the boundary
+   is the same split already used for `AutomationCurve` vs `AutomationLane`.
+
+### Build order
+
+1. **Model + serialization** (this stage). The effect chain, the plugin
+   reference, and migration of the existing per-track trio into chain slots — an
+   old project must come back with its effects in the same order and sounding the
+   same. Testable headlessly, which is the point of doing it first.
+2. **Engine.** A variable-length chain per track, replacing the fixed trio, with
+   the lock-free swap the rest of the engine uses. Then plugin instantiation and
+   a scan. This is the real-time-risky stage: a hosted plugin allocates, blocks,
+   and misbehaves in ways the built-ins never do.
+3. **UI.** A chain editor (add/remove/reorder/bypass), a plugin browser backed by
+   a cached scan, and plugin editor windows.
+
+### Recorded now so it isn't rediscovered
+
+- **Scanning must be out-of-process.** A plugin that crashes while being probed
+  must not take the app with it; JUCE's `PluginDirectoryScanner` supports this and
+  §15 already lists plugin stability as a risk. Stage 2.
+- **Hosted plugins break the engine's no-allocation rule.** They allocate in
+  `prepareToPlay` and some misbehave in `processBlock`. The chain hand-off keeps
+  *instantiation* on the message thread, but a badly-behaved plugin can still
+  glitch audio — that's inherent to hosting, and worth stating rather than
+  pretending the RT discipline extends into third-party code.
+- **Plugin state is opaque and version-fragile.** It is stored as the plugin's own
+  blob, base64'd. A plugin that changes its format across versions is its own
+  problem, not something this document can fix.
+- **Licensing.** §15 already flags it: shipping VST3 hosting means the Steinberg
+  agreement, and JUCE's own licence gates a closed-source product. Neither is a
+  code problem, and neither is solved by this section.
+
+---
+
+## 21. Appendix: reference reading
 
 - **Real-time audio programming:** Ross Bencina, *"Real-time audio programming 101: time waits for
   nothing"* (the no-locks/no-allocations canon).
