@@ -22,6 +22,7 @@
 #include "PianoRoll.h"
 #include "PluginEditorWindow.h"
 #include "SessionView.h"
+#include "StatusBanner.h"
 #include "SynthEditor.h"
 
 namespace looper
@@ -83,6 +84,8 @@ private:
     void stepByBars(int bars);
     double songEndBeats() const;
     void chooseFile();
+    void showStatus(const juce::String& message);
+    void showError(const juce::String& message);
     void post(engine::EngineCommand::Type type, double a = 0.0, double b = 0.0);
 
     void                   editPattern(const engine::Pattern& pattern);
@@ -204,6 +207,10 @@ private:
     // Every tooltip in the app was dead text until this existed: JUCE only
     // shows them while some TooltipWindow is alive to draw them.
     juce::TooltipWindow             tooltips_;
+
+    // Transient messages. A child of this component rather than of any pane,
+    // so collapsing or closing a pane can't hide what the app is telling you.
+    StatusBanner                    status_;
 
     // The whole dockable workspace: a tree of tab groups the user arranges by
     // dragging tabs (onto a region's middle to add a tab there, onto an edge

@@ -92,6 +92,17 @@ namespace
         menu.addItem(std::move(item));
     }
 
+    /** "Undo Delete track" rather than a bare "Undo". Every edit already
+        records what it was; not showing it left the user to remember what
+        they'd done, which is the one thing undo exists to spare them. */
+    juce::String withAction(const char* verb, bool available, const std::string& action)
+    {
+        juce::String text(verb);
+        if (available && ! action.empty())
+            text += " " + juce::String(action);
+        return text;
+    }
+
     /** "Play / pause  (space)" — a control with no menu entry has nowhere
         else to say what its shortcut is. */
     juce::String withShortcut(const juce::String& text, const juce::KeyPress& key)
@@ -779,6 +790,8 @@ MainComponent::MainComponent()
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
 
+    addChildComponent(status_);
+
     for ([[maybe_unused]] const auto& shortcut : keys::all)
         jassert(shortcut.isValid());
 
@@ -824,8 +837,10 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
     }
     else if (topLevelMenuIndex == 1) // Edit
     {
-        addItem(menu, 10, "Undo", keys::undo, history_.canUndo());
-        addItem(menu, 11, "Redo", keys::redo, history_.canRedo());
+        addItem(menu, 10, withAction("Undo", history_.canUndo(), history_.undoLabel()),
+                keys::undo, history_.canUndo());
+        addItem(menu, 11, withAction("Redo", history_.canRedo(), history_.redoLabel()),
+                keys::redo, history_.canRedo());
         menu.addSeparator();
         menu.addItem(12, "Clear Notes");
         menu.addSeparator();
@@ -1469,8 +1484,7 @@ void MainComponent::scanForPlugins()
     settings_.saveIfNeeded();
 
     effectChain_.setAvailablePlugins(engine_.pluginHost().knownPlugins());
-    clipLabel.setText("Found " + juce::String((int) engine_.pluginHost().knownPlugins().size()) + " plugin(s)",
-                      juce::dontSendNotification);
+    showStatus("Found " + juce::String((int) engine_.pluginHost().knownPlugins().size()) + " plugin(s)");
 }
 
 /** Opens a hosted plugin's own editor. */
@@ -1479,7 +1493,7 @@ void MainComponent::openPluginEditor(int slotIndex)
     auto* node = engine_.trackPluginNode(selectedTrackIndex_, slotIndex);
     if (node == nullptr || node->instance() == nullptr)
     {
-        clipLabel.setText("That plugin isn't loaded on this machine", juce::dontSendNotification);
+        showError("That plugin isn't loaded on this machine");
         return;
     }
 
@@ -1523,8 +1537,7 @@ void MainComponent::copyNotes()
                 noteClipboard_.push_back(pattern.notes[(size_t) index]);
     }
 
-    clipLabel.setText("Copied " + juce::String((int) noteClipboard_.size()) + " note(s)",
-                      juce::dontSendNotification);
+    showStatus("Copied " + juce::String((int) noteClipboard_.size()) + " note(s)");
 }
 
 /** Pastes notes into the open clip at the positions they were copied from,
@@ -1574,7 +1587,7 @@ void MainComponent::copyClip()
         return;
 
     clipClipboard_.assign(1, clips[(size_t) selectedClipIndex_]);
-    clipLabel.setText("Copied clip", juce::dontSendNotification);
+    showStatus("Copied clip");
 }
 
 /** Pastes onto the selected track at the playhead, snapped to a beat — the
@@ -2528,12 +2541,22 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     // are handled apart from the commands that don't.
     if (key == keys::undo || key == keys::redo || key == keys::redoAlt)
     {
-        if (key == keys::undo)
+        const bool undoing = (key == keys::undo);
+        const auto action  = undoing ? history_.undoLabel() : history_.redoLabel();
+        const bool did     = undoing ? history_.canUndo() : history_.canRedo();
+
+        if (undoing)
             history_.undo();
         else
             history_.redo();
 
         refreshFromModel();
+
+        // The menu would have named the action; a keystroke has to say it
+        // some other way, or undo is a silent jump the user has to diff.
+        if (did)
+            showStatus(withAction(undoing ? "Undo" : "Redo", true, action));
+
         return true;
     }
 
@@ -2591,7 +2614,7 @@ void MainComponent::previewAudioFile(const juce::File& file)
                               + juce::String::formatted("   (%.2f s)", engine_.loadedClipSeconds()),
                           juce::dontSendNotification);
     else
-        clipLabel.setText("Could not load: " + file.getFileName(), juce::dontSendNotification);
+        showError("Could not load: " + file.getFileName());
 }
 
 void MainComponent::importMidiFileDialog()
@@ -2613,7 +2636,7 @@ void MainComponent::importMidiFileDialog()
 
         if (! result.ok)
         {
-            clipLabel.setText("Could not import: " + file.getFileName(), juce::dontSendNotification);
+            showError("Could not import: " + file.getFileName());
             return;
         }
 
@@ -2626,7 +2649,7 @@ void MainComponent::importMidiFileDialog()
                  + juce::String(history_.current().bpm, 1) + " BPM";
         if (result.extraTempoEventsIgnored > 0)
             msg += " (" + juce::String(result.extraTempoEventsIgnored) + " further tempo change(s) not imported)";
-        clipLabel.setText(msg, juce::dontSendNotification);
+        showStatus(msg);
     });
 }
 
@@ -2644,9 +2667,10 @@ void MainComponent::exportMidiFileDialog()
         file = file.withFileExtension("mid");
 
         const bool ok = engine::exportMidiFile(file, history_.current());
-        clipLabel.setText(ok ? "Exported: " + file.getFileName()
-                             : juce::String("MIDI export failed (no instrument track has any notes)"),
-                          juce::dontSendNotification);
+        if (ok)
+            showStatus("Exported: " + file.getFileName());
+        else
+            showError("MIDI export failed (no instrument track has any notes)");
     });
 }
 
@@ -2665,7 +2689,7 @@ void MainComponent::setProjectRootFolderDialog()
         history_.edit("Set project root folder", [path](model::Song& s) { s.projectRootFolder = path; });
 
         fileBrowser_.setProjectRootFolder(dir);
-        clipLabel.setText("Project root folder set to: " + dir.getFullPathName(), juce::dontSendNotification);
+        showStatus("Project root folder set to: " + dir.getFullPathName());
     });
 }
 
@@ -2676,7 +2700,7 @@ void MainComponent::importAudioToNewTrack()
 {
     if (trackCount() >= engine_.maxTracks())
     {
-        clipLabel.setText("Track limit reached", juce::dontSendNotification);
+        showError("Track limit reached");
         return;
     }
 
@@ -2739,13 +2763,13 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
         syncEngineTracks();
         selectTrackAndClip(targetTrackIndex, newClipIndex);
         arrangementView_.setSong(history_.current());
-        clipLabel.setText("Imported: " + file.getFileName() + "  (added clip)", juce::dontSendNotification);
+        showStatus("Imported: " + file.getFileName() + "  (added clip)");
         return;
     }
 
     if (trackCount() >= engine_.maxTracks())
     {
-        clipLabel.setText("Track limit reached", juce::dontSendNotification);
+        showError("Track limit reached");
         return;
     }
 
@@ -2767,7 +2791,7 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
     });
 
     selectTrackAndRefreshAll(newTrackIndex);
-    clipLabel.setText("Imported: " + file.getFileName() + "  (new track)", juce::dontSendNotification);
+    showStatus("Imported: " + file.getFileName() + "  (new track)");
 }
 
 /** Points the whole UI at a track: every pane that shows per-track state is
@@ -2803,7 +2827,7 @@ void MainComponent::toggleRecording()
     {
         if (! engine_.beginRecording())
         {
-            clipLabel.setText("No audio input device available", juce::dontSendNotification);
+            showError("No audio input device available");
             return;
         }
 
@@ -2830,7 +2854,7 @@ void MainComponent::finishRecordingIfReady()
     const int length = engine_.recordedTakeLength();
     if (length <= 0)
     {
-        clipLabel.setText("Recording was empty (no input captured)", juce::dontSendNotification);
+        showError("Recording was empty (no input captured)");
         return;
     }
 
@@ -2842,7 +2866,7 @@ void MainComponent::finishRecordingIfReady()
     const auto file = recordingsDirectory().getNonexistentChildFile("Recording", ".wav");
     if (! engine::OfflineRenderer::writeWav(file, trimmed, engine_.sampleRate()))
     {
-        clipLabel.setText("Failed to write recording", juce::dontSendNotification);
+        showError("Failed to write recording");
         return;
     }
 
@@ -2866,7 +2890,7 @@ void MainComponent::finishRecordingIfReady()
     });
 
     selectTrackAndRefreshAll(newTrackIndex);
-    clipLabel.setText("Recorded: " + file.getFileName(), juce::dontSendNotification);
+    showStatus("Recorded: " + file.getFileName());
 }
 
 juce::File MainComponent::recordingsDirectory() const
@@ -2875,6 +2899,22 @@ juce::File MainComponent::recordingsDirectory() const
                   .getChildFile("Looper-Audio Recordings");
     dir.createDirectory();
     return dir;
+}
+
+/** Puts a passing message on screen. Deliberately not routed through any
+    pane: a pane can be collapsed or closed, and a report that lands somewhere
+    invisible is worse than none — the user reads silence as success. */
+void MainComponent::showStatus(const juce::String& message)
+{
+    status_.show(message, false);
+}
+
+/** As showStatus, for the messages that report something didn't work. Held
+    longer and marked, since these are the ones worth being sure was seen. */
+void MainComponent::showError(const juce::String& message)
+{
+    status_.show(message, true);
+    juce::Logger::writeToLog("Status: " + message);
 }
 
 /** True while the document differs from what's on disk. Asks the history for
@@ -2914,7 +2954,7 @@ bool MainComponent::writeProjectTo(const juce::File& file)
 
     if (! file.replaceWithText(juce::String::fromUTF8(text.c_str())))
     {
-        clipLabel.setText("Could not save " + file.getFileName(), juce::dontSendNotification);
+        showError("Could not save " + file.getFileName());
         return false;
     }
 
@@ -3028,8 +3068,7 @@ void MainComponent::chooseProjectToOpen()
         std::string error;
         if (! model::deserialize(file.loadFileAsString().toStdString(), song, &error))
         {
-            clipLabel.setText("Could not open " + file.getFileName() + ": " + error,
-                              juce::dontSendNotification);
+            showError("Could not open " + file.getFileName() + ": " + error);
             return;
         }
 
@@ -3154,10 +3193,10 @@ void MainComponent::bounceProject()
             }
         }
 
-        clipLabel.setText(engine::OfflineRenderer::writeWav(file, buffer, sampleRate)
-                              ? "Bounced: " + file.getFileName()
-                              : juce::String("Bounce failed"),
-                          juce::dontSendNotification);
+        if (engine::OfflineRenderer::writeWav(file, buffer, sampleRate))
+            showStatus("Bounced: " + file.getFileName());
+        else
+            showError("Bounce failed");
     });
 }
 
@@ -3343,6 +3382,9 @@ void MainComponent::resized()
     auto full = getLocalBounds();
     menuBar_.setBounds(full.removeFromTop(24));
     workspace_.setBounds(full); // the workspace lays its own tree out from here
+
+    // Sits over the workspace, against the bottom of the window.
+    status_.updateBounds();
 }
 
 void MainComponent::layoutLeftPane()
