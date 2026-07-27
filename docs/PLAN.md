@@ -34,7 +34,8 @@ This is a living document. As sections mature they should graduate into their ow
 18. [Next planned features: project-format versioning, metronome, editable clips & notes](#18-next-planned-features-project-format-versioning-metronome-editable-clips--notes)
 19. [Session view: clip launching and scenes](#19-session-view-clip-launching-and-scenes)
 20. [Plugin hosting](#20-plugin-hosting)
-21. [Appendix: reference reading](#21-appendix-reference-reading)
+21. [A guitar instrument and its pane](#21-a-guitar-instrument-and-its-pane)
+22. [Appendix: reference reading](#22-appendix-reference-reading)
 
 ---
 
@@ -1088,7 +1089,215 @@ of weight:
 
 ---
 
-## 21. Appendix: reference reading
+## 21. A guitar instrument and its pane
+
+A fourth track type alongside Instrument, Audio and Drum: a plucked-string
+instrument that is *played like a guitar* rather than a synth patch that happens
+to sound stringy. The difference between those two is almost entirely in the
+performance model, not the oscillator, which is what shapes this plan.
+
+### What actually makes it sound like a guitar
+
+Ranked by how much each contributes, because that ordering decides what to build
+first:
+
+1. **One note per string.** A guitar has six strings and can sound at most six
+   notes, one per string — and a new note on a string *cuts the one already
+   ringing there*. Nothing else on this list is as audible. A polyphonic synth
+   playing six notes is the single clearest giveaway that something isn't a
+   guitar.
+2. **Strums are not chords.** Strings are struck in sequence, roughly 10–30 ms
+   apart, alternating down and up. Played simultaneously, the same six notes
+   read as an organ.
+3. **Per-string timbre.** The same pitch on the low E at fret 12 and on the high
+   E open are different sounds — different string mass, tension and length. A
+   model that only knows pitch cannot produce this.
+4. **Pluck excitation and pick position.** Plucking near the bridge is bright and
+   thin, over the soundhole round and full. This is a comb filter set by where
+   along the string it's excited.
+5. **Body resonance.** The instrument's body colours everything, and is most of
+   what separates an acoustic from an electric.
+6. **Articulation.** Hammer-on and pull-off (a new pitch on a *still-ringing*
+   string, no new pluck), slides, bends, vibrato, palm mutes, dead notes.
+7. **Noise.** Finger squeak on position changes, fret buzz, pick attack.
+
+### Synthesis approach: extended Karplus-Strong, not samples
+
+**Recommendation: a digital waveguide (extended Karplus-Strong) per string.**
+
+A plucked string is one of the few instruments where physical modelling is both
+cheap and genuinely convincing: a delay line whose length sets the pitch, a
+lowpass in its feedback path for damping, excited by a noise burst. That is a
+handful of multiplies per sample.
+
+Why this over a sample library, which would be the other obvious answer:
+
+- **It needs no content.** A convincing multisampled guitar is thousands of
+  recordings across strings, frets, velocities and round-robins. This project has
+  no sample library and no pipeline for one.
+- **Articulation falls out of the model.** A hammer-on is "change the delay
+  length without re-exciting" — one line. In a sampler it's a whole extra layer
+  of recordings, and it's still an approximation.
+- **Per-string timbre falls out too**, because each string is a separate
+  resonator with its own damping and stiffness rather than a transposed copy of
+  one recording.
+- It fits what's already here: `DelayLine`, `StateVariableFilter`, and an engine
+  built around fixed pre-allocated per-voice state.
+
+The honest cost: it will sound like a *good synthetic* guitar, not like a
+recorded one. Sampling wins on raw realism and always will. If photorealism is
+the goal, this is the wrong approach and a sample library is the right one — that
+choice should be made deliberately, up front, not discovered later.
+
+### Low-level: the DSP
+
+**The string.** For each of six strings, a delay line of length `L = sampleRate /
+f0` samples, fed back through a damping filter:
+
+```
+    y[n] = filter( y[n - L] )        // the loop
+```
+
+**Fractional delay is not optional, and the existing DelayLine can't do it.**
+`DelayLine::processSample` takes an `int delaySamples` and reads an integer index.
+Rounding the loop length quantises pitch, and the error grows as pitch rises
+because `L` shrinks. Measured at 48 kHz:
+
+| note | f0 | delay (samples) | pitch error |
+|---|---|---|---|
+| E2, open low E | 82.41 Hz | 582.45 | +1.3 cents |
+| E4, open high E | 329.63 Hz | 145.62 | −4.5 cents |
+| E5, 12th fret | 659.26 Hz | 72.81 | −4.5 cents |
+| E6, 24th fret | 1318.51 Hz | 36.40 | +19.4 cents |
+
+Twenty cents sharp is a fifth of a semitone — audibly out of tune, and worse the
+further up the neck you play. So the string needs its own delay line with a
+**fractional read**: linear interpolation is the floor, a first-order allpass or
+Lagrange interpolator is better because linear interpolation is itself a lowpass
+and so leaks into the damping. `AudioFilePlayerNode` already does linear
+interpolated reads (`sampleLinear`) — the technique is in the codebase, just not
+in `DelayLine`.
+
+**Damping (the loop filter).** A one-pole lowpass in the feedback path sets decay:
+more damping, faster decay and duller tail. Two things it must do that a naive
+implementation gets wrong:
+
+- **Pitch-compensate.** A fixed coefficient makes high notes die far too fast,
+  because they go round the loop more often per second. Decay time should be
+  specified in *seconds* and the coefficient derived from `f0`.
+- **Preserve loop gain < 1** at all pitches, or the string self-oscillates.
+
+**Stiffness/dispersion.** Real strings are stiff, so high partials travel faster
+and the sound is slightly inharmonic — this is why a piano and a guitar don't
+sound like a synth sawtooth. A cascade of 1–4 allpass filters in the loop gives
+it. Worth having; not worth blocking on.
+
+**Excitation.** A short noise burst, lowpass-shaped by pick hardness, its length
+tied to pluck strength. **Pick position** is a comb: mix the burst with a delayed
+copy of itself, delay = `pickPosition × L`. This is a two-line change that buys a
+large amount of the character.
+
+**Body.** Cheapest useful version is a small bank of resonant peaks (3–5 biquads).
+Better is convolution with a body impulse response, which is a bigger dependency
+(a partitioned convolver) and is the natural place to stop for v1 — especially
+since the effect chain can now host a convolution *plugin*.
+
+**Per-string state.** Six `GuitarString` objects, each owning its delay line,
+loop filter, dispersion allpasses and current fret. Fixed and pre-allocated, like
+every other voice pool here — no allocation on the audio thread.
+
+### The performance model, which is the part that matters
+
+**Voice allocation is string allocation.** A note arriving must choose a string.
+The rule: pick a string that can reach the pitch (`f0 >= openString[i]`),
+preferring the one that needs the lowest fret and is not already ringing; if all
+candidates are ringing, take the one whose note is oldest and cut it. That "cut"
+is not voice stealing to save CPU — it is the instrument working correctly.
+
+**Where do string and fret come from?** MIDI carries neither, and this is the
+central design question. Three options:
+
+1. **Infer at play time** from the rule above. No format change, works with every
+   existing clip and with MIDI import. Can pick a different fingering than a
+   player would.
+2. **Store string/fret on the note.** Exact, but it's a change to
+   `engine::Note` (which sits under `model::Clip`), a format bump, and MIDI
+   export would silently drop it.
+3. **A MIDI channel per string**, which is what real guitar-MIDI hardware does.
+   Standard, survives export, and costs nothing structurally.
+
+**Recommendation: (1) now, designed so (3) can be honoured later if a channel is
+present.** Inference gets the instrument playable against everything that already
+exists; the channel convention is then purely additive.
+
+**Strumming** belongs in the *pane*, not the engine: it writes real notes with
+real time offsets into the pattern, the way the swing implementation in §18
+writes real positions rather than adding a playback-time feel parameter. It stays
+visible and editable, and the engine stays simple.
+
+### The pane
+
+A fretboard, because that is the interface the instrument actually has — six
+strings across, frets down (or across, laid out like a neck), which is also the
+only view in which "one note per string" is self-evident.
+
+- **Fretboard grid.** Click a fret to sound that note on that string; the
+  currently ringing note per string is highlighted, which makes the cut-on-retrigger
+  behaviour visible rather than mysterious.
+- **Chord palette.** Named shapes (open chords, barre shapes) that stamp a
+  voicing into the pattern. This is what makes the pane fast to use, and it is
+  the thing a piano roll can't express.
+- **Strum controls.** Direction, spread in milliseconds, humanise amount — the
+  three parameters that turn a chord into a strum. Applied as an edit, per above.
+- **Per-string tuning**, so drop-D and open tunings work. Six pitch fields, with
+  presets.
+- **Tone controls.** Pick position, pick hardness, damping/decay, body amount,
+  string stiffness — the model's parameters, named as a guitarist would name
+  them rather than as the DSP does.
+
+The piano roll keeps working on a guitar track, since the notes are still notes.
+The fretboard is an additional way in, exactly as the Drums pane sits alongside
+the piano roll for drum tracks.
+
+### Verification
+
+The parts that can be proven headlessly, which is most of the DSP:
+
+- **Pitch accuracy.** Render each open string and every fret to 24, measure f0 by
+  autocorrelation, require < 2 cents error. This is the check that would have
+  caught the integer-delay problem above, and it should be written *before* the
+  string is.
+- **Decay time.** Set a decay of *n* seconds, measure the time to −60 dB, require
+  it within tolerance — and require it to hold across the whole pitch range,
+  which is the pitch-compensation bug.
+- **Loop stability.** No string may grow in amplitude over 30 seconds at any
+  pitch or damping setting.
+- **One note per string.** Retriggering a string must cut the previous note:
+  assert the earlier pitch is gone from the spectrum.
+- **Strum offsets.** Six notes stamped by a strum must have monotonically
+  increasing start times, spread within tolerance of the requested milliseconds.
+- **RT-safety.** No allocation in `process` — the existing discipline.
+
+`rmsDry` and the other bounce checks must not move: this is a new track type, and
+nothing it adds may touch the existing render path.
+
+### Build order
+
+1. **`GuitarString` DSP alone**, JUCE-free, with the pitch/decay/stability tests
+   above. Nothing audible in the app; the part where being wrong is silent.
+2. **`GuitarNode`** — six strings, string allocation, MIDI in — plus
+   `TrackType::Guitar`, `model::GuitarSettings`, serialization, and the
+   bounce checks for one-note-per-string.
+3. **The fretboard pane** — grid, tuning, tone controls.
+4. **Chords and strumming**, as pattern edits.
+
+Articulations (hammer-on, slide, bend, palm mute) come after, and are mostly a
+matter of *not* re-exciting a string while changing its delay length — the model
+already supports them; the question is how they're expressed in the document.
+
+---
+
+## 22. Appendix: reference reading
 
 - **Real-time audio programming:** Ross Bencina, *"Real-time audio programming 101: time waits for
   nothing"* (the no-locks/no-allocations canon).
