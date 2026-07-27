@@ -116,6 +116,14 @@ public:
                                 float pickPosition, float pickHardness, float muteOnNoteOff);
     void setTrackGuitarTuning(int index, const std::array<int, kNumGuitarStrings>& tuning);
 
+    /** Which note a guitar track is currently sounding on a given string, or
+        -1. Lock-free readout for the fretboard. */
+    int guitarNoteOnString(int index, int stringIndex) const noexcept
+    {
+        return (index >= 0 && index < kMaxTracks)
+                   ? tracks_[(size_t) index].guitar.noteOnString(stringIndex) : -1;
+    }
+
     /** Replaces a track's whole drum-kit pad→sample mapping, decoding any
         file not already cached (see decodeOrGetCached — same cache
         setTrackAudioClips uses, so a sample shared across pads or tracks is

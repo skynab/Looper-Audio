@@ -100,12 +100,14 @@ public:
         renderSpan(buffer, position, numSamples - position);
     }
 
-    /** Which note each string is currently sounding, or -1. Used by the tests
-        and, later, by the fretboard pane to show what's ringing. */
+    /** Which note each string is currently sounding, or -1. Atomic because the
+        fretboard pane reads it from the UI thread every frame to show what's
+        ringing — which is what makes the cut-on-retrigger behaviour visible
+        rather than mysterious. */
     int noteOnString(int stringIndex) const
     {
         return (stringIndex >= 0 && stringIndex < kNumGuitarStrings)
-                   ? sounding_[(size_t) stringIndex] : -1;
+                   ? sounding_[(size_t) stringIndex].load(std::memory_order_relaxed) : -1;
     }
 
 private:
@@ -155,7 +157,7 @@ private:
             if (fret < 0 || fret > kMaxFret)
                 continue; // this string can't reach the note at all
 
-            if (sounding_[(size_t) s] < 0)
+            if (sounding_[(size_t) s].load(std::memory_order_relaxed) < 0)
             {
                 if (fret < bestFret)
                 {
@@ -183,7 +185,7 @@ private:
         string.setFrequency(midiNoteToHertz(midiNote));
         string.pluck(velocity);
 
-        sounding_[(size_t) chosen]  = midiNote;
+        sounding_[(size_t) chosen].store(midiNote, std::memory_order_relaxed);
         pluckedAt_[(size_t) chosen] = ++pluckCounter_;
     }
 
@@ -196,7 +198,7 @@ private:
 
         for (int s = 0; s < kNumGuitarStrings; ++s)
         {
-            if (sounding_[(size_t) s] != midiNote)
+            if (sounding_[(size_t) s].load(std::memory_order_relaxed) != midiNote)
                 continue;
 
             if (damping > 0.0f)
@@ -204,7 +206,7 @@ private:
 
             // Freed either way: the string is no longer holding that note, so
             // the allocator may reach for it before it has finished ringing.
-            sounding_[(size_t) s] = -1;
+            sounding_[(size_t) s].store(-1, std::memory_order_relaxed);
             return;
         }
     }
@@ -228,7 +230,7 @@ private:
     std::array<GuitarString, kNumGuitarStrings> strings_;
 
     // Audio-thread state: which note each string holds, and when it was struck.
-    std::array<int, kNumGuitarStrings> sounding_  { -1, -1, -1, -1, -1, -1 };
+    std::array<std::atomic<int>, kNumGuitarStrings> sounding_ { -1, -1, -1, -1, -1, -1 };
     std::array<int, kNumGuitarStrings> pluckedAt_ {};
     int                                pluckCounter_ = 0;
 

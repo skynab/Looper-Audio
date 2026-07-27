@@ -214,7 +214,9 @@ MainComponent::MainComponent()
     mixerView_.addAndMakeVisible(addTrackButton);
 
     addDrumTrackButton_.onClick = [this] { addDrumTrack(); };
+    addGuitarTrackButton_.onClick = [this] { addGuitarTrack(); };
     mixerView_.addAndMakeVisible(addDrumTrackButton_);
+    mixerView_.addAndMakeVisible(addGuitarTrackButton_);
 
     // ---- master panel: collapsible (see toggleMasterPanelButton_) since at
     // narrow widths it was clipping against the track strips ----
@@ -580,6 +582,12 @@ MainComponent::MainComponent()
     sessionView_.onAddScene    = [this] { addSessionScene(); };
     sessionView_.onClipSelected = [this](int track, int scene) { captureClipIntoSession(track, scene); };
 
+    // Clicking a fret sounds the note through the armed track, which for a
+    // Guitar track is its GuitarNode — so the fretboard plays the same
+    // instrument the sequencer does, including the one-note-per-string cut.
+    fretboard_.onFretPlayed      = [this](int note) { previewNote(note); };
+    fretboard_.onSettingsChanged = [this](const model::GuitarSettings& s) { setTrackGuitarSettings(s); };
+
     effectChain_.onBuiltInAdded = [this](model::EffectKind kind) { addEffectSlot(kind, {}); };
     effectChain_.onPluginAdded  = [this](const engine::PluginEntry& entry)
     {
@@ -609,6 +617,7 @@ MainComponent::MainComponent()
     workspace_.registerPanel("Keys", editTab_);
     workspace_.registerPanel("Synth", synthEditor_);
     workspace_.registerPanel("Drums", drumsPane_);
+    workspace_.registerPanel("Guitar", fretboard_);
     workspace_.registerPanel("Session", sessionView_);
     workspace_.registerPanel("Track FX", effectChain_);
     workspace_.registerPanel("Mixer", mixerView_);
@@ -668,6 +677,7 @@ MainComponent::MainComponent()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -877,6 +887,7 @@ void MainComponent::addTrack()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -910,11 +921,76 @@ void MainComponent::addDrumTrack()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
     updateEditingLabel();
+}
+
+/** Same as addTrack(), but a Guitar-type track — six plucked strings in
+    standard tuning (see model::GuitarSettings). */
+void MainComponent::addGuitarTrack()
+{
+    if (trackCount() >= engine_.maxTracks())
+        return;
+
+    history_.edit("Add guitar track", [](model::Song& s)
+    {
+        const auto name = "Guitar " + juce::String((int) s.tracks.size() + 1);
+        const int  id   = model::addTrack(s, model::TrackType::Guitar, name.toStdString()).id;
+        model::Clip clip;
+        clip.type                = model::ClipType::Instrument;
+        clip.lengthBeats         = 4.0;
+        clip.pattern.lengthBeats = 4.0;
+        model::addClip(s, id, clip);
+    });
+
+    selectedTrackIndex_ = trackCount() - 1;
+    selectedClipIndex_  = 0;
+    syncEngineTracks();
+    engine_.setArmedTrack(selectedTrackIndex_);
+    refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
+    refreshEffectChainForSelected();
+    refreshFretboardForSelected();
+    refreshFretboardForSelected();
+    refreshSessionView();
+    arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+    updateMixerStrips();
+    updateEditingLabel();
+}
+
+/** Shows the fretboard for the selected track, or a placeholder if it isn't a
+    Guitar track — the same gating the Synth and Drums panes use. */
+void MainComponent::refreshFretboardForSelected()
+{
+    const bool isGuitar = selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount()
+                        && history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Guitar;
+
+    if (isGuitar)
+        fretboard_.setSettings(history_.current().tracks[(size_t) selectedTrackIndex_].guitarSettings);
+    else
+        fretboard_.setNoGuitarTrackSelected();
+}
+
+/** Live tweak from the fretboard — document in place, then the engine, same
+    as the mixer faders and the Synth pane. Tuning goes through the same path,
+    since retuning a string is just another parameter to the model. */
+void MainComponent::setTrackGuitarSettings(const model::GuitarSettings& settings)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const int index = selectedTrackIndex_;
+    history_.mutableCurrent().tracks[(size_t) index].guitarSettings = settings;
+
+    engine_.setTrackGuitarSettings(index, settings.decaySeconds, settings.brightness,
+                                   settings.pickPosition, settings.pickHardness, settings.muteOnNoteOff);
+    engine_.setTrackGuitarTuning(index, settings.tuning);
 }
 
 /** Assigns @p file to pad @p padIndex of the currently selected track's drum
@@ -986,6 +1062,7 @@ void MainComponent::addClipToSelectedTrack()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1097,6 +1174,7 @@ void MainComponent::addEffectSlot(model::EffectKind kind, const model::PluginRef
     closePluginEditors();
     syncEngineTracks();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
 }
 
 void MainComponent::removeEffectSlot(int slotIndex)
@@ -1115,6 +1193,7 @@ void MainComponent::removeEffectSlot(int slotIndex)
     closePluginEditors();
     syncEngineTracks();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
 }
 
 /** Moves a slot one place up or down. Order is the whole point of a chain, so
@@ -1137,6 +1216,7 @@ void MainComponent::moveEffectSlot(int slotIndex, int delta)
     closePluginEditors();
     syncEngineTracks();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
 }
 
 /** Bypass. Not structural — the node stays in the chain — so this is a live
@@ -1154,6 +1234,7 @@ void MainComponent::setEffectSlotBypass(int slotIndex, bool enabled)
     chain[(size_t) slotIndex].enabled = enabled;
     engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, toSlotParams(chain[(size_t) slotIndex]));
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
 }
 
 /** A knob turn on a built-in slot: live, non-undoable per notch, same as the
@@ -1275,6 +1356,7 @@ void MainComponent::pasteNotes()
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
 }
 
@@ -1326,6 +1408,7 @@ void MainComponent::pasteClip()
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1366,6 +1449,7 @@ void MainComponent::duplicateClip()
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1400,6 +1484,7 @@ void MainComponent::quantizeNotes(double swingAmount)
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
 
     // Reloading the pattern clears the selection, which would silently widen
@@ -1471,6 +1556,7 @@ void MainComponent::setPatternBars(int bars)
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     updateEditingLabel();
@@ -1780,6 +1866,7 @@ void MainComponent::addDrumPad()
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
 }
 
@@ -1815,6 +1902,7 @@ void MainComponent::removeDrumPad(int padIndex)
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
 }
 
@@ -2086,6 +2174,7 @@ void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     updateMixerStrips(); // refreshes the selection highlight
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2117,6 +2206,7 @@ void MainComponent::refreshFromModel()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2372,6 +2462,7 @@ void MainComponent::selectNewlyAddedTrack(int newTrackIndex)
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
+    refreshFretboardForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2723,6 +2814,16 @@ void MainComponent::timerCallback()
         sessionView_.setPlayingSlots(playingSlots);
     }
 
+    // What the guitar is actually sounding, per string. Read from the engine
+    // rather than inferred: a string keeps ringing after its note-off, so the
+    // document can't say which notes are live.
+    {
+        std::array<int, model::kNumGuitarStrings> ringing {};
+        for (int s = 0; s < model::kNumGuitarStrings; ++s)
+            ringing[(size_t) s] = engine_.guitarNoteOnString(selectedTrackIndex_, s);
+        fretboard_.setRingingNotes(ringing);
+    }
+
     // The step grid's playhead walks the pattern's own loop, so it needs the
     // position relative to the open clip's start rather than the song's.
     {
@@ -2882,6 +2983,7 @@ void MainComponent::buildDefaultDockLayout()
         workspace_.addPanel(*bottom, "Drums");
         workspace_.addPanel(*bottom, "Track FX");
         workspace_.addPanel(*bottom, "Session");
+        workspace_.addPanel(*bottom, "Guitar");
         bottom->showPanel("Keys");
 
         if (auto* transport = workspace_.splitRegion(*bottom, DropZone::Bottom, 0.68))
@@ -2942,6 +3044,8 @@ void MainComponent::layoutMixerView()
     addTrackButton.setBounds(toolbar.removeFromLeft(100));
     toolbar.removeFromLeft(6);
     addDrumTrackButton_.setBounds(toolbar.removeFromLeft(100));
+    toolbar.removeFromLeft(6);
+    addGuitarTrackButton_.setBounds(toolbar.removeFromLeft(100));
     toolbar.removeFromLeft(6);
     toggleMasterPanelButton_.setBounds(toolbar.removeFromRight(110));
     area.removeFromTop(8);

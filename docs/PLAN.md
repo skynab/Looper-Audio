@@ -1283,12 +1283,15 @@ nothing it adds may touch the existing render path.
 
 ### Build order
 
-1. **`GuitarString` DSP alone**, JUCE-free, with the pitch/decay/stability tests
-   above. Nothing audible in the app; the part where being wrong is silent.
-2. **`GuitarNode`** — six strings, string allocation, MIDI in — plus
+1. **`GuitarString` DSP alone** *(implemented)*, JUCE-free, with the pitch/decay/stability
+   tests above. Nothing audible in the app; the part where being wrong is silent.
+2. **`GuitarNode`** *(implemented)* — six strings, string allocation, MIDI in — plus
    `TrackType::Guitar`, `model::GuitarSettings`, serialization, and the
    bounce checks for one-note-per-string.
-3. **The fretboard pane** — grid, tuning, tone controls.
+3. **The fretboard pane** *(implemented)* — grid, tuning, tone controls. Clicking a fret
+   sounds it through the armed track, so the pane plays the same instrument the sequencer
+   does, cut rule included. Which notes are ringing is read from the engine rather than
+   inferred, since a string keeps sounding after its note-off.
 4. **Chords and strumming**, as pattern edits.
 
 Articulations (hammer-on, slide, bend, palm mute) come after, and are mostly a

@@ -15,6 +15,7 @@
 #include "DockWorkspace.h"
 #include "DrumsPane.h"
 #include "EffectChainPanel.h"
+#include "FretboardPane.h"
 #include "FileBrowserPanel.h"
 #include "LevelMeter.h"
 #include "MixerStrip.h"
@@ -95,6 +96,9 @@ private:
     void                   selectNewlyAddedTrack(int newTrackIndex);
     void                   addTrack();
     void                   addDrumTrack();
+    void                   addGuitarTrack();
+    void                   refreshFretboardForSelected();
+    void                   setTrackGuitarSettings(const model::GuitarSettings& settings);
     void                   assignDrumSample(int padIndex, const juce::File& file);
     void                   setDrumPadMix(int padIndex, const model::DrumPad& pad);
     void                   addDrumPad();
@@ -186,6 +190,7 @@ private:
     juce::DrawableButton recordButton { "Record", juce::DrawableButton::ImageFitted };
     juce::TextButton   addTrackButton { "Add Track" };
     juce::TextButton   addDrumTrackButton_ { "Add Drum" };
+    juce::TextButton   addGuitarTrackButton_ { "Add Guitar" };
     juce::TextButton   toggleMasterPanelButton_ { "Hide Master" };
     bool               masterPanelVisible_ = true;
     juce::ToggleButton loopButton      { "Loop" };
@@ -229,7 +234,8 @@ private:
     DrumsPane                          drumsPane_;   // ditto — see refreshDrumsPaneForSelected
     EffectChainPanel                   effectChain_;
     juce::OwnedArray<PluginEditorWindow> pluginWindows_;
-    SessionView                        sessionView_; // ditto — see refreshTrackEffectsForSelected
+    SessionView                        sessionView_;
+    FretboardPane                      fretboard_; // ditto — see refreshTrackEffectsForSelected
 
     CallbackComponent                  arrangeTab_;
     juce::Viewport                     arrangementViewport_;
