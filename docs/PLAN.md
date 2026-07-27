@@ -1006,7 +1006,7 @@ Three independently verifiable stages, in this order:
 
 ---
 
-## 20. Plugin hosting
+## 20. Plugin hosting (implemented)
 
 VST3 and Audio Unit hosting — the thing that turns a fixed set of built-in
 effects into an open one, and (per §15) the single biggest multiplier available.
@@ -1060,7 +1060,9 @@ of weight:
    a scan. This is the real-time-risky stage: a hosted plugin allocates, blocks,
    and misbehaves in ways the built-ins never do.
 3. **UI.** A chain editor (add/remove/reorder/bypass), a plugin browser backed by
-   a cached scan, and plugin editor windows.
+   a cached scan, and plugin editor windows. *Landed*, replacing the fixed
+   filter/delay/reverb panel — which could only edit one of each, and stopped being
+   true the moment a chain could hold two filters or a plugin.
 
 ### Recorded now so it isn't rediscovered
 

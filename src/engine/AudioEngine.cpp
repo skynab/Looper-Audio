@@ -389,10 +389,10 @@ void AudioEngine::rebuildTrackEffectChain(int index)
     track.setEffectChain(chain.release());
 }
 
-void AudioEngine::setTrackEffectChain(int index, const std::vector<EffectSlotSpec>& slots)
+bool AudioEngine::setTrackEffectChain(int index, const std::vector<EffectSlotSpec>& slots)
 {
     if (index < 0 || index >= kMaxTracks)
-        return;
+        return false;
 
     // Rebuilding resets every tail in the chain — and reinstantiates every
     // plugin — so only do it when the shape actually changed. A changed
@@ -403,97 +403,29 @@ void AudioEngine::setTrackEffectChain(int index, const std::vector<EffectSlotSpe
         sameShape = existing[i].sameShapeAs(slots[i]);
 
     if (sameShape)
-        return;
+        return false;
 
     chainStructure_[(size_t) index] = slots;
     rebuildTrackEffectChain(index);
+    return true;
 }
 
-namespace
+void AudioEngine::setTrackEffectSlotParams(int index, int slotIndex, const EffectSlotParams& params)
 {
-    /** The first node of @p NodeType in the chain a track last had submitted,
-        or nullptr. Parameter setters go through this: the newest chain is
-        never the one being reclaimed, so the message thread can safely poke
-        the atomics inside it. */
-    template <typename NodeType, size_t N>
-    NodeType* firstNode(const std::array<EffectChain*, N>& chains, int index)
-    {
-        if (index < 0 || index >= (int) N || chains[(size_t) index] == nullptr)
-            return nullptr;
-        return chains[(size_t) index]->template firstOfKind<NodeType>();
-    }
+    if (index < 0 || index >= kMaxTracks || slotIndex < 0)
+        return;
+
+    if (auto* chain = submittedChain_[(size_t) index])
+        chain->applyParams((size_t) slotIndex, params);
 }
 
-void AudioEngine::setTrackInsertFilterEnabled(int index, bool enabled)
+PluginNode* AudioEngine::trackPluginNode(int index, int slotIndex)
 {
-    if (auto* node = firstNode<FilterNode>(submittedChain_, index))
-        node->effect.setEnabled(enabled);
-}
+    if (index < 0 || index >= kMaxTracks || slotIndex < 0)
+        return nullptr;
 
-void AudioEngine::setTrackInsertFilterMode(int index, int mode)
-{
-    if (auto* node = firstNode<FilterNode>(submittedChain_, index))
-        node->effect.setMode(mode);
-}
-
-void AudioEngine::setTrackInsertFilterCutoff(int index, float hz)
-{
-    if (auto* node = firstNode<FilterNode>(submittedChain_, index))
-        node->effect.setCutoff(hz);
-}
-
-void AudioEngine::setTrackInsertFilterResonance(int index, float q)
-{
-    if (auto* node = firstNode<FilterNode>(submittedChain_, index))
-        node->effect.setResonance(q);
-}
-
-void AudioEngine::setTrackInsertDelayEnabled(int index, bool enabled)
-{
-    if (auto* node = firstNode<DelayNode>(submittedChain_, index))
-        node->effect.setEnabled(enabled);
-}
-
-void AudioEngine::setTrackInsertDelayTimeMs(int index, float ms)
-{
-    if (auto* node = firstNode<DelayNode>(submittedChain_, index))
-        node->effect.setTimeMs(ms);
-}
-
-void AudioEngine::setTrackInsertDelayFeedback(int index, float amount)
-{
-    if (auto* node = firstNode<DelayNode>(submittedChain_, index))
-        node->effect.setFeedback(amount);
-}
-
-void AudioEngine::setTrackInsertDelayMix(int index, float amount)
-{
-    if (auto* node = firstNode<DelayNode>(submittedChain_, index))
-        node->effect.setMix(amount);
-}
-
-void AudioEngine::setTrackInsertReverbEnabled(int index, bool enabled)
-{
-    if (auto* node = firstNode<ReverbNode>(submittedChain_, index))
-        node->effect.setEnabled(enabled);
-}
-
-void AudioEngine::setTrackInsertReverbRoomSize(int index, float v)
-{
-    if (auto* node = firstNode<ReverbNode>(submittedChain_, index))
-        node->effect.setRoomSize(v);
-}
-
-void AudioEngine::setTrackInsertReverbDamping(int index, float v)
-{
-    if (auto* node = firstNode<ReverbNode>(submittedChain_, index))
-        node->effect.setDamping(v);
-}
-
-void AudioEngine::setTrackInsertReverbMix(int index, float v)
-{
-    if (auto* node = firstNode<ReverbNode>(submittedChain_, index))
-        node->effect.setMix(v);
+    auto* chain = submittedChain_[(size_t) index];
+    return chain != nullptr ? dynamic_cast<PluginNode*>(chain->nodeAt((size_t) slotIndex)) : nullptr;
 }
 
 void AudioEngine::setArmedTrack(int index)

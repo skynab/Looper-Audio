@@ -611,6 +611,7 @@ int main(int argc, char** argv)
         {
             EffectNodeKind kind() const noexcept override { return EffectNodeKind::Filter; }
             void prepare(double, int) override {}
+            void setEnabled(bool) override {}
             void process(juce::AudioBuffer<float>& buffer) override { buffer.applyGain(0.25f); }
         };
 
@@ -618,6 +619,7 @@ int main(int argc, char** argv)
         {
             EffectNodeKind kind() const noexcept override { return EffectNodeKind::Filter; }
             void prepare(double, int) override {}
+            void setEnabled(bool) override {}
             void process(juce::AudioBuffer<float>& buffer) override
             {
                 for (int ch = 0; ch < buffer.getNumChannels(); ++ch)

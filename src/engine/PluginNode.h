@@ -85,6 +85,7 @@ public:
         instance_->processBlock(buffer, midi_);
     }
 
+    void setEnabled(bool enabled) override { bypassed_ = ! enabled; }
     void setBypassed(bool shouldBypass) noexcept { bypassed_ = shouldBypass; }
 
     /** The plugin's own opaque state, for saving into the document. Message

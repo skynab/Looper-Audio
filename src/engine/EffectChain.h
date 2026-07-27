@@ -44,6 +44,27 @@ struct EffectSlotSpec
     }
 };
 
+/** Every built-in's parameters for one slot, pushed by index. All of them
+    travel together because only the ones matching the slot's kind are read —
+    the same trade model::EffectSlot makes, so switching a slot's kind doesn't
+    lose the settings of the others. */
+struct EffectSlotParams
+{
+    bool  enabled = false;
+
+    int   filterMode      = 0;
+    float filterCutoff    = 1000.0f;
+    float filterResonance = 0.707f;
+
+    float delayTimeMs   = 300.0f;
+    float delayFeedback = 0.35f;
+    float delayMix      = 0.3f;
+
+    float reverbRoomSize = 0.5f;
+    float reverbDamping  = 0.5f;
+    float reverbMix      = 0.3f;
+};
+
 /** One effect in a track's chain. Virtual dispatch costs one indirect call
     per node per block, which is nothing against the work inside — and it's
     what lets a node hold only the state its own kind needs, instead of every
@@ -55,6 +76,10 @@ struct EffectProcessor
     virtual EffectNodeKind kind() const noexcept = 0;
     virtual void prepare(double sampleRate, int blockSize) = 0;
     virtual void process(juce::AudioBuffer<float>& buffer) = 0;
+
+    /** Bypass. Means the same thing for a hosted plugin as for a built-in: the
+        node stays in the chain and passes audio through untouched. */
+    virtual void setEnabled(bool enabled) = 0;
 };
 
 struct FilterNode final : EffectProcessor
@@ -64,6 +89,7 @@ struct FilterNode final : EffectProcessor
     EffectNodeKind kind() const noexcept override { return EffectNodeKind::Filter; }
     void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
     void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
 };
 
 struct DelayNode final : EffectProcessor
@@ -73,6 +99,7 @@ struct DelayNode final : EffectProcessor
     EffectNodeKind kind() const noexcept override { return EffectNodeKind::Delay; }
     void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
     void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
 };
 
 struct ReverbNode final : EffectProcessor
@@ -82,6 +109,7 @@ struct ReverbNode final : EffectProcessor
     EffectNodeKind kind() const noexcept override { return EffectNodeKind::Reverb; }
     void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
     void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
 };
 
 /**
@@ -120,17 +148,39 @@ public:
     bool   empty() const noexcept { return nodes_.empty(); }
     size_t size() const noexcept  { return nodes_.size(); }
 
-    /** The first node of a given kind, or nullptr. How parameter setters find
-        their target while the UI still offers one of each kind; a chain
-        editor (§20 stage 3) will address nodes by index instead. */
-    template <typename NodeType>
-    NodeType* firstOfKind()
+    /** Applies one slot's parameters, addressed by *position*. By index rather
+        than by kind because a chain may hold two filters, and "the filter"
+        stops meaning anything the moment it does. An out-of-range index is
+        ignored: the live chain can be one rebuild behind the document. */
+    void applyParams(size_t index, const EffectSlotParams& params)
     {
-        for (auto& node : nodes_)
-            if (auto* typed = dynamic_cast<NodeType*>(node.get()))
-                return typed;
-        return nullptr;
+        if (index >= nodes_.size())
+            return;
+
+        auto& node = *nodes_[index];
+        node.setEnabled(params.enabled);
+
+        if (auto* filter = dynamic_cast<FilterNode*>(&node))
+        {
+            filter->effect.setMode(params.filterMode);
+            filter->effect.setCutoff(params.filterCutoff);
+            filter->effect.setResonance(params.filterResonance);
+        }
+        else if (auto* delay = dynamic_cast<DelayNode*>(&node))
+        {
+            delay->effect.setTimeMs(params.delayTimeMs);
+            delay->effect.setFeedback(params.delayFeedback);
+            delay->effect.setMix(params.delayMix);
+        }
+        else if (auto* reverb = dynamic_cast<ReverbNode*>(&node))
+        {
+            reverb->effect.setRoomSize(params.reverbRoomSize);
+            reverb->effect.setDamping(params.reverbDamping);
+            reverb->effect.setMix(params.reverbMix);
+        }
     }
+
+    EffectProcessor* nodeAt(size_t index) { return index < nodes_.size() ? nodes_[index].get() : nullptr; }
 
 private:
     std::vector<std::unique_ptr<EffectProcessor>> nodes_;

@@ -219,30 +219,25 @@ public:
         tail in the chain, so parameter changes must go through the setters
         below instead. A no-op when the structure already matches, which is
         what keeps an unrelated document edit from glitching a delay tail. */
-    void setTrackEffectChain(int index, const std::vector<EffectSlotSpec>& slots);
+    /** Returns true if the chain was actually rebuilt — which destroys the
+        old nodes, hosted plugins included. The caller must close anything
+        pointing at them first (see MainComponent::closePluginEditors): an
+        editor outliving its processor is a crash, not a glitch. */
+    bool setTrackEffectChain(int index, const std::vector<EffectSlotSpec>& slots);
 
     /** The plugin host, for the UI's browser and scan. Message thread. */
     PluginHost& pluginHost() noexcept { return pluginHost_; }
 
-    // Per-track insert parameters. Each addresses the *first* node of its kind
-    // in that track's chain and does nothing if there isn't one — the UI still
-    // offers one of each; a chain editor (§20 stage 3) will address nodes by
-    // index. Safe from the message thread: these are atomics inside nodes the
-    // message thread built and still owns a pointer to.
-    void setTrackInsertFilterEnabled(int index, bool enabled);
-    void setTrackInsertFilterMode(int index, int mode);
-    void setTrackInsertFilterCutoff(int index, float hz);
-    void setTrackInsertFilterResonance(int index, float q);
+    /** Applies one chain slot's parameters, addressed by position. Safe from
+        the message thread: these are atomics inside nodes it built and still
+        holds a pointer to. Addressed by index rather than by kind so a chain
+        with two filters is editable at all. */
+    void setTrackEffectSlotParams(int index, int slotIndex, const EffectSlotParams& params);
 
-    void setTrackInsertDelayEnabled(int index, bool enabled);
-    void setTrackInsertDelayTimeMs(int index, float ms);
-    void setTrackInsertDelayFeedback(int index, float amount);
-    void setTrackInsertDelayMix(int index, float amount);
-
-    void setTrackInsertReverbEnabled(int index, bool enabled);
-    void setTrackInsertReverbRoomSize(int index, float v);
-    void setTrackInsertReverbDamping(int index, float v);
-    void setTrackInsertReverbMix(int index, float v);
+    /** A hosted plugin in a track's chain, for opening its editor. nullptr if
+        that slot isn't a plugin (or the chain is a rebuild behind). Message
+        thread. */
+    PluginNode* trackPluginNode(int index, int slotIndex);
 
     // Master effects (thread-safe atomics; safe to call from the message thread).
     void setMasterFilterEnabled(bool enabled)  { masterFilter_.setEnabled(enabled); }

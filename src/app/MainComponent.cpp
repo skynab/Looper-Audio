@@ -499,12 +499,28 @@ MainComponent::MainComponent()
     sessionView_.onAddScene    = [this] { addSessionScene(); };
     sessionView_.onClipSelected = [this](int track, int scene) { captureClipIntoSession(track, scene); };
 
-    trackEffects_.onSettingsChanged = [this](const model::FilterSettings& f,
-                                             const model::DelaySettings& d,
-                                             const model::ReverbSettings& r)
+    effectChain_.onBuiltInAdded = [this](model::EffectKind kind) { addEffectSlot(kind, {}); };
+    effectChain_.onPluginAdded  = [this](const engine::PluginEntry& entry)
     {
-        setTrackInsertEffects(f, d, r);
+        model::PluginRef ref;
+        ref.format     = entry.format == "VST3" ? model::PluginFormat::VST3
+                       : entry.format == "AudioUnit" ? model::PluginFormat::AudioUnit
+                                                     : model::PluginFormat::Unknown;
+        ref.identifier = entry.identifier;
+        ref.name       = entry.name;
+        addEffectSlot(model::EffectKind::Plugin, ref);
     };
+    effectChain_.onSlotRemoved          = [this](int slot) { removeEffectSlot(slot); };
+    effectChain_.onSlotMoved            = [this](int slot, int delta) { moveEffectSlot(slot, delta); };
+    effectChain_.onSlotBypassToggled    = [this](int slot, bool on) { setEffectSlotBypass(slot, on); };
+    effectChain_.onSlotParamsChanged    = [this](const model::EffectSlot& s, int i) { setEffectSlotParams(s, i); };
+    effectChain_.onScanRequested        = [this] { scanForPlugins(); };
+
+    // A previous scan, so launching doesn't re-probe every plugin on the
+    // machine — probing instantiates each one and is slow.
+    engine_.pluginHost().restoreScanCache(settings_.getValue("pluginScanCache").toStdString());
+    effectChain_.setAvailablePlugins(engine_.pluginHost().knownPlugins());
+    effectChain_.onPluginEditorRequested = [this](int slot) { openPluginEditor(slot); };
 
     workspace_.registerPanel("Files", fileBrowser_);
     workspace_.registerPanel("Transport", leftPane_);
@@ -513,7 +529,7 @@ MainComponent::MainComponent()
     workspace_.registerPanel("Synth", synthEditor_);
     workspace_.registerPanel("Drums", drumsPane_);
     workspace_.registerPanel("Session", sessionView_);
-    workspace_.registerPanel("Track FX", trackEffects_);
+    workspace_.registerPanel("Track FX", effectChain_);
     workspace_.registerPanel("Mixer", mixerView_);
     workspace_.registerPanel("Keyboard", keyboard_);
     loadDockLayout(); // last session's arrangement, or the default one
@@ -570,7 +586,7 @@ MainComponent::MainComponent()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -779,7 +795,7 @@ void MainComponent::addTrack()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -812,7 +828,7 @@ void MainComponent::addDrumTrack()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -888,7 +904,7 @@ void MainComponent::addClipToSelectedTrack()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -945,80 +961,183 @@ void MainComponent::captureClipIntoSession(int trackIndex, int sceneIndex)
 /** Shows the selected track's insert effects. Unlike the Synth and Drums
     panes this applies to *every* track type — an audio track wants a filter
     as much as an instrument one does. */
-void MainComponent::refreshTrackEffectsForSelected()
+void MainComponent::refreshEffectChainForSelected()
 {
     if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
     {
-        trackEffects_.setNoTrackSelected();
+        effectChain_.setNoTrackSelected();
         return;
     }
 
-    const auto& track = history_.current().tracks[(size_t) selectedTrackIndex_];
-    const auto* filterSlot = track.firstEffect(model::EffectKind::Filter);
-    const auto* delaySlot  = track.firstEffect(model::EffectKind::Delay);
-    const auto* reverbSlot = track.firstEffect(model::EffectKind::Reverb);
-
-    trackEffects_.setSettings(filterSlot != nullptr ? filterSlot->filter : model::FilterSettings {},
-                              delaySlot  != nullptr ? delaySlot->delay   : model::DelaySettings {},
-                              reverbSlot != nullptr ? reverbSlot->reverb : model::ReverbSettings {});
+    effectChain_.setChain(history_.current().tracks[(size_t) selectedTrackIndex_].effectChain);
 }
 
 /** Live tweak from the Track FX pane — updates the document in place (not a
     separate undo step per knob notch) and mirrors it into the engine, the
     same pattern the mixer faders and the Synth pane use. */
-void MainComponent::setTrackInsertEffects(const model::FilterSettings& filter,
-                                          const model::DelaySettings& delay,
-                                          const model::ReverbSettings& reverb)
+/** One chain slot's parameters in the engine's terms. `enabled` is the
+    slot's own bypass, not the per-settings flag — bypass has to mean the same
+    thing for a hosted plugin as for a built-in. */
+static engine::EffectSlotParams toSlotParams(const model::EffectSlot& slot)
+{
+    engine::EffectSlotParams params;
+    params.enabled         = slot.enabled;
+    params.filterMode      = slot.filter.mode;
+    params.filterCutoff    = slot.filter.cutoff;
+    params.filterResonance = slot.filter.resonance;
+    params.delayTimeMs     = slot.delay.timeMs;
+    params.delayFeedback   = slot.delay.feedback;
+    params.delayMix        = slot.delay.mix;
+    params.reverbRoomSize  = slot.reverb.roomSize;
+    params.reverbDamping   = slot.reverb.damping;
+    params.reverbMix       = slot.reverb.mix;
+    return params;
+}
+
+/** Adds a slot to the end of the selected track's chain. Structural, so it
+    goes through history_ — and adding a plugin rebuilds the engine chain,
+    which is what instantiates it. */
+void MainComponent::addEffectSlot(model::EffectKind kind, const model::PluginRef& plugin)
 {
     if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
         return;
 
     const int index = selectedTrackIndex_;
-    auto&     track = history_.mutableCurrent().tracks[(size_t) index];
-    // Writes into the chain's first slot of each kind, creating it if the track
-    // had none — which is how a track that has never been touched grows a chain
-    // the first time a knob moves. New slots go in the old fixed trio's order
-    // (filter, delay, reverb) so nothing rearranges under an existing project.
-    auto slotFor = [&track](model::EffectKind kind) -> model::EffectSlot&
+    history_.edit("Add effect", [index, kind, &plugin](model::Song& s)
     {
-        for (auto& slot : track.effectChain)
-            if (slot.kind == kind)
-                return slot;
+        model::EffectSlot slot;
+        slot.kind    = kind;
+        slot.enabled = true; // added because you want to hear it
+        slot.plugin  = plugin;
+        s.tracks[(size_t) index].effectChain.push_back(std::move(slot));
+    });
 
-        model::EffectSlot created;
-        created.kind = kind;
-        track.effectChain.push_back(created);
-        return track.effectChain.back();
-    };
-
-    auto& filterSlot   = slotFor(model::EffectKind::Filter);
-    filterSlot.filter  = filter;
-    filterSlot.enabled = filter.enabled;
-
-    auto& delaySlot   = slotFor(model::EffectKind::Delay);
-    delaySlot.delay   = delay;
-    delaySlot.enabled = delay.enabled;
-
-    auto& reverbSlot   = slotFor(model::EffectKind::Reverb);
-    reverbSlot.reverb  = reverb;
-    reverbSlot.enabled = reverb.enabled;
-
-    engine_.setTrackInsertFilterEnabled(index, filter.enabled);
-    engine_.setTrackInsertFilterMode(index, filter.mode);
-    engine_.setTrackInsertFilterCutoff(index, filter.cutoff);
-    engine_.setTrackInsertFilterResonance(index, filter.resonance);
-
-    engine_.setTrackInsertDelayEnabled(index, delay.enabled);
-    engine_.setTrackInsertDelayTimeMs(index, delay.timeMs);
-    engine_.setTrackInsertDelayFeedback(index, delay.feedback);
-    engine_.setTrackInsertDelayMix(index, delay.mix);
-
-    engine_.setTrackInsertReverbEnabled(index, reverb.enabled);
-    engine_.setTrackInsertReverbRoomSize(index, reverb.roomSize);
-    engine_.setTrackInsertReverbDamping(index, reverb.damping);
-    engine_.setTrackInsertReverbMix(index, reverb.mix);
+    // Any open editor belongs to a node the rebuild is about to delete.
+    closePluginEditors();
+    syncEngineTracks();
+    refreshEffectChainForSelected();
 }
 
+void MainComponent::removeEffectSlot(int slotIndex)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const int index = selectedTrackIndex_;
+    history_.edit("Remove effect", [index, slotIndex](model::Song& s)
+    {
+        auto& chain = s.tracks[(size_t) index].effectChain;
+        if (slotIndex >= 0 && slotIndex < (int) chain.size())
+            chain.erase(chain.begin() + slotIndex);
+    });
+
+    closePluginEditors();
+    syncEngineTracks();
+    refreshEffectChainForSelected();
+}
+
+/** Moves a slot one place up or down. Order is the whole point of a chain, so
+    this is a real document edit rather than a view-only sort. */
+void MainComponent::moveEffectSlot(int slotIndex, int delta)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const int index = selectedTrackIndex_;
+    history_.edit("Reorder effects", [index, slotIndex, delta](model::Song& s)
+    {
+        auto&     chain  = s.tracks[(size_t) index].effectChain;
+        const int target = slotIndex + delta;
+        if (slotIndex < 0 || slotIndex >= (int) chain.size() || target < 0 || target >= (int) chain.size())
+            return;
+        std::swap(chain[(size_t) slotIndex], chain[(size_t) target]);
+    });
+
+    closePluginEditors();
+    syncEngineTracks();
+    refreshEffectChainForSelected();
+}
+
+/** Bypass. Not structural — the node stays in the chain — so this is a live
+    tweak straight into the document and the engine, with no rebuild and no
+    plugin reinstantiation. */
+void MainComponent::setEffectSlotBypass(int slotIndex, bool enabled)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    auto& chain = history_.mutableCurrent().tracks[(size_t) selectedTrackIndex_].effectChain;
+    if (slotIndex < 0 || slotIndex >= (int) chain.size())
+        return;
+
+    chain[(size_t) slotIndex].enabled = enabled;
+    engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, toSlotParams(chain[(size_t) slotIndex]));
+    refreshEffectChainForSelected();
+}
+
+/** A knob turn on a built-in slot: live, non-undoable per notch, same as the
+    mixer faders. */
+void MainComponent::setEffectSlotParams(const model::EffectSlot& slot, int slotIndex)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    auto& chain = history_.mutableCurrent().tracks[(size_t) selectedTrackIndex_].effectChain;
+    if (slotIndex < 0 || slotIndex >= (int) chain.size())
+        return;
+
+    chain[(size_t) slotIndex] = slot;
+    engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, toSlotParams(slot));
+}
+
+/** Probes for plugins and caches the result, so the next launch doesn't
+    re-probe everything. In-process, so a plugin that crashes on probe takes
+    the app with it — the dead man's pedal means it's skipped next time (see
+    engine::PluginHost, and §20 for what's still owed here). */
+void MainComponent::scanForPlugins()
+{
+    const auto pedal = recordingsDirectory().getParentDirectory().getChildFile("plugin-scan.tmp");
+
+    for (const auto& format : engine_.pluginHost().availableFormats())
+        engine_.pluginHost().scanFormat(format, pedal);
+
+    settings_.setValue("pluginScanCache", juce::String(engine_.pluginHost().saveScanCache()));
+    settings_.saveIfNeeded();
+
+    effectChain_.setAvailablePlugins(engine_.pluginHost().knownPlugins());
+    clipLabel.setText("Found " + juce::String((int) engine_.pluginHost().knownPlugins().size()) + " plugin(s)",
+                      juce::dontSendNotification);
+}
+
+/** Opens a hosted plugin's own editor. */
+void MainComponent::openPluginEditor(int slotIndex)
+{
+    auto* node = engine_.trackPluginNode(selectedTrackIndex_, slotIndex);
+    if (node == nullptr || node->instance() == nullptr)
+    {
+        clipLabel.setText("That plugin isn't loaded on this machine", juce::dontSendNotification);
+        return;
+    }
+
+    // One window per plugin instance; re-opening focuses the existing one.
+    for (auto* existing : pluginWindows_)
+        if (existing->plugin() == node->instance())
+        {
+            existing->toFront(true);
+            return;
+        }
+
+    auto* window = pluginWindows_.add(new PluginEditorWindow(node->instance()->getName(), *node->instance()));
+    window->onCloseRequested = [this](PluginEditorWindow* w) { pluginWindows_.removeObject(w); };
+}
+
+/** Closes every plugin editor. Called before anything that rebuilds a chain,
+    because the rebuild deletes the PluginNodes those editors are drawing —
+    an editor outliving its processor is a crash, not a glitch. */
+void MainComponent::closePluginEditors()
+{
+    pluginWindows_.clear();
+}
 /** Copies the piano roll's selected notes, or the whole pattern if nothing
     is selected — the same "no selection means everything" rule quantize
     uses, so both commands are useful before the selection gesture is
@@ -1074,7 +1193,7 @@ void MainComponent::pasteNotes()
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
 }
 
@@ -1125,7 +1244,7 @@ void MainComponent::pasteClip()
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1165,7 +1284,7 @@ void MainComponent::duplicateClip()
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1199,7 +1318,7 @@ void MainComponent::quantizeNotes(double swingAmount)
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
 
     // Reloading the pattern clears the selection, which would silently widen
@@ -1270,7 +1389,7 @@ void MainComponent::setPatternBars(int bars)
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     updateEditingLabel();
@@ -1470,33 +1589,16 @@ void MainComponent::syncEngineTracks()
             }
             chainSpecs.push_back(std::move(spec));
         }
-        engine_.setTrackEffectChain(i, chainSpecs);
+        // A rebuild destroys this track's nodes, hosted plugins included, so
+        // any editor drawing one has to go first. Only on an actual rebuild —
+        // closing plugin windows on every unrelated edit would be maddening.
+        if (engine_.setTrackEffectChain(i, chainSpecs))
+            closePluginEditors();
 
-        // Parameters then go to the first node of each kind. The UI still only
-        // offers one of each; a chain editor (§20 stage 3) addresses nodes by
-        // index instead.
-        const auto* filterSlot = track.firstEffect(model::EffectKind::Filter);
-        const auto* delaySlot  = track.firstEffect(model::EffectKind::Delay);
-        const auto* reverbSlot = track.firstEffect(model::EffectKind::Reverb);
-
-        const model::FilterSettings filterFx = filterSlot != nullptr ? filterSlot->filter : model::FilterSettings {};
-        const model::DelaySettings  delayFx  = delaySlot  != nullptr ? delaySlot->delay   : model::DelaySettings {};
-        const model::ReverbSettings reverbFx = reverbSlot != nullptr ? reverbSlot->reverb : model::ReverbSettings {};
-
-        engine_.setTrackInsertFilterEnabled(i, filterFx.enabled);
-        engine_.setTrackInsertFilterMode(i, filterFx.mode);
-        engine_.setTrackInsertFilterCutoff(i, filterFx.cutoff);
-        engine_.setTrackInsertFilterResonance(i, filterFx.resonance);
-
-        engine_.setTrackInsertDelayEnabled(i, delayFx.enabled);
-        engine_.setTrackInsertDelayTimeMs(i, delayFx.timeMs);
-        engine_.setTrackInsertDelayFeedback(i, delayFx.feedback);
-        engine_.setTrackInsertDelayMix(i, delayFx.mix);
-
-        engine_.setTrackInsertReverbEnabled(i, reverbFx.enabled);
-        engine_.setTrackInsertReverbRoomSize(i, reverbFx.roomSize);
-        engine_.setTrackInsertReverbDamping(i, reverbFx.damping);
-        engine_.setTrackInsertReverbMix(i, reverbFx.mix);
+        // Parameters, one call per slot, addressed by position — a chain may
+        // hold two filters, and "the filter" stops meaning anything then.
+        for (size_t s = 0; s < track.effectChain.size(); ++s)
+            engine_.setTrackEffectSlotParams(i, (int) s, toSlotParams(track.effectChain[s]));
     }
     engine_.setActiveTrackCount(n);
 }
@@ -1586,7 +1688,7 @@ void MainComponent::addDrumPad()
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
 }
 
@@ -1621,7 +1723,7 @@ void MainComponent::removeDrumPad(int padIndex)
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
 }
 
@@ -1892,7 +1994,7 @@ void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     updateMixerStrips(); // refreshes the selection highlight
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1923,7 +2025,7 @@ void MainComponent::refreshFromModel()
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2178,7 +2280,7 @@ void MainComponent::selectNewlyAddedTrack(int newTrackIndex)
     refreshPianoRollForSelected();
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
-    refreshTrackEffectsForSelected();
+    refreshEffectChainForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
