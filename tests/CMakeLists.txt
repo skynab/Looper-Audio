@@ -13,6 +13,7 @@ add_executable(looper_tests
   engine/OscillatorTests.cpp
   engine/AutomationCurveTests.cpp
   engine/SessionMathTests.cpp
+  engine/GuitarStringTests.cpp
   engine/DelayLineTests.cpp
   engine/StateVariableFilterTests.cpp
   engine/ReverbTests.cpp
