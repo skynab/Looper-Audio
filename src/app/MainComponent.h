@@ -18,6 +18,7 @@
 #include "LevelMeter.h"
 #include "MixerStrip.h"
 #include "PianoRoll.h"
+#include "SessionView.h"
 #include "SynthEditor.h"
 #include "TrackEffectsPanel.h"
 
@@ -100,6 +101,9 @@ private:
     void                   refreshSynthEditorForSelected();
     void                   refreshDrumsPaneForSelected();
     void                   refreshTrackEffectsForSelected();
+    void                   refreshSessionView();
+    void                   addSessionScene();
+    void                   captureClipIntoSession(int trackIndex, int sceneIndex);
     void                   setTrackInsertEffects(const model::FilterSettings& filter,
                                                  const model::DelaySettings& delay,
                                                  const model::ReverbSettings& reverb);
@@ -203,7 +207,8 @@ private:
 
     SynthEditor                        synthEditor_; // its own dock panel — see refreshSynthEditorForSelected
     DrumsPane                          drumsPane_;   // ditto — see refreshDrumsPaneForSelected
-    TrackEffectsPanel                  trackEffects_; // ditto — see refreshTrackEffectsForSelected
+    TrackEffectsPanel                  trackEffects_;
+    SessionView                        sessionView_; // ditto — see refreshTrackEffectsForSelected
 
     CallbackComponent                  arrangeTab_;
     juce::Viewport                     arrangementViewport_;

@@ -178,6 +178,14 @@ public:
     /** Stops every track's session clip. */
     void stopAllSessionSlots();
 
+    /** Which session slot a track is currently playing, or -1. Lock-free
+        readout for the session grid. */
+    int sessionSlotPlaying(int index) const noexcept
+    {
+        return (index >= 0 && index < kMaxTracks)
+                   ? tracks_[(size_t) index].session.playingSlotForUI() : -1;
+    }
+
     /** How long a launch boundary is, in beats. 0 launches immediately;
         the default of one bar is what makes launching musical. */
     void setLaunchQuantumBeats(double beats) { launchQuantumBeats_.store(beats, std::memory_order_relaxed); }

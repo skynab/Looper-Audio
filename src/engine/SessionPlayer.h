@@ -79,6 +79,12 @@ public:
     /** Asks for whatever is playing to stop at the next boundary. */
     void requestStop() { pending_.store(kStop, std::memory_order_relaxed); }
 
+    /** Which slot is sounding right now, or -1. Published by the audio thread
+        for the UI to read: the grid can't work this out for itself, because a
+        launch stays pending until the next boundary and it would otherwise
+        light the wrong cell for up to a bar. */
+    int playingSlotForUI() const noexcept { return activeSlotForUI_.load(std::memory_order_relaxed); }
+
     /** True if this track is currently under session control — playing a clip,
         or about to. Read from the audio thread to decide whether the
         arrangement sequencer gets a look in. */
@@ -113,6 +119,7 @@ public:
             {
                 PatternPlayback::flush(midi, activeNotes_);
                 activeSlot_ = -1;
+                activeSlotForUI_.store(-1, std::memory_order_relaxed);
             }
             return isEngaged();
         }
@@ -162,6 +169,7 @@ private:
 
         activeSlot_       = requested == kStop ? -1 : requested;
         slotStartSample_  = boundary;
+        activeSlotForUI_.store(activeSlot_, std::memory_order_relaxed);
     }
 
     SlotList* current_ = nullptr; // audio-thread owned
@@ -174,6 +182,8 @@ private:
     int         activeSlot_      = -1; // audio thread only
     int64_t     slotStartSample_ = 0;  // audio thread only
     ActiveNotes activeNotes_ {};
+
+    std::atomic<int> activeSlotForUI_ { -1 }; // audio -> UI readout
 };
 
 } // namespace looper::engine

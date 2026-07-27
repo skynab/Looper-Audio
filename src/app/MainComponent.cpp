@@ -482,6 +482,23 @@ MainComponent::MainComponent()
     };
 
     synthEditor_.onSettingsChanged = [this](const model::SynthSettings& s) { setTrackSynthSettings(s); };
+    sessionView_.onLaunchClip  = [this](int track, int scene)
+    {
+        engine_.launchSessionSlot(track, scene);
+        if (! engine_.isPlaying())
+            post(Cmd::SetPlaying, 1.0); // launching implies you want to hear it
+    };
+    sessionView_.onLaunchScene = [this](int scene)
+    {
+        engine_.launchScene(scene);
+        if (! engine_.isPlaying())
+            post(Cmd::SetPlaying, 1.0);
+    };
+    sessionView_.onStopTrack   = [this](int track) { engine_.stopSessionSlot(track); };
+    sessionView_.onStopAll     = [this] { engine_.stopAllSessionSlots(); };
+    sessionView_.onAddScene    = [this] { addSessionScene(); };
+    sessionView_.onClipSelected = [this](int track, int scene) { captureClipIntoSession(track, scene); };
+
     trackEffects_.onSettingsChanged = [this](const model::FilterSettings& f,
                                              const model::DelaySettings& d,
                                              const model::ReverbSettings& r)
@@ -495,6 +512,7 @@ MainComponent::MainComponent()
     workspace_.registerPanel("Keys", editTab_);
     workspace_.registerPanel("Synth", synthEditor_);
     workspace_.registerPanel("Drums", drumsPane_);
+    workspace_.registerPanel("Session", sessionView_);
     workspace_.registerPanel("Track FX", trackEffects_);
     workspace_.registerPanel("Mixer", mixerView_);
     workspace_.registerPanel("Keyboard", keyboard_);
@@ -553,6 +571,7 @@ MainComponent::MainComponent()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -761,6 +780,7 @@ void MainComponent::addTrack()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -793,6 +813,7 @@ void MainComponent::addDrumTrack()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -868,9 +889,57 @@ void MainComponent::addClipToSelectedTrack()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
+}
+
+/** Redraws the session grid from the document. Which cells are *playing* is
+    pushed separately from the engine each timer tick — see timerCallback —
+    because a launch stays pending until the next bar line and the grid would
+    otherwise light the wrong cell. */
+void MainComponent::refreshSessionView()
+{
+    sessionView_.setSong(history_.current());
+}
+
+/** Adds a scene (a grid row), giving every track an empty slot in it. */
+void MainComponent::addSessionScene()
+{
+    history_.edit("Add scene", [](model::Song& s)
+    {
+        model::addScene(s, "Scene " + std::to_string(s.scenes.size() + 1));
+    });
+
+    syncEngineTracks();
+    refreshSessionView();
+}
+
+/** Clicking an empty cell fills it with a copy of the track's currently open
+    clip — the quickest way to get material into the grid without a separate
+    "new session clip" flow. Does nothing if there's nothing to copy. */
+void MainComponent::captureClipIntoSession(int trackIndex, int sceneIndex)
+{
+    const auto& song = history_.current();
+    if (trackIndex < 0 || trackIndex >= (int) song.tracks.size())
+        return;
+
+    const auto& clips = song.tracks[(size_t) trackIndex].clips;
+    if (clips.empty())
+        return;
+
+    const int  sourceIndex = juce::jlimit(0, (int) clips.size() - 1,
+                                          trackIndex == selectedTrackIndex_ ? selectedClipIndex_ : 0);
+    const auto source      = clips[(size_t) sourceIndex];
+
+    history_.edit("Add session clip", [trackIndex, sceneIndex, &source](model::Song& s)
+    {
+        model::setSessionClip(s, trackIndex, sceneIndex, source);
+    });
+
+    syncEngineTracks();
+    refreshSessionView();
 }
 
 /** Shows the selected track's insert effects. Unlike the Synth and Drums
@@ -976,6 +1045,7 @@ void MainComponent::pasteNotes()
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
 }
 
 /** Copies the selected clip whole — pattern, length and all. */
@@ -1026,6 +1096,7 @@ void MainComponent::pasteClip()
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -1065,6 +1136,7 @@ void MainComponent::duplicateClip()
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -1098,6 +1170,7 @@ void MainComponent::quantizeNotes(double swingAmount)
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
 
     // Reloading the pattern clears the selection, which would silently widen
     // a follow-up Swing to the whole part. Quantizing never adds, removes or
@@ -1168,6 +1241,7 @@ void MainComponent::setPatternBars(int bars)
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     arrangementView_.setSong(history_.current());
     updateEditingLabel();
 }
@@ -1434,6 +1508,7 @@ void MainComponent::addDrumPad()
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
 }
 
 /** Removes a pad, along with any notes that triggered it — leaving orphaned
@@ -1468,6 +1543,7 @@ void MainComponent::removeDrumPad(int padIndex)
     refreshPianoRollForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
 }
 
 /** Shows the Synth pane's controls for the selected track's timbre, or a
@@ -1738,6 +1814,7 @@ void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     updateMixerStrips(); // refreshes the selection highlight
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
@@ -1768,6 +1845,7 @@ void MainComponent::refreshFromModel()
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -2022,6 +2100,7 @@ void MainComponent::selectNewlyAddedTrack(int newTrackIndex)
     refreshSynthEditorForSelected();
     refreshDrumsPaneForSelected();
     refreshTrackEffectsForSelected();
+    refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateMixerStrips();
@@ -2323,6 +2402,16 @@ void MainComponent::timerCallback()
 
     arrangementView_.setPlayheadBeats(uiTempoMap_.ppqFromSamples(playhead));
 
+    // Which session cells are actually sounding comes from the engine, not the
+    // document: a launch is pending until the next bar line, so the grid would
+    // light the wrong cell if it guessed.
+    {
+        std::vector<int> playingSlots((size_t) n);
+        for (int i = 0; i < n; ++i)
+            playingSlots[(size_t) i] = engine_.sessionSlotPlaying(i);
+        sessionView_.setPlayingSlots(playingSlots);
+    }
+
     // The step grid's playhead walks the pattern's own loop, so it needs the
     // position relative to the open clip's start rather than the song's.
     {
@@ -2452,6 +2541,7 @@ void MainComponent::buildDefaultDockLayout()
         workspace_.addPanel(*bottom, "Synth");
         workspace_.addPanel(*bottom, "Drums");
         workspace_.addPanel(*bottom, "Track FX");
+        workspace_.addPanel(*bottom, "Session");
         bottom->showPanel("Keys");
 
         if (auto* transport = workspace_.splitRegion(*bottom, DropZone::Bottom, 0.68))
