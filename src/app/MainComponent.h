@@ -69,6 +69,9 @@ private:
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
     void logAudioDeviceStatus();
     void updateLoopRegion();
+    void seekToBeat(double beat);
+    void stepByBars(int bars);
+    double songEndBeats() const;
     void chooseFile();
     void post(engine::EngineCommand::Type type, double a = 0.0, double b = 0.0);
 
@@ -171,8 +174,14 @@ private:
     FileBrowserPanel   fileBrowser_;
     CallbackComponent  leftPane_; // the transport controls (Play/Stop/...), a panel like any other
 
-    juce::TextButton   playButton     { "Play" };
-    juce::TextButton   stopButton     { "Stop" };
+    // Playback transport, left to right. Play/pause is one toggle rather than
+    // two buttons; the old separate Stop is gone, since pausing and returning
+    // to the start are now distinct controls (pause, and first-frame).
+    juce::DrawableButton firstFrameButton    { "First",    juce::DrawableButton::ImageFitted };
+    juce::DrawableButton previousFrameButton { "Previous", juce::DrawableButton::ImageFitted };
+    juce::DrawableButton playPauseButton     { "PlayPause", juce::DrawableButton::ImageFitted };
+    juce::DrawableButton nextFrameButton     { "Next",     juce::DrawableButton::ImageFitted };
+    juce::DrawableButton lastFrameButton     { "Last",     juce::DrawableButton::ImageFitted };
     juce::DrawableButton recordButton { "Record", juce::DrawableButton::ImageFitted };
     juce::TextButton   addTrackButton { "Add Track" };
     juce::TextButton   addDrumTrackButton_ { "Add Drum" };

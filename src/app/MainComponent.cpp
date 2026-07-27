@@ -57,15 +57,64 @@ MainComponent::MainComponent()
     }
 
     // ---- transport ----
-    playButton.onClick = [this] { post(Cmd::SetPlaying, 1.0); };
-    stopButton.onClick = [this]
+    // Play/pause is one control: pausing leaves the playhead where it is, and
+    // returning to the start is first-frame's job. That's why the old separate
+    // Stop button is gone rather than kept alongside.
+    playPauseButton.onClick = [this]
     {
-        post(Cmd::SetPlaying, 0.0);
-        post(Cmd::Seek, 0.0);
-        if (awaitingRecordedTake_)
-            engine_.stopRecording(); // the transport stopping alone would also
-                                     // end the take, but this makes it explicit
+        if (engine_.isPlaying())
+        {
+            post(Cmd::SetPlaying, 0.0);
+            if (awaitingRecordedTake_)
+                engine_.stopRecording(); // the transport stopping would also end
+                                         // the take, but this makes it explicit
+        }
+        else
+        {
+            post(Cmd::SetPlaying, 1.0);
+        }
     };
+
+    firstFrameButton.onClick    = [this] { seekToBeat(0.0); };
+    previousFrameButton.onClick = [this] { stepByBars(-1); };
+    nextFrameButton.onClick     = [this] { stepByBars(+1); };
+    lastFrameButton.onClick     = [this] { seekToBeat(songEndBeats()); };
+
+    {
+        auto play  = icons::fromSvg(icons::kPlay);
+        auto pause = icons::fromSvg(icons::kPause);
+        playPauseButton.setImages(play.get(), nullptr, nullptr, nullptr, pause.get());
+    }
+    {
+        auto first = icons::fromSvg(icons::kFirstFrame);
+        firstFrameButton.setImages(first.get());
+    }
+    {
+        auto previous = icons::fromSvg(icons::kPreviousFrame);
+        previousFrameButton.setImages(previous.get());
+    }
+    {
+        auto next = icons::fromSvg(icons::kNextFrame);
+        nextFrameButton.setImages(next.get());
+    }
+    {
+        auto last = icons::fromSvg(icons::kLastFrame);
+        lastFrameButton.setImages(last.get());
+    }
+
+    for (auto* button : { &firstFrameButton, &previousFrameButton, &playPauseButton,
+                          &nextFrameButton, &lastFrameButton })
+    {
+        // The glyphs are the control; a button background would only box them in.
+        button->setColour(juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
+        button->setColour(juce::DrawableButton::backgroundOnColourId, juce::Colours::transparentBlack);
+    }
+
+    firstFrameButton.setTooltip("Go to start");
+    previousFrameButton.setTooltip("Back one bar");
+    playPauseButton.setTooltip("Play / pause");
+    nextFrameButton.setTooltip("Forward one bar");
+    lastFrameButton.setTooltip("Go to end");
     loopButton.onClick = [this]
     {
         post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
@@ -85,8 +134,11 @@ MainComponent::MainComponent()
     recordButton.setColour(juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
     recordButton.setColour(juce::DrawableButton::backgroundOnColourId, juce::Colours::transparentBlack);
     recordButton.setTooltip("Record");
-    leftPane_.addAndMakeVisible(playButton);
-    leftPane_.addAndMakeVisible(stopButton);
+    leftPane_.addAndMakeVisible(firstFrameButton);
+    leftPane_.addAndMakeVisible(previousFrameButton);
+    leftPane_.addAndMakeVisible(playPauseButton);
+    leftPane_.addAndMakeVisible(nextFrameButton);
+    leftPane_.addAndMakeVisible(lastFrameButton);
     leftPane_.addAndMakeVisible(recordButton);
     leftPane_.addAndMakeVisible(loopButton);
 
@@ -2548,6 +2600,41 @@ void MainComponent::bounceProject()
     });
 }
 
+/** Moves the playhead to @p beat, clamped at zero. */
+void MainComponent::seekToBeat(double beat)
+{
+    const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 48000.0;
+    uiTempoMap_.setSampleRate(sampleRate);
+    post(Cmd::Seek, (double) uiTempoMap_.samplesFromPpq(juce::jmax(0.0, beat)));
+}
+
+/** Steps the playhead by whole bars — what "previous/next frame" means in a
+    DAW, where the musical unit is a bar rather than a video frame. */
+void MainComponent::stepByBars(int bars)
+{
+    const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 48000.0;
+    uiTempoMap_.setSampleRate(sampleRate);
+
+    const double current = uiTempoMap_.ppqFromSamples(engine_.playheadSamples());
+    const double perBar  = juce::jmax(1.0, uiTempoMap_.quartersPerBar());
+
+    // Snap to the bar line first, so stepping from mid-bar lands on a bar
+    // rather than carrying the offset along.
+    const double currentBar = std::floor(current / perBar + 1.0e-9);
+    seekToBeat((currentBar + bars) * perBar);
+}
+
+/** The end of the song's content — the furthest point any clip reaches. Zero
+    for an empty project, so "go to end" is simply "go to start" there. */
+double MainComponent::songEndBeats() const
+{
+    double end = 0.0;
+    for (const auto& track : history_.current().tracks)
+        for (const auto& clip : track.clips)
+            end = juce::jmax(end, clip.startBeats + clip.lengthBeats);
+    return end;
+}
+
 void MainComponent::updateLoopRegion()
 {
     const double sampleRate = engine_.sampleRate();
@@ -2581,6 +2668,10 @@ void MainComponent::timerCallback()
     const char* transportState = engine_.isCountingIn() ? "COUNT-IN"
                                : engine_.isPlaying()    ? "PLAYING"
                                                         : "STOPPED";
+    // The transport also starts and stops from elsewhere (clip launches, the
+    // menu), so the glyph follows the engine rather than the last click.
+    playPauseButton.setToggleState(engine_.isPlaying(), juce::dontSendNotification);
+
     positionLabel.setText(juce::String::formatted("Bar %d  Beat %d   |   %.2f s   |   %s",
                                                   bb.bar, bb.beat, seconds, transportState),
                           juce::dontSendNotification);
@@ -2687,9 +2778,14 @@ void MainComponent::layoutLeftPane()
     auto area = leftPane_.getLocalBounds().reduced(12);
 
     auto row1 = area.removeFromTop(30);
-    playButton.setBounds(row1.removeFromLeft(70));
-    row1.removeFromLeft(6);
-    stopButton.setBounds(row1.removeFromLeft(70));
+    // First / previous / play-pause / next / last, in that order. The
+    // frame-step glyphs are wider than tall, play/pause is taller than wide,
+    // so they get different widths to keep the drawn glyphs a similar size.
+    firstFrameButton.setBounds(row1.removeFromLeft(32).reduced(2));
+    previousFrameButton.setBounds(row1.removeFromLeft(26).reduced(2));
+    playPauseButton.setBounds(row1.removeFromLeft(30).reduced(3, 1));
+    nextFrameButton.setBounds(row1.removeFromLeft(26).reduced(2));
+    lastFrameButton.setBounds(row1.removeFromLeft(32).reduced(2));
     row1.removeFromLeft(12);
     loopButton.setBounds(row1.removeFromLeft(60));
     row1.removeFromLeft(12);

@@ -79,4 +79,41 @@ inline constexpr const char* kRecordStopButton =
     "1,12.5 C1,18.8512746 6.14872538,24 12.5,24 C18.8512746,24 24,18.8512746 24,12.5 C24,6.14872538 "
     "18.8512746,1 12.5,1 Z\"/></g></svg>";
 
+// Transport playback controls. "Frame" is the icon set's video wording; the
+// musical equivalent here is a bar, so previous/next step one bar and
+// first/last jump to the start and to the end of the song's content.
+// Play and Pause are the two states of one toggle, not two buttons.
+inline constexpr const char* kFirstFrame =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"25\" height=\"13\" viewBox=\"0 0 25 "
+    "13\"><path fill=\"#FFF\" fill-rule=\"evenodd\" d=\"M25,0 L25,13 L22,13 L22,0 L25,0 Z "
+    "M11,0 L22,6.5 L11,13 L11,0 Z M1.77635684e-15,0 L11,6.5 L0,13 L1.77635684e-15,0 Z\" "
+    "transform=\"matrix(-1 0 0 1 25 0)\"/></svg>";
+
+inline constexpr const char* kPreviousFrame =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"13\" viewBox=\"0 0 14 "
+    "13\"><path fill=\"#FFF\" fill-rule=\"evenodd\" d=\"M14,0 L14,13 L11,13 L11,0 L14,0 Z "
+    "M1.77635684e-15,0 L11,6.5 L0,13 L1.77635684e-15,0 Z\" transform=\"matrix(-1 0 0 1 14 "
+    "0)\"/></svg>";
+
+inline constexpr const char* kPlay =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"21\" height=\"25\" viewBox=\"0 0 21 "
+    "25\"><polygon fill=\"#FFF\" fill-rule=\"evenodd\" points=\"0 25 0 0 20.833 "
+    "12.5\"/></svg>";
+
+inline constexpr const char* kPause =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"21\" height=\"25\" viewBox=\"0 0 21 "
+    "25\"><path fill=\"#FFF\" fill-rule=\"evenodd\" d=\"M0,0 L7,0 L7,25 L0,25 Z M14,0 L21,0 "
+    "L21,25 L14,25 Z\"/></svg>";
+
+inline constexpr const char* kNextFrame =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"14\" height=\"13\" viewBox=\"0 0 14 "
+    "13\"><path fill=\"#FFF\" fill-rule=\"evenodd\" d=\"M14,0 L14,13 L11,13 L11,0 L14,0 Z "
+    "M1.77635684e-15,0 L11,6.5 L0,13 L1.77635684e-15,0 Z\"/></svg>";
+
+inline constexpr const char* kLastFrame =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"25\" height=\"13\" viewBox=\"0 0 25 "
+    "13\"><path fill=\"#FFF\" fill-rule=\"evenodd\" d=\"M25,0 L25,13 L22,13 L22,0 L25,0 Z "
+    "M11,0 L22,6.5 L11,13 L11,0 Z M1.77635684e-15,0 L11,6.5 L0,13 L1.77635684e-15,0 "
+    "Z\"/></svg>";
+
 } // namespace looper::icons
