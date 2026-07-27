@@ -27,6 +27,7 @@ class DockTabHeader final : public juce::Component
 public:
     std::function<void()> onClick;
     std::function<void()> onDragStarted;
+    std::function<void()> onCloseClicked;
 
     void setText(const juce::String& text) { text_ = text; repaint(); }
     void setActive(bool active) { active_ = active; repaint(); }
@@ -35,10 +36,30 @@ public:
     {
         g.fillAll(active_ ? juce::Colour(0xff3d3d44) : juce::Colour(0xff2a2a2e));
         g.setColour(juce::Colours::white.withAlpha(active_ ? 0.95f : 0.55f));
-        g.drawText(text_, getLocalBounds().reduced(10, 0), juce::Justification::centred);
+
+        // The label gives up the right-hand strip to the close cross, so a
+        // long name can't run underneath it.
+        g.drawText(text_, getLocalBounds().withTrimmedRight(closeBounds().getWidth()).reduced(8, 0),
+                   juce::Justification::centred);
+
+        // Only drawn on the active tab or under the mouse: a cross on every
+        // tab all the time reads as clutter, and the gesture is discoverable
+        // from either state.
+        if (closeVisible())
+        {
+            const auto cross = closeBounds().toFloat().reduced(5.0f);
+            g.setColour(juce::Colours::white.withAlpha(closeHovered_ ? 0.95f : 0.45f));
+            g.drawLine(cross.getX(), cross.getY(), cross.getRight(), cross.getBottom(), 1.3f);
+            g.drawLine(cross.getX(), cross.getBottom(), cross.getRight(), cross.getY(), 1.3f);
+        }
+
         g.setColour(juce::Colours::black.withAlpha(0.35f));
         g.drawRect(getLocalBounds());
     }
+
+    void mouseMove(const juce::MouseEvent& e) override { updateHover(true, e.position); }
+    void mouseEnter(const juce::MouseEvent& e) override { updateHover(true, e.position); }
+    void mouseExit(const juce::MouseEvent&) override    { updateHover(false, {}); }
 
     void mouseDown(const juce::MouseEvent&) override { dragStarted_ = false; }
 
@@ -54,15 +75,55 @@ public:
 
     void mouseUp(const juce::MouseEvent& e) override
     {
-        if (! dragStarted_ && e.getDistanceFromDragStart() < 4 && onClick)
-            onClick();
+        const bool wasClick = ! dragStarted_ && e.getDistanceFromDragStart() < 4;
         dragStarted_ = false;
+
+        if (! wasClick)
+            return;
+
+        // Closing takes precedence over activating: a click on the cross of an
+        // inactive tab should close it, not merely bring it forward.
+        if (closeVisible() && closeBounds().contains(e.getPosition()) && onCloseClicked)
+            onCloseClicked();
+        else if (onClick)
+            onClick();
     }
 
 private:
+    static constexpr int kCloseWidth   = 18;
+    static constexpr int kMinCloseWidth = 46; // below this a tab is all cross and no label
+
+    /** The cross's hit area, empty when the tab is too narrow to show one —
+        so a cramped region degrades to plain tabs rather than to a tab whose
+        label has been eaten. Closing is still available from the View menu. */
+    juce::Rectangle<int> closeBounds() const
+    {
+        if (getWidth() < kMinCloseWidth)
+            return {};
+        return getLocalBounds().removeFromRight(kCloseWidth);
+    }
+
+    /** The cross is only drawn on the active or hovered tab, so it must only
+        be *clickable* then too — an invisible hit target that closes a pane
+        is worse than no shortcut at all. */
+    bool closeVisible() const { return (active_ || hovered_) && ! closeBounds().isEmpty(); }
+
+    void updateHover(bool overTab, juce::Point<float> position)
+    {
+        const bool overClose = overTab && closeBounds().contains(position.toInt());
+        if (overTab == hovered_ && overClose == closeHovered_)
+            return;
+
+        hovered_      = overTab;
+        closeHovered_ = overClose;
+        repaint();
+    }
+
     juce::String text_;
-    bool active_      = false;
-    bool dragStarted_ = false;
+    bool active_       = false;
+    bool dragStarted_  = false;
+    bool hovered_      = false;
+    bool closeHovered_ = false;
 };
 
 /**
@@ -93,11 +154,21 @@ public:
     // knows about its own panels, not the tree it sits in.
     std::function<void(const juce::String& panelName, DockRegion& target, DropZone zone)> onForeignPanelDropped;
 
+    /** Fired when a tab's close cross is clicked. A region can't close a panel
+        on its own — the workspace has to hand the space back and may collapse
+        the region entirely — so it only reports the request. */
+    std::function<void(const juce::String& panelName)> onPanelCloseRequested;
+
     void addPanel(const juce::String& name, juce::Component& content)
     {
         auto header = std::make_unique<DockTabHeader>();
         header->setText(name);
         header->onClick       = [this, name] { showPanel(name); };
+        header->onCloseClicked = [this, name]
+        {
+            if (onPanelCloseRequested)
+                onPanelCloseRequested(name);
+        };
         header->onDragStarted = [this, name]
         {
             if (auto* dnd = juce::DragAndDropContainer::findParentDragContainerFor(this))

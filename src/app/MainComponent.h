@@ -150,6 +150,8 @@ private:
     void                   updateEditingLabel();
     void                   layoutLeftPane();
     void                   applyTransportCollapse();
+    int                    panelMenuIndex(const juce::String& name) const;
+    void                   togglePanel(int index);
     void                   buildDefaultDockLayout();
     void                   loadDockLayout();
     void                   saveDockLayout();

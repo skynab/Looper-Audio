@@ -16,6 +16,10 @@
 
 namespace looper
 {
+/** View-menu ids for panels start well clear of the fixed commands, so adding
+    a pane can never collide with one. */
+static constexpr int kFirstPanelMenuId = 100;
+
 using Cmd = engine::EngineCommand::Type;
 
 namespace
@@ -758,8 +762,18 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
     }
     else if (topLevelMenuIndex == 2) // View
     {
-        // Splitting is a drag gesture now (drop a tab on a pane's edge), so
-        // the only thing left to offer here is a way back to the default.
+        // Every pane, ticked when it's open. This is the only way back to a
+        // pane once its tab has been closed, so the list is built from what
+        // the workspace *knows about* rather than what's currently on screen.
+        for (const auto& name : workspace_.registeredPanels())
+        {
+            const int id = kFirstPanelMenuId + panelMenuIndex(name);
+            menu.addItem(id, name, true, workspace_.isPanelOpen(name));
+        }
+
+        menu.addSeparator();
+        // Splitting is a drag gesture (drop a tab on a pane's edge), so the
+        // only layout command left is a way back to the default.
         menu.addItem(14, "Reset Layout");
     }
 
@@ -793,7 +807,14 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 21: quantizeNotes(0.25); break;
         case 22: quantizeNotes(0.5); break;
         case 23: quantizeNotes(0.66); break;
-        default: break;
+
+        // A View-menu panel entry. Opening an already-open pane would be a
+        // no-op the user would read as broken, so togglePanel reveals a buried
+        // one and closes one that's already in front.
+        default:
+            if (menuItemID >= kFirstPanelMenuId)
+                togglePanel(menuItemID - kFirstPanelMenuId);
+            break;
     }
 }
 
@@ -3010,6 +3031,37 @@ void MainComponent::applyTransportCollapse()
     collapseTransportButton_.setTooltip(transportCollapsed_ ? "Show tempo and position"
                                                             : "Hide tempo and position");
     layoutLeftPane();
+}
+
+/** Index of @p name in the workspace's panel list — the offset that turns a
+    View-menu id back into a panel. Both directions go through
+    registeredPanels(), so the mapping can't drift as panes are added. */
+int MainComponent::panelMenuIndex(const juce::String& name) const
+{
+    const auto names = workspace_.registeredPanels();
+    for (int i = 0; i < (int) names.size(); ++i)
+        if (names[(size_t) i] == name)
+            return i;
+    return 0;
+}
+
+/** Opens, reveals or closes the panel at @p index in the workspace's list. */
+void MainComponent::togglePanel(int index)
+{
+    const auto names = workspace_.registeredPanels();
+    if (index < 0 || index >= (int) names.size())
+        return;
+
+    const auto& name = names[(size_t) index];
+
+    if (! workspace_.isPanelOpen(name))
+        workspace_.openPanel(name);
+    else if (workspace_.isPanelActive(name))
+        workspace_.closePanel(name);   // already in front: the click means close
+    else
+        workspace_.revealPanel(name);  // open but buried: bring it forward first
+
+    saveDockLayout();
 }
 
 /** The arrangement the app ships with, and what "Reset Layout" restores.

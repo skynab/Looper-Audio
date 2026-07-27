@@ -112,6 +112,81 @@ public:
             region.addPanel(name, *content);
     }
 
+    /** Every panel name the workspace knows about, whether open or not — the
+        View menu lists these so a closed pane can be found again. Sorted, since
+        it comes from a map keyed by name. */
+    std::vector<juce::String> registeredPanels() const
+    {
+        std::vector<juce::String> names;
+        names.reserve(panels_.size());
+        for (const auto& [name, content] : panels_)
+            names.push_back(name);
+        return names;
+    }
+
+    bool isPanelOpen(const juce::String& name) const { return findRegionWithPanel(name) != nullptr; }
+
+    /** True if the panel is not just open but the *visible* tab of its region.
+        Lets a menu tell "buried behind another tab" apart from "in front", so
+        clicking it can reveal rather than close. */
+    bool isPanelActive(const juce::String& name) const
+    {
+        auto* region = findRegionWithPanel(name);
+        return region != nullptr && region->activePanelName() == name;
+    }
+
+    /** Closes a panel, handing its space back: the region collapses if that
+        emptied it, exactly as when the last tab is dragged away. The panel
+        itself isn't destroyed — it's a long-lived component the owner holds —
+        so reopening it later restores the same object with its state intact. */
+    void closePanel(const juce::String& name)
+    {
+        auto* region = findRegionWithPanel(name);
+        if (region == nullptr)
+            return;
+
+        region->removePanel(name);
+        collapseEmptyRegions();
+        resized();
+        notifyLayoutChanged();
+    }
+
+    /** Reopens a closed panel as a tab of the largest region on screen, which
+        is the one most likely to have room for it. Does nothing if it's
+        already open — the caller should activate it instead. */
+    void openPanel(const juce::String& name)
+    {
+        auto* content = contentFor(name);
+        if (content == nullptr || isPanelOpen(name))
+            return;
+
+        DockRegion* target  = nullptr;
+        int         largest = -1;
+        for (auto* region : allRegions())
+        {
+            const int area = region->getWidth() * region->getHeight();
+            if (area > largest)
+            {
+                largest = area;
+                target  = region;
+            }
+        }
+
+        if (target == nullptr)
+            return;
+
+        target->addPanel(name, *content);
+        resized();
+        notifyLayoutChanged();
+    }
+
+    /** Brings an already-open panel to the front of its region. */
+    void revealPanel(const juce::String& name)
+    {
+        if (auto* region = findRegionWithPanel(name))
+            region->showPanel(name);
+    }
+
     /** Splits @p region in the given direction and returns the new, empty
         region on that side. Used both by the drag-to-edge gesture and when
         building a default layout in code.
@@ -287,6 +362,7 @@ private:
     {
         auto node = std::make_unique<DockNode>();
         node->region = std::make_unique<DockRegion>();
+        node->region->onPanelCloseRequested = [this](const juce::String& name) { closePanel(name); };
         node->region->onForeignPanelDropped = [this](const juce::String& name, DockRegion& target, DropZone zone)
         {
             movePanel(name, target, zone);
