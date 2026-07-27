@@ -933,7 +933,7 @@ no choke groups or velocity layers.
 
 ---
 
-## 19. Session view: clip launching and scenes
+## 19. Session view: clip launching and scenes (implemented)
 
 The thing §1 says this product *is* — "a workflow built around clips and loops (like Ableton's
 Session View) rather than only a linear tape timeline" — and the one major piece of that identity
@@ -990,7 +990,7 @@ to be real, and shipping them together would make the first version unverifiable
   emit the same notes from the same Pattern; only the question of *which* pattern and *from when*
   differs. Copying it would mean two places to fix the next timing bug.
 
-### Build order
+### Build order (all three landed)
 
 Three independently verifiable stages, in this order:
 
