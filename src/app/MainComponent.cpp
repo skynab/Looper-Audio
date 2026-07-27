@@ -792,6 +792,13 @@ MainComponent::MainComponent()
 
     addChildComponent(status_);
 
+    // The document the app opens with counts as saved, so an untouched session
+    // doesn't prompt on quit. This has to come *after* all the control setup
+    // above: several of those updateXxxControls calls write through
+    // mutableCurrent(), which advances the state id by design, so a marker
+    // taken any earlier is stale by the time construction finishes.
+    savedStateId_ = history_.stateId();
+
     for ([[maybe_unused]] const auto& shortcut : keys::all)
         jassert(shortcut.isValid());
 
@@ -1082,21 +1089,36 @@ void MainComponent::addDrumTrack()
     is most of what makes a chord sound like a hand rather than an organ, and
     putting it in the pattern keeps it visible and editable afterwards — the
     same choice §18's swing made, for the same reason. */
+/** Stamps a strummed chord into the selected guitar clip.
+
+    Every reason this can decline is reported rather than returned silently.
+    A chord button that does nothing and says nothing is indistinguishable
+    from one that's broken — the user has no way to tell "you have a drum
+    track selected" from "this feature doesn't work". */
 void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
                                const engine::StrumSettings& strum)
 {
     if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+    {
+        showError("Select a guitar track first");
         return;
+    }
 
     const auto& song  = history_.current();
     const auto& track = song.tracks[(size_t) selectedTrackIndex_];
     if (track.type != model::TrackType::Guitar)
+    {
+        showError("\"" + juce::String(track.name) + "\" isn't a guitar track — chords need one");
         return;
+    }
 
     const int trackIdx = selectedTrackIndex_;
     const int clipIdx  = selectedClipIndex_;
     if (clipIdx < 0 || clipIdx >= (int) track.clips.size())
+    {
+        showError("\"" + juce::String(track.name) + "\" has no clip selected to put the chord in");
         return;
+    }
 
     // Land it on the bar the playhead is in, so stamping while stopped puts
     // the chord where the transport is rather than always at the start.
@@ -1112,7 +1134,8 @@ void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
                                                         song.bpm, strum,
                                                         (uint32_t) (chordStampSeed_++ | 1u));
 
-    history_.edit("Add chord", [trackIdx, clipIdx, &notes](model::Song& s)
+    int added = 0;
+    history_.edit("Add chord", [trackIdx, clipIdx, &notes, &added](model::Song& s)
     {
         auto& clips = s.tracks[(size_t) trackIdx].clips;
         if (clipIdx < 0 || clipIdx >= (int) clips.size())
@@ -1120,13 +1143,27 @@ void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
 
         auto& pattern = clips[(size_t) clipIdx].pattern;
         for (const auto& note : notes)
+        {
             if (note.startBeats < pattern.lengthBeats)
+            {
                 pattern.notes.push_back(note);
+                ++added;
+            }
+        }
     });
 
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshFretboardForSelected();
+
+    // Stamping writes notes into the clip; unless the transport happens to be
+    // rolling over that bar, nothing moves and nothing sounds. Say what landed
+    // and where, or a chord that worked looks exactly like one that didn't.
+    if (added > 0)
+        showStatus(juce::String(shape.name) + " chord added at beat "
+                   + juce::String(at + 1.0, 2) + " of \"" + juce::String(track.name) + "\"");
+    else
+        showError("No room for a " + juce::String(shape.name) + " chord in this clip");
 }
 
 /** Same as addTrack(), but a Guitar-type track — six plucked strings in

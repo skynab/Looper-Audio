@@ -255,9 +255,18 @@ public:
             strumHumaniseLabel_.setBounds(strumRow.removeFromLeft(36));
             strumHumanise_.setBounds(strumRow.reduced(2, 1));
 
-            const int buttonWidth = juce::jmax(30, chordRow.getWidth() / juce::jmax(1, chordButtons_.size()));
-            for (auto* button : chordButtons_)
-                button->setBounds(chordRow.removeFromLeft(buttonWidth).reduced(1));
+            // Divide what's actually there rather than imposing a minimum
+            // width: a minimum overflows the row in a narrow pane, and the
+            // buttons past the edge get zero width — present, hit-testable at
+            // nothing, and indistinguishable from a button that doesn't work.
+            // Recomputing per button spreads the remainder instead of leaving
+            // it all on the last one.
+            for (int i = 0; i < chordButtons_.size(); ++i)
+            {
+                const int remaining = chordButtons_.size() - i;
+                const int width     = juce::jmax(1, chordRow.getWidth() / remaining);
+                chordButtons_[i]->setBounds(chordRow.removeFromLeft(width).reduced(1));
+            }
         }
 
         auto tone = area.removeFromBottom(kToneHeight);
