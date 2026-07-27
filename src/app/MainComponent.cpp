@@ -1,5 +1,7 @@
 #include "MainComponent.h"
 
+#include "Icons.h"
+
 #include "engine/ClipSlot.h"
 #include "engine/NoteOps.h"
 #include "engine/MidiFileIO.h"
@@ -70,7 +72,19 @@ MainComponent::MainComponent()
         updateLoopRegion();
     };
     recordButton.onClick = [this] { toggleRecording(); };
-    recordButton.setColour(juce::TextButton::buttonOnColourId, juce::Colours::red);
+    {
+        // One control, two states: the disc arms, the square stops. They're
+        // this button's normal and "on" images, so which one shows follows
+        // getToggleState() — see toggleRecording, which sets it.
+        auto record = icons::fromSvg(icons::kRecordButton);
+        auto stop   = icons::fromSvg(icons::kRecordStopButton);
+        recordButton.setImages(record.get(), nullptr, nullptr, nullptr, stop.get());
+    }
+    // The icons carry their own ring, so a button background would only box
+    // them in.
+    recordButton.setColour(juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
+    recordButton.setColour(juce::DrawableButton::backgroundOnColourId, juce::Colours::transparentBlack);
+    recordButton.setTooltip("Record");
     leftPane_.addAndMakeVisible(playButton);
     leftPane_.addAndMakeVisible(stopButton);
     leftPane_.addAndMakeVisible(recordButton);
@@ -2302,16 +2316,16 @@ void MainComponent::toggleRecording()
         }
 
         awaitingRecordedTake_ = true;
-        recordButton.setButtonText("Stop Rec");
-        recordButton.setToggleState(true, juce::dontSendNotification);
+        recordButton.setToggleState(true, juce::dontSendNotification); // swaps to the stop square
+        recordButton.setTooltip("Stop recording");
         post(Cmd::SetPlaying, 1.0);
     }
     else
     {
         engine_.stopRecording();
         post(Cmd::SetPlaying, 0.0);
-        recordButton.setButtonText("Record");
-        recordButton.setToggleState(false, juce::dontSendNotification);
+        recordButton.setToggleState(false, juce::dontSendNotification); // back to the record disc
+        recordButton.setTooltip("Record");
     }
 }
 
@@ -2679,7 +2693,7 @@ void MainComponent::layoutLeftPane()
     row1.removeFromLeft(12);
     loopButton.setBounds(row1.removeFromLeft(60));
     row1.removeFromLeft(12);
-    recordButton.setBounds(row1.removeFromLeft(80));
+    recordButton.setBounds(row1.removeFromLeft(30).reduced(1)); // square: the icon is 25x25
     row1.removeFromLeft(12);
     metronomeButton.setBounds(row1.removeFromLeft(64));
     row1.removeFromLeft(6);

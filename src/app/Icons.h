@@ -57,4 +57,26 @@ inline constexpr const char* kFolderAddOff =
     "L8.00017147,6.99108368 C8.00308642,6.89197531 8.05555556,6 9,6 Z M16,10 L15,10 L15,13 L12,13 L12,14 "
     "L15,14 L15,17 L16,17 L16,14 L19,14 L19,13 L16,13 L16,10 Z\"/></svg>";
 
+// Transport record button: a red disc to arm, a red square once rolling —
+// the two states of the same control, so they're the DrawableButton's normal
+// and "on" images rather than two separate buttons. Both carry the white ring,
+// which is what keeps them legible on the dark transport background.
+inline constexpr const char* kRecordButton =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"25\" height=\"25\" viewBox=\"0 0 25 25\">"
+    "<g fill=\"none\" fill-rule=\"evenodd\">"
+    "<path fill=\"#FFF\" d=\"M12.5,0 C19.4035594,0 25,5.59644063 25,12.5 C25,19.4035594 19.4035594,25 12.5,25 "
+    "C5.59644063,25 0,19.4035594 0,12.5 C0,5.59644063 5.59644063,0 12.5,0 Z M12.5,1 C6.14872538,1 1,6.14872538 "
+    "1,12.5 C1,18.8512746 6.14872538,24 12.5,24 C18.8512746,24 24,18.8512746 24,12.5 C24,6.14872538 "
+    "18.8512746,1 12.5,1 Z\"/>"
+    "<circle cx=\"12.5\" cy=\"12.5\" r=\"10.5\" fill=\"#EB2323\"/></g></svg>";
+
+inline constexpr const char* kRecordStopButton =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"25\" height=\"25\" viewBox=\"0 0 25 25\">"
+    "<g fill=\"none\" fill-rule=\"evenodd\">"
+    "<rect width=\"11\" height=\"11\" x=\"7\" y=\"7\" fill=\"#EB2323\" rx=\"2\"/>"
+    "<path fill=\"#FFF\" d=\"M12.5,0 C19.4035594,0 25,5.59644063 25,12.5 C25,19.4035594 19.4035594,25 12.5,25 "
+    "C5.59644063,25 0,19.4035594 0,12.5 C0,5.59644063 5.59644063,0 12.5,0 Z M12.5,1 C6.14872538,1 1,6.14872538 "
+    "1,12.5 C1,18.8512746 6.14872538,24 12.5,24 C18.8512746,24 24,18.8512746 24,12.5 C24,6.14872538 "
+    "18.8512746,1 12.5,1 Z\"/></g></svg>";
+
 } // namespace looper::icons

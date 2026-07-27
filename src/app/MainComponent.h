@@ -173,7 +173,7 @@ private:
 
     juce::TextButton   playButton     { "Play" };
     juce::TextButton   stopButton     { "Stop" };
-    juce::TextButton   recordButton   { "Record" };
+    juce::DrawableButton recordButton { "Record", juce::DrawableButton::ImageFitted };
     juce::TextButton   addTrackButton { "Add Track" };
     juce::TextButton   addDrumTrackButton_ { "Add Drum" };
     juce::TextButton   toggleMasterPanelButton_ { "Hide Master" };
