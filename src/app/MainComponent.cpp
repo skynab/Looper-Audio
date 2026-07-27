@@ -134,6 +134,20 @@ MainComponent::MainComponent()
     recordButton.setColour(juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
     recordButton.setColour(juce::DrawableButton::backgroundOnColourId, juce::Colours::transparentBlack);
     recordButton.setTooltip("Record");
+    // Collapse toggle: hides everything below the button row, leaving just the
+    // transport controls. The dock region's height is the user's to set by
+    // dragging its divider — this is what makes a one-row pane worth dragging
+    // down to, rather than resizing the region from under them.
+    transportCollapsed_ = settings_.getValue("transportCollapsed", "0") != "0";
+    collapseTransportButton_.onClick = [this]
+    {
+        transportCollapsed_ = ! transportCollapsed_;
+        settings_.setValue("transportCollapsed", transportCollapsed_ ? "1" : "0");
+        settings_.saveIfNeeded();
+        applyTransportCollapse();
+    };
+    leftPane_.addAndMakeVisible(collapseTransportButton_);
+
     leftPane_.addAndMakeVisible(firstFrameButton);
     leftPane_.addAndMakeVisible(previousFrameButton);
     leftPane_.addAndMakeVisible(playPauseButton);
@@ -172,6 +186,7 @@ MainComponent::MainComponent()
     leftPane_.addAndMakeVisible(countInBox_);
 
     leftPane_.onResized = [this] { layoutLeftPane(); };
+    applyTransportCollapse(); // apply whatever state was restored above
 
     // ---- sliders ----
     tempoSlider.setRange(40.0, 240.0, 0.1);
@@ -2778,6 +2793,12 @@ void MainComponent::layoutLeftPane()
     auto area = leftPane_.getLocalBounds().reduced(12);
 
     auto row1 = area.removeFromTop(30);
+
+    // Taken off the right first, so it stays pinned to the far edge whatever
+    // width the pane has.
+    collapseTransportButton_.setBounds(row1.removeFromRight(28).reduced(2));
+    row1.removeFromRight(8);
+
     // First / previous / play-pause / next / last, in that order. The
     // frame-step glyphs are wider than tall, play/pause is taller than wide,
     // so they get different widths to keep the drawn glyphs a similar size.
@@ -2796,11 +2817,29 @@ void MainComponent::layoutLeftPane()
     countInBox_.setBounds(row1.removeFromLeft(110).reduced(0, 2));
     area.removeFromTop(8);
 
+    if (transportCollapsed_)
+        return; // nothing below the button row is showing
+
     positionLabel.setBounds(area.removeFromTop(28));
     clipLabel.setBounds(area.removeFromTop(22));
     area.removeFromTop(6);
 
     tempoSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
+}
+
+/** Shows or hides everything below the transport's button row. The arrow
+    points the way the content will go, so it reads the same whichever state
+    it's in. */
+void MainComponent::applyTransportCollapse()
+{
+    juce::Component* belowFirstRow[] = { &positionLabel, &clipLabel, &tempoSlider };
+    for (auto* c : belowFirstRow)
+        c->setVisible(! transportCollapsed_);
+
+    collapseTransportButton_.setButtonText(transportCollapsed_ ? "v" : "^");
+    collapseTransportButton_.setTooltip(transportCollapsed_ ? "Show tempo and position"
+                                                            : "Hide tempo and position");
+    layoutLeftPane();
 }
 
 /** The arrangement the app ships with, and what "Reset Layout" restores.

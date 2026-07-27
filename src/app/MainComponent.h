@@ -143,6 +143,7 @@ private:
     void                   updateBarsControl();
     void                   updateEditingLabel();
     void                   layoutLeftPane();
+    void                   applyTransportCollapse();
     void                   buildDefaultDockLayout();
     void                   loadDockLayout();
     void                   saveDockLayout();
@@ -188,6 +189,10 @@ private:
     juce::TextButton   toggleMasterPanelButton_ { "Hide Master" };
     bool               masterPanelVisible_ = true;
     juce::ToggleButton loopButton      { "Loop" };
+    // Collapses the transport pane to its first row, so the pane can be
+    // dragged down to a single strip when the readouts aren't wanted.
+    juce::TextButton   collapseTransportButton_;
+    bool               transportCollapsed_ = false;
     juce::ToggleButton metronomeButton { "Click" };
     juce::ComboBox     countInBox_;
 
