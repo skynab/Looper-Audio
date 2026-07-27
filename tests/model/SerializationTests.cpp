@@ -39,6 +39,7 @@ static Song makeSampleSong()
 
     Clip midiClip;
     midiClip.type             = ClipType::Instrument;
+    midiClip.startBeats       = 8.0; // not at the origin: see below
     midiClip.lengthBeats      = 4.0;
     midiClip.pattern.lengthBeats = 4.0;
     midiClip.pattern.notes.push_back({ 0.0, 0.5, 60, 0.8f });
@@ -48,13 +49,15 @@ static Song makeSampleSong()
 
     const int voxId = addTrack(s, TrackType::Audio, "Vox").id;
     Clip audioClip;
-    audioClip.type      = ClipType::Audio;
-    audioClip.audioFile = "takes/vocal 01.wav";
+    audioClip.type       = ClipType::Audio;
+    audioClip.startBeats = 2.5; // deliberately off the bar line
+    audioClip.audioFile  = "takes/vocal 01.wav";
     addClip(s, voxId, audioClip);
 
     const int drumId = addTrack(s, TrackType::Drum, "Drums").id; // auto-populates the default pads
     Clip drumClip;
     drumClip.type             = ClipType::Instrument;
+    drumClip.startBeats       = 16.0;
     drumClip.lengthBeats      = 4.0;
     drumClip.pattern.lengthBeats = 4.0;
     drumClip.pattern.notes.push_back({ 0.0, 0.25, 36, 1.0f }); // kick on beat 1
@@ -63,9 +66,11 @@ static Song makeSampleSong()
 
     // Set solo/mute by index (not the returned reference — a later addTrack can
     // reallocate the vector and invalidate it).
+    s.tracks[0].gainDb    = -4.5f;
     s.tracks[0].solo      = true;
     s.tracks[0].sendLevel = 0.65f;
     s.tracks[0].pan       = -0.75f;
+    s.tracks[1].gainDb    = 3.25f; // above unity, and positive
     s.tracks[1].pan       = 0.5f;
     s.tracks[1].muted     = true;
     s.tracks[0].laneFor(TrackParam::Gain).addPoint(0.0, -20.0f);
@@ -155,6 +160,7 @@ static Song makeSampleSong()
     const int guitarId = addTrack(s, TrackType::Guitar, "Gtr").id;
     Clip guitarClip;
     guitarClip.type                = ClipType::Instrument;
+    guitarClip.startBeats          = 12.0;
     guitarClip.lengthBeats         = 4.0;
     guitarClip.pattern.lengthBeats = 4.0;
     guitarClip.pattern.notes.push_back({ 0.0, 1.0, 40, 0.9f });
