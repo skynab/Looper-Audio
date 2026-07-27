@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -134,21 +135,31 @@ private:
     }
 
     /**
-        Chooses a string and plucks it.
+        Chooses a string and sounds the note on it.
 
-        Prefers a string that isn't already ringing, and among those the one
-        needing the lowest fret — which is roughly what a player reaching for
-        the note would do. If every candidate is ringing, the one holding the
-        oldest note is taken: that's not voice stealing to save CPU, it's the
-        instrument working correctly, since the hand has to come off one note
-        to play another.
+        Prefers a string that isn't already holding a note, and among those the
+        one needing the lowest fret — roughly what a player reaching for the
+        note would do.
+
+        When every reachable string is *already held*, the note becomes a
+        **hammer-on or pull-off**: the string is re-fretted without being struck
+        again, so it keeps the energy it has and simply rings at the new pitch.
+        That is what a guitarist does when their hand is already on the string,
+        and it's why those notes are softer than picked ones — the softness
+        falls out of the model rather than being simulated.
+
+        Only when no held string can reach the note is one taken from the
+        oldest. That isn't voice stealing to save CPU; it's the hand having to
+        leave one note to play another.
     */
     void pluckNote(int midiNote, float velocity)
     {
-        int best      = -1;
-        int bestFret  = kMaxFret + 1;
-        int oldest    = -1;
-        int oldestAge = -1;
+        int best       = -1;
+        int bestFret   = kMaxFret + 1;
+        int hammerOn   = -1;
+        int hammerMove = kMaxFret + 1;
+        int oldest     = -1;
+        int oldestAge  = -1;
 
         for (int s = 0; s < kNumGuitarStrings; ++s)
         {
@@ -167,6 +178,15 @@ private:
             }
             else
             {
+                // Held. The nearest hand movement wins the hammer-on: a player
+                // re-frets whichever string is already closest to the new note.
+                const int move = std::abs(midiNote - sounding_[(size_t) s].load(std::memory_order_relaxed));
+                if (move < hammerMove)
+                {
+                    hammerMove = move;
+                    hammerOn   = s;
+                }
+
                 const int age = pluckCounter_ - pluckedAt_[(size_t) s];
                 if (age > oldestAge)
                 {
@@ -176,17 +196,39 @@ private:
             }
         }
 
-        const int chosen = best >= 0 ? best : oldest;
-        if (chosen < 0)
-            return; // no string can play this note; better silent than wrong
+        if (best >= 0)
+        {
+            auto& string = strings_[(size_t) best];
+            string.mute(0.0f); // a fresh pluck lifts any damping the last note left
+            string.setFrequency(midiNoteToHertz(midiNote));
+            string.pluck(velocity);
 
-        auto& string = strings_[(size_t) chosen];
-        string.mute(0.0f); // a fresh pluck lifts any damping the last note left
+            sounding_[(size_t) best].store(midiNote, std::memory_order_relaxed);
+            pluckedAt_[(size_t) best] = ++pluckCounter_;
+            return;
+        }
+
+        if (hammerOn >= 0)
+        {
+            // Hand already on the string: re-fret without striking it again.
+            auto& string = strings_[(size_t) hammerOn];
+            string.setFrequency(midiNoteToHertz(midiNote));
+
+            sounding_[(size_t) hammerOn].store(midiNote, std::memory_order_relaxed);
+            pluckedAt_[(size_t) hammerOn] = ++pluckCounter_;
+            return;
+        }
+
+        if (oldest < 0)
+            return; // no string can reach this note at all; better silent than wrong
+
+        auto& string = strings_[(size_t) oldest];
+        string.mute(0.0f);
         string.setFrequency(midiNoteToHertz(midiNote));
         string.pluck(velocity);
 
-        sounding_[(size_t) chosen].store(midiNote, std::memory_order_relaxed);
-        pluckedAt_[(size_t) chosen] = ++pluckCounter_;
+        sounding_[(size_t) oldest].store(midiNote, std::memory_order_relaxed);
+        pluckedAt_[(size_t) oldest] = ++pluckCounter_;
     }
 
     /** A note-off frees the string for reuse, and damps it only if the caller

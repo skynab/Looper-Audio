@@ -599,6 +599,7 @@ int main(int argc, char** argv)
     bool guitarCutsSameString  = false;
     bool guitarPlaysSixAtOnce  = false;
     bool guitarPicksLowestFret = false;
+    bool guitarHammerOn        = false;
     {
         // Renders a guitar node given (noteNumber, sampleOffset) note-ons.
         auto renderNotes = [&](const std::vector<std::pair<int, int>>& notes, double seconds)
@@ -678,6 +679,38 @@ int main(int argc, char** argv)
                 ++heard;
 
         guitarPlaysSixAtOnce = heard == 6;
+
+        // Hammer-on: with every string already held, a further note that a held
+        // string can reach must be *re-fretted* rather than struck. Two things
+        // have to be true — the pitch moves on that string, and no new attack
+        // appears, which is what makes a hammer-on softer than a picked note.
+        {
+            const int    hammerAt = (int) (0.5 * sampleRate);
+            const double barSpan  = 0.25 * sampleRate;
+
+            // Hold all six strings, then ask for a note only a held string can
+            // take (F4 = 65, reachable on the high E at fret 1).
+            std::vector<std::pair<int, int>> notes;
+            for (int n : { 40, 45, 50, 55, 59, 64 })
+                notes.push_back({ n, 0 });
+            notes.push_back({ 65, hammerAt });
+
+            const auto rendered = renderNotes(notes, 1.5);
+
+            // Level just before and just after the hammer-on. A fresh pluck
+            // would spike; a hammer-on must not.
+            float before = 0.0f, after = 0.0f;
+            for (int i = hammerAt - (int) barSpan; i < hammerAt; ++i)
+                before = std::max(before, std::abs(rendered.getSample(0, i)));
+            for (int i = hammerAt; i < hammerAt + (int) barSpan; ++i)
+                after = std::max(after, std::abs(rendered.getSample(0, i)));
+
+            // ...and the new pitch must actually be sounding afterwards.
+            const double f4 = 349.23;
+            const double f4After = magnitude(rendered, f4, hammerAt + 2000, (int) (0.3 * sampleRate));
+
+            guitarHammerOn = after <= before && f4After > 1.0e-4;
+        }
 
         // Allocation preference, checked directly rather than inferred from
         // the audio: E4 is reachable on every string (fret 24 on the low E
@@ -1245,6 +1278,7 @@ int main(int argc, char** argv)
               << "  guitarCutsSameString=" << (guitarCutsSameString ? 1 : 0)
               << "  guitarPlaysSixAtOnce=" << (guitarPlaysSixAtOnce ? 1 : 0)
               << "  guitarPicksLowestFret=" << (guitarPicksLowestFret ? 1 : 0)
+              << "  guitarHammerOn=" << (guitarHammerOn ? 1 : 0)
               << "  effectChainOrderMatters=" << (effectChainOrderMatters ? 1 : 0)
               << "  effectChainRunsAllNodes=" << (effectChainRunsAllNodes ? 1 : 0)
               << "  sessionLaunchQuantizes=" << (sessionLaunchQuantizes ? 1 : 0)
@@ -1281,7 +1315,7 @@ int main(int argc, char** argv)
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks
                  && guitarSounds && guitarCutsSameString && guitarPlaysSixAtOnce
-                 && guitarPicksLowestFret
+                 && guitarPicksLowestFret && guitarHammerOn
                  && effectChainOrderMatters && effectChainRunsAllNodes
                  && sessionLaunchQuantizes && sessionStopWorks
                  && trackPanWorks && panAutomationWorks && trackInsertFilterWorks

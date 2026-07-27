@@ -1295,9 +1295,19 @@ nothing it adds may touch the existing render path.
 4. **Chords and strumming** *(implemented)*, as pattern edits — a palette of open shapes
    (movable up the neck by a fret offset) stamped into the clip as real, staggered notes.
 
-Articulations (hammer-on, slide, bend, palm mute) come after, and are mostly a
-matter of *not* re-exciting a string while changing its delay length — the model
-already supports them; the question is how they're expressed in the document.
+**Articulations.** Hammer-ons and pull-offs are *implemented*, and needed no format change
+at all: when every reachable string is already held, the note is re-fretted rather than
+struck. That is both what a guitarist does when their hand is already on the string and
+why those notes are softer — the softness falls out of the model instead of being
+simulated. Inferring it from the notes matches the same decision made above for string and
+fret assignment, and keeps clips playable by anything that can emit MIDI.
+
+Slides, bends and vibrato are deliberately **not** done. Unlike a hammer-on they are
+*continuous* pitch changes, so they need a per-note curve rather than a per-note flag —
+which is automation-shaped, and belongs with the automation system (§18) rather than being
+bolted onto the note. Palm muting is likewise continuous and is the natural first candidate
+for a guitar-specific `TrackParam` lane; `GuitarSettings::muteOnNoteOff` is a track-wide
+stand-in until then.
 
 ---
 

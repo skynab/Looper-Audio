@@ -41,6 +41,11 @@ public:
         // Sized for the lowest note anything is likely to ask for (~30Hz, well
         // below a 7-string's low B), so setFrequency never has to allocate.
         buffer_.assign((size_t) std::ceil(sampleRate_ / 30.0) + 4, 0.0f);
+
+        // Sized here, once, for the longest loop this string could ever hold.
+        // pluck() runs on the audio thread and must not allocate, so it only
+        // ever *indexes* into this — never resizes it.
+        excitation_.assign(buffer_.size(), 0.0f);
         reset();
         setFrequency(frequency_);
     }
@@ -55,8 +60,10 @@ public:
         energy_         = 0.0f;
     }
 
-    /** Sets the pitch. Changing this *without* plucking is a hammer-on or a
-        slide — the string keeps ringing at the new length. */
+    /** Sets the pitch. Changing this *without* plucking is exactly a hammer-on
+        or pull-off: the string keeps whatever energy it has and simply rings
+        at the new length, which is what makes those articulations quieter and
+        smoother than a struck note. See GuitarNode::pluckNote. */
     void setFrequency(double hz) noexcept
     {
         frequency_ = std::clamp(hz, 20.0, sampleRate_ * 0.25);
@@ -119,8 +126,9 @@ public:
         const float smoothing = 0.85f - 0.75f * pickHardness_;
 
         // Built into scratch first so the comb can read earlier samples of the
-        // *excitation*, not of whatever the loop happened to contain.
-        excitation_.resize((size_t) length);
+        // *excitation*, not of whatever the loop happened to contain. The
+        // scratch is pre-sized in prepare(); resizing it here would allocate
+        // on the audio thread.
         float smoothed = 0.0f;
         for (int i = 0; i < length; ++i)
         {
