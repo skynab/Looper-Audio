@@ -52,6 +52,7 @@ namespace keys
     inline const juce::KeyPress pasteClip  = juce::KeyPress::createFromDescription("command + shift + V");
     inline const juce::KeyPress duplicate  = juce::KeyPress::createFromDescription("command + D");
     inline const juce::KeyPress quantize   = juce::KeyPress::createFromDescription("command + U");
+    inline const juce::KeyPress deleteClip = juce::KeyPress::createFromDescription("command + backspace");
 
     // Transport. Space is unmodified because it's the control reached for
     // most, and every DAW spells it this way; a focused text field consumes
@@ -71,7 +72,7 @@ namespace keys
     inline const juce::KeyPress all[] = {
         newProject, open, save, saveAs, bounce,
         undo, redo, redoAlt,
-        copyNotes, pasteNotes, copyClip, pasteClip, duplicate, quantize,
+        copyNotes, pasteNotes, copyClip, pasteClip, duplicate, quantize, deleteClip,
         playPause, toStart, toEnd, backOneBar, onOneBar, record, loop
     };
 }
@@ -661,6 +662,7 @@ MainComponent::MainComponent()
     sessionView_.onStopTrack   = [this](int track) { engine_.stopSessionSlot(track); };
     sessionView_.onStopAll     = [this] { engine_.stopAllSessionSlots(); };
     sessionView_.onAddScene    = [this] { addSessionScene(); };
+    sessionView_.onDeleteScene = [this](int scene) { deleteSessionScene(scene); };
     sessionView_.onClipSelected = [this](int track, int scene) { captureClipIntoSession(track, scene); };
 
     // Clicking a fret sounds the note through the armed track, which for a
@@ -835,6 +837,12 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         addItem(menu, 17, "Copy Clip", keys::copyClip);
         addItem(menu, 18, "Paste Clip", keys::pasteClip, ! clipClipboard_.empty());
         addItem(menu, 19, "Duplicate Clip", keys::duplicate);
+        addItem(menu, 25, "Delete Clip", keys::deleteClip);
+        menu.addSeparator();
+        menu.addItem(26, "Rename Track...");
+        // The last track isn't deletable: a song with none has no pane that
+        // can do anything, and no obvious way back.
+        menu.addItem(27, "Delete Track", trackCount() > 1);
         menu.addSeparator();
         addItem(menu, 20, "Quantize", keys::quantize);
         menu.addItem(21, "Swing - Light");
@@ -869,6 +877,9 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 2:  openProject(); break;
         case 3:  saveProject(); break;
         case 24: saveProjectAs(); break;
+        case 25: deleteSelectedClip(); break;
+        case 26: renameSelectedTrack(); break;
+        case 27: deleteSelectedTrack(); break;
         case 4:  chooseFile(); break; // import audio (preview player)
         case 5:  bounceProject(); break;
         case 6:  showAudioSettings(); break;
@@ -1253,6 +1264,23 @@ void MainComponent::refreshSessionView()
 }
 
 /** Adds a scene (a grid row), giving every track an empty slot in it. */
+/** Removes a session row and every clip in it. Stops playback first: the
+    slots the engine is holding are addressed by index, and the row below
+    would inherit the index of the one that just went away. */
+void MainComponent::deleteSessionScene(int sceneIndex)
+{
+    const auto& song = history_.current();
+    if (sceneIndex < 0 || sceneIndex >= (int) song.scenes.size())
+        return;
+
+    engine_.stopAllSessionSlots();
+
+    history_.edit("Delete scene", [sceneIndex](model::Song& s) { model::removeScene(s, sceneIndex); });
+
+    syncEngineTracks();
+    refreshSessionView();
+}
+
 void MainComponent::addSessionScene()
 {
     history_.edit("Add scene", [](model::Song& s)
@@ -1591,6 +1619,105 @@ void MainComponent::pasteClip()
 
 /** Copy + paste in one step, landing the copy immediately after the original
     — the usual way to extend a part by a bar. */
+/** Deletes the selected arrangement clip. No confirmation: undo is the safety
+    net for editing actions, and a prompt on every delete is friction the user
+    pays for on the many times they meant it. */
+void MainComponent::deleteSelectedClip()
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+        return;
+
+    const auto& track = song.tracks[(size_t) selectedTrackIndex_];
+    if (selectedClipIndex_ < 0 || selectedClipIndex_ >= (int) track.clips.size())
+        return;
+
+    const int trackId   = track.id;
+    const int clipIndex = selectedClipIndex_;
+
+    history_.edit("Delete clip", [trackId, clipIndex](model::Song& s)
+    {
+        model::removeClip(s, trackId, clipIndex);
+    });
+
+    // The clip after the deleted one shuffles down into its index; selecting
+    // it keeps the selection somewhere real, and clamps at the end.
+    const auto& clips = history_.current().tracks[(size_t) selectedTrackIndex_].clips;
+    selectedClipIndex_ = clips.empty() ? 0 : juce::jmin(clipIndex, (int) clips.size() - 1);
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshDrumsPaneForSelected();
+    refreshEffectChainForSelected();
+    refreshFretboardForSelected();
+    refreshSessionView();
+    arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+    updateEditingLabel();
+}
+
+/** Deletes the selected track and everything on it. Undo covers it, as with
+    clips — but the last track isn't deletable, because a song with no tracks
+    has no pane that can do anything and no obvious way back. */
+void MainComponent::deleteSelectedTrack()
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+        return;
+
+    if (song.tracks.size() <= 1)
+        return;
+
+    const int trackId = song.tracks[(size_t) selectedTrackIndex_].id;
+    const int removed = selectedTrackIndex_;
+
+    history_.edit("Delete track", [trackId](model::Song& s) { model::removeTrack(s, trackId); });
+
+    selectTrackAndRefreshAll(juce::jmin(removed, trackCount() - 1));
+}
+
+/** Renames the selected track. Track names are the only label distinguishing
+    one strip, row or tab from the next, and until now they were whatever the
+    Add button happened to generate. */
+void MainComponent::renameSelectedTrack()
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+        return;
+
+    const auto& track   = song.tracks[(size_t) selectedTrackIndex_];
+    const int   trackId = track.id;
+
+    auto* window = new juce::AlertWindow("Rename Track", {}, juce::MessageBoxIconType::NoIcon, this);
+    window->addTextEditor("name", juce::String(track.name), "Name:");
+    window->addButton("Rename", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    window->enterModalState(true,
+        juce::ModalCallbackFunction::create(
+            [self = juce::Component::SafePointer<MainComponent>(this), window, trackId](int result)
+            {
+                if (self == nullptr || result != 1)
+                    return;
+
+                const auto name = window->getTextEditorContents("name").trim();
+                if (name.isEmpty())
+                    return; // an unnamed track is worse than the generated name
+
+                self->history_.edit("Rename track", [trackId, name](model::Song& s)
+                {
+                    model::renameTrack(s, trackId, name.toStdString());
+                });
+
+                self->syncEngineTracks();
+                self->updateMixerStrips();
+                self->refreshSessionView();
+                self->arrangementView_.setSong(self->history_.current());
+                self->updateEditingLabel();
+            }),
+        true);
+}
+
 void MainComponent::duplicateClip()
 {
     const auto& song = history_.current();
@@ -2434,6 +2561,7 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     if (key == keys::pasteClip)  { pasteClip();        return true; }
     if (key == keys::duplicate)  { duplicateClip();    return true; }
     if (key == keys::quantize)   { quantizeNotes(0.0); return true; }
+    if (key == keys::deleteClip) { deleteSelectedClip(); return true; }
 
     return false;
 }
@@ -2638,11 +2766,14 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
         newTrackIndex = (int) s.tracks.size() - 1;
     });
 
-    selectNewlyAddedTrack(newTrackIndex);
+    selectTrackAndRefreshAll(newTrackIndex);
     clipLabel.setText("Imported: " + file.getFileName() + "  (new track)", juce::dontSendNotification);
 }
 
-void MainComponent::selectNewlyAddedTrack(int newTrackIndex)
+/** Points the whole UI at a track: every pane that shows per-track state is
+    refreshed from it. Used after adding a track and after deleting one, which
+    is why it isn't named for either. */
+void MainComponent::selectTrackAndRefreshAll(int newTrackIndex)
 {
     if (newTrackIndex < 0)
         return;
@@ -2734,7 +2865,7 @@ void MainComponent::finishRecordingIfReady()
         newTrackIndex = (int) s.tracks.size() - 1;
     });
 
-    selectNewlyAddedTrack(newTrackIndex);
+    selectTrackAndRefreshAll(newTrackIndex);
     clipLabel.setText("Recorded: " + file.getFileName(), juce::dontSendNotification);
 }
 

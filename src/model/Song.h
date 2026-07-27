@@ -144,6 +144,17 @@ inline bool removeTrack(Song& song, int id)
     return false;
 }
 
+/** Renames a track. Returns false if there's no such track. */
+inline bool renameTrack(Song& song, int id, std::string name)
+{
+    Track* track = findTrack(song, id);
+    if (track == nullptr)
+        return false;
+
+    track->name = std::move(name);
+    return true;
+}
+
 /** Adds @p clip to the given track, assigning it a fresh id. Returns nullptr if the track is missing. */
 inline Clip* addClip(Song& song, int trackId, Clip clip)
 {
@@ -154,6 +165,39 @@ inline Clip* addClip(Song& song, int trackId, Clip clip)
     clip.id = allocateId(song);
     track->clips.push_back(std::move(clip));
     return &track->clips.back();
+}
+
+/** Removes one arrangement clip by its position in the track. Returns false
+    if the track or the index is out of range.
+
+    By index rather than by id because that's how the UI addresses the clip it
+    has selected; ids stay unique because allocateId only ever counts up, so a
+    later clip can't reuse a removed one's id. */
+inline bool removeClip(Song& song, int trackId, int clipIndex)
+{
+    Track* track = findTrack(song, trackId);
+    if (track == nullptr || clipIndex < 0 || clipIndex >= (int) track->clips.size())
+        return false;
+
+    track->clips.erase(track->clips.begin() + clipIndex);
+    return true;
+}
+
+/** Removes a session-grid row, taking that slot out of every track's column
+    so the grid stays rectangular — the invariant every session lookup relies
+    on. Returns false if there's no such scene. */
+inline bool removeScene(Song& song, int sceneIndex)
+{
+    if (sceneIndex < 0 || sceneIndex >= (int) song.scenes.size())
+        return false;
+
+    song.scenes.erase(song.scenes.begin() + sceneIndex);
+
+    for (auto& track : song.tracks)
+        if (sceneIndex < (int) track.sessionSlots.size())
+            track.sessionSlots.erase(track.sessionSlots.begin() + sceneIndex);
+
+    return true;
 }
 
 } // namespace looper::model

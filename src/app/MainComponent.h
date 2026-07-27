@@ -107,7 +107,7 @@ private:
     void                   toggleRecording();
     void                   finishRecordingIfReady();
     juce::File             recordingsDirectory() const;
-    void                   selectNewlyAddedTrack(int newTrackIndex);
+    void                   selectTrackAndRefreshAll(int newTrackIndex);
     void                   addTrack();
     void                   addDrumTrack();
     void                   addGuitarTrack();
@@ -135,6 +135,7 @@ private:
     void                   closePluginEditors();
     void                   refreshSessionView();
     void                   addSessionScene();
+    void                   deleteSessionScene(int sceneIndex);
     void                   captureClipIntoSession(int trackIndex, int sceneIndex);
     void                   setTrackSynthSettings(const model::SynthSettings& settings);
     void                   previewNote(int noteNumber);
@@ -158,6 +159,9 @@ private:
     void                   copyClip();
     void                   pasteClip();
     void                   duplicateClip();
+    void                   deleteSelectedClip();
+    void                   deleteSelectedTrack();
+    void                   renameSelectedTrack();
     void                   quantizeNotes(double swingAmount);
     void                   setPatternBars(int bars);
     void                   updateBarsControl();

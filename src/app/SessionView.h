@@ -35,6 +35,7 @@ public:
     std::function<void()>                               onStopAll;
     std::function<void(int trackIndex, int sceneIndex)> onClipSelected; // right-click / empty cell
     std::function<void()>                               onAddScene;
+    std::function<void(int sceneIndex)>                 onDeleteScene; // right-click a scene button
 
     void setSong(const model::Song& song)
     {
@@ -62,10 +63,23 @@ public:
         if (isInSceneColumn(point.x))
         {
             const int scene = sceneAtY(point.y);
-            if (scene >= 0 && onLaunchScene)
+
+            // Left-click launches the row; right-click is the only place a
+            // scene can be removed, since the button is the only thing on
+            // screen that stands for the scene itself.
+            if (scene >= 0 && e.mods.isPopupMenu())
+            {
+                if (onDeleteScene)
+                    onDeleteScene(scene);
+            }
+            else if (scene >= 0 && onLaunchScene)
+            {
                 onLaunchScene(scene);
+            }
             else if (scene < 0 && isInAddSceneRow(point.y) && onAddScene)
+            {
                 onAddScene();
+            }
             return;
         }
 
