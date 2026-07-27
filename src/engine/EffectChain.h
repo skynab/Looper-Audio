@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -21,6 +22,26 @@ enum class EffectNodeKind
     Delay  = 1,
     Reverb = 2,
     Plugin = 3
+};
+
+/** What a chain slot should be. Carries plugin identity as plain strings —
+    the engine can't reference model::PluginRef, and this is the same boundary
+    the rest of the engine keeps. */
+struct EffectSlotSpec
+{
+    EffectNodeKind kind = EffectNodeKind::Filter;
+    std::string    pluginFormat;
+    std::string    pluginIdentifier;
+    std::string    pluginState; // base64, applied after instantiation
+
+    /** Only identity matters for deciding whether to rebuild — a changed
+        preset is restored onto the existing instance, not a new chain. */
+    bool sameShapeAs(const EffectSlotSpec& other) const
+    {
+        return kind == other.kind
+            && pluginFormat == other.pluginFormat
+            && pluginIdentifier == other.pluginIdentifier;
+    }
 };
 
 /** One effect in a track's chain. Virtual dispatch costs one indirect call

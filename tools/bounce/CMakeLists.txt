@@ -4,7 +4,14 @@ juce_add_console_app(looper_bounce PRODUCT_NAME "looper-bounce")
 
 target_sources(looper_bounce PRIVATE main.cpp)
 
+# Plugin hosting is enabled here too so the smoke tool can verify it against a
+# real plugin rather than a mock — see the pluginHost* checks in main.cpp. It
+# links the *headless* hosting module: the GUI one carries plugin-editor
+# support, which on macOS needs CoreAudioKit, and a console tool has no use for
+# a window.
 target_compile_definitions(looper_bounce PRIVATE
+  JUCE_PLUGINHOST_VST3=1
+  JUCE_PLUGINHOST_AU=1
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0)
 
@@ -12,6 +19,7 @@ target_link_libraries(looper_bounce
   PRIVATE
     looper::rt
     juce::juce_audio_formats
+    juce::juce_audio_processors_headless
   PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags)

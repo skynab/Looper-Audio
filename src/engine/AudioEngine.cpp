@@ -339,15 +339,39 @@ void AudioEngine::rebuildTrackEffectChain(int index)
     if (index < 0 || index >= kMaxTracks)
         return;
 
+    const double rateForPlugins = sampleRate_.load(std::memory_order_relaxed);
+
     auto chain = std::make_unique<EffectChain>();
-    for (auto kind : chainStructure_[(size_t) index])
+    for (const auto& spec : chainStructure_[(size_t) index])
     {
-        switch (kind)
+        switch (spec.kind)
         {
             case EffectNodeKind::Filter: chain->add(std::make_unique<FilterNode>()); break;
             case EffectNodeKind::Delay:  chain->add(std::make_unique<DelayNode>());  break;
             case EffectNodeKind::Reverb: chain->add(std::make_unique<ReverbNode>()); break;
-            case EffectNodeKind::Plugin: break; // hosted plugins arrive in the next step
+
+            case EffectNodeKind::Plugin:
+            {
+                // Instantiated here, on the message thread: loading a binary
+                // and running third-party initialisation must never happen
+                // under the audio thread. A plugin this machine doesn't have
+                // simply leaves a gap in the chain rather than failing the
+                // load — the document still remembers which one it wanted.
+                std::string error;
+                auto instance = pluginHost_.createInstance(spec.pluginFormat, spec.pluginIdentifier,
+                                                           rateForPlugins > 0.0 ? rateForPlugins : 48000.0,
+                                                           currentBlockSize_, &error);
+                if (instance == nullptr)
+                {
+                    DBG("plugin unavailable: " << spec.pluginIdentifier.c_str() << " (" << error.c_str() << ")");
+                    break;
+                }
+
+                auto node = std::make_unique<PluginNode>(std::move(instance));
+                node->restoreState(spec.pluginState);
+                chain->add(std::move(node));
+                break;
+            }
         }
     }
 
@@ -365,17 +389,23 @@ void AudioEngine::rebuildTrackEffectChain(int index)
     track.setEffectChain(chain.release());
 }
 
-void AudioEngine::setTrackEffectChain(int index, const std::vector<EffectNodeKind>& kinds)
+void AudioEngine::setTrackEffectChain(int index, const std::vector<EffectSlotSpec>& slots)
 {
     if (index < 0 || index >= kMaxTracks)
         return;
 
-    // Rebuilding resets every tail in the chain, so only do it when the shape
-    // actually changed — an unrelated document edit must not glitch a delay.
-    if (chainStructure_[(size_t) index] == kinds && submittedChain_[(size_t) index] != nullptr)
+    // Rebuilding resets every tail in the chain — and reinstantiates every
+    // plugin — so only do it when the shape actually changed. A changed
+    // preset or parameter is not a shape change.
+    const auto& existing = chainStructure_[(size_t) index];
+    bool sameShape = existing.size() == slots.size() && submittedChain_[(size_t) index] != nullptr;
+    for (size_t i = 0; sameShape && i < slots.size(); ++i)
+        sameShape = existing[i].sameShapeAs(slots[i]);
+
+    if (sameShape)
         return;
 
-    chainStructure_[(size_t) index] = kinds;
+    chainStructure_[(size_t) index] = slots;
     rebuildTrackEffectChain(index);
 }
 

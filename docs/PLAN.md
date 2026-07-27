@@ -1064,9 +1064,14 @@ of weight:
 
 ### Recorded now so it isn't rediscovered
 
-- **Scanning must be out-of-process.** A plugin that crashes while being probed
-  must not take the app with it; JUCE's `PluginDirectoryScanner` supports this and
-  §15 already lists plugin stability as a risk. Stage 2.
+- **Scanning is in-process, and that is still outstanding.** Stage 2 shipped crash
+  *recovery* (a dead man's pedal file records the plugin being probed, so one that kills
+  the app is skipped next run) but not crash *isolation* — the first crash still takes the
+  app down. Real isolation needs the probe in a child process. §15 lists plugin stability
+  as a risk and this is the unpaid part of it.
+- **`KnownPluginList` and `PluginDirectoryScanner` are GUI-module only.** `PluginHost` keeps
+  its own list of descriptions instead, which is what lets the headless bounce tool scan and
+  instantiate — and therefore verify hosting against a real plugin rather than a mock.
 - **Hosted plugins break the engine's no-allocation rule.** They allocate in
   `prepareToPlay` and some misbehave in `processBlock`. The chain hand-off keeps
   *instantiation* on the message thread, but a badly-behaved plugin can still

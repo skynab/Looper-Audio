@@ -1288,6 +1288,20 @@ void MainComponent::updateBarsControl()
     barsBox_.setSelectedId(bars == 1 || bars == 2 || bars == 4 ? bars : 0, juce::dontSendNotification);
 }
 
+/** model::PluginFormat -> the name JUCE's format manager uses. The document
+    stores an enum so the file format doesn't depend on JUCE's spelling; this
+    is the one place the two meet. */
+static std::string pluginFormatName(model::PluginFormat format)
+{
+    switch (format)
+    {
+        case model::PluginFormat::VST3:      return "VST3";
+        case model::PluginFormat::AudioUnit: return "AudioUnit";
+        case model::PluginFormat::Unknown:   break;
+    }
+    return {};
+}
+
 /** Converts a track's model automation lanes into the engine's curve form.
     The engine can't use model::AutomationLane directly — `model` already
     depends on `engine`, so the dependency can't run both ways — and this is
@@ -1437,19 +1451,26 @@ void MainComponent::syncEngineTracks()
         // The chain's shape, in order. Only pushed when it actually changed —
         // rebuilding resets every tail in the chain, so an unrelated edit must
         // not glitch a delay (see AudioEngine::setTrackEffectChain).
-        std::vector<engine::EffectNodeKind> chainKinds;
-        chainKinds.reserve(track.effectChain.size());
+        std::vector<engine::EffectSlotSpec> chainSpecs;
+        chainSpecs.reserve(track.effectChain.size());
         for (const auto& slot : track.effectChain)
         {
+            engine::EffectSlotSpec spec;
             switch (slot.kind)
             {
-                case model::EffectKind::Filter: chainKinds.push_back(engine::EffectNodeKind::Filter); break;
-                case model::EffectKind::Delay:  chainKinds.push_back(engine::EffectNodeKind::Delay);  break;
-                case model::EffectKind::Reverb: chainKinds.push_back(engine::EffectNodeKind::Reverb); break;
-                case model::EffectKind::Plugin: chainKinds.push_back(engine::EffectNodeKind::Plugin); break;
+                case model::EffectKind::Filter: spec.kind = engine::EffectNodeKind::Filter; break;
+                case model::EffectKind::Delay:  spec.kind = engine::EffectNodeKind::Delay;  break;
+                case model::EffectKind::Reverb: spec.kind = engine::EffectNodeKind::Reverb; break;
+                case model::EffectKind::Plugin:
+                    spec.kind             = engine::EffectNodeKind::Plugin;
+                    spec.pluginFormat     = pluginFormatName(slot.plugin.format);
+                    spec.pluginIdentifier = slot.plugin.identifier;
+                    spec.pluginState      = slot.plugin.state;
+                    break;
             }
+            chainSpecs.push_back(std::move(spec));
         }
-        engine_.setTrackEffectChain(i, chainKinds);
+        engine_.setTrackEffectChain(i, chainSpecs);
 
         // Parameters then go to the first node of each kind. The UI still only
         // offers one of each; a chain editor (§20 stage 3) addresses nodes by

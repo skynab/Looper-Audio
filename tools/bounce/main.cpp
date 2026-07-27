@@ -12,6 +12,8 @@
 #include "engine/DelayEffect.h"
 #include "engine/DrumKitNode.h"
 #include "engine/EffectChain.h"
+#include "engine/PluginHost.h"
+#include "engine/PluginNode.h"
 #include "engine/FilterEffect.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/Metronome.h"
@@ -444,6 +446,149 @@ int main(int argc, char** argv)
         const float lateRight  = swept.getRMSLevel(1, lateAt, window);
 
         panAutomationWorks = earlyLeft > earlyRight * 2.0f && lateRight > lateLeft * 2.0f;
+    }
+
+    // Plugin-hosting check, against a *real* plugin rather than a mock: scan
+    // whatever effect plugins this machine has, instantiate one, run audio
+    // through it as a chain node, and require it to change the signal.
+    //
+    // A machine with no plugins (CI on Linux, say) is not a failure of this
+    // code, so the check passes when none are found — pluginsScanned is
+    // printed alongside so it's visible whether anything was actually
+    // exercised, rather than the check quietly meaning nothing.
+    bool pluginHostWorks = false;
+    int  pluginsScanned  = 0;
+    {
+        juce::ScopedJuceInitialiser_GUI juceInit; // plugin formats want a message loop
+
+        PluginHost host;
+        const auto deadMansPedal = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                       .getChildFile("looper_bounce_plugin_scan.tmp");
+
+        for (const auto& format : host.availableFormats())
+            host.scanFormat(format, deadMansPedal, 24); // capped: probing instantiates each one
+
+        deadMansPedal.deleteFile();
+
+        // A stereo effect, not an instrument — something that transforms audio
+        // handed to it.
+        const PluginEntry* chosen = nullptr;
+        const auto entries = host.knownPlugins();
+        pluginsScanned = (int) entries.size();
+        for (const auto& entry : entries)
+        {
+            if (! entry.isInstrument && entry.numInputs >= 2 && entry.numOutputs >= 2)
+            {
+                chosen = &entry;
+                break;
+            }
+        }
+
+        if (chosen == nullptr)
+        {
+            pluginHostWorks = true; // nothing to host here; not this code's fault
+        }
+        else
+        {
+            std::string error;
+            auto instance = host.createInstance(chosen->format, chosen->identifier,
+                                                sampleRate, 512, &error);
+            if (instance == nullptr)
+            {
+                std::cerr << "plugin instantiation failed: " << error << "\n";
+            }
+            else
+            {
+                // Render the same part twice: once plain, once through the
+                // plugin as a chain node. A plugin at its defaults might be
+                // transparent, so this asserts it *ran* (no crash, buffer
+                // intact and finite) and reports whether it altered the sound.
+                auto renderThroughPlugin = [&](std::unique_ptr<juce::AudioPluginInstance> plugin,
+                                               bool bypassed = false)
+                {
+                    const int totalSamples = (int) (sampleRate * 1.0);
+                    juce::AudioBuffer<float> mix(2, totalSamples);
+                    mix.clear();
+
+                    InstrumentTrack track;
+                    track.prepare(sampleRate, 512);
+
+                    if (plugin != nullptr)
+                    {
+                        auto chain = std::make_unique<EffectChain>();
+                        auto node  = std::make_unique<PluginNode>(std::move(plugin));
+                        node->setBypassed(bypassed);
+                        chain->add(std::move(node));
+                        chain->prepare(sampleRate, 512);
+                        track.setEffectChain(chain.release());
+                    }
+
+                    ClipSlot slot;
+                    slot.pattern     = arp;
+                    slot.startBeats  = 0.0;
+                    slot.lengthBeats = 1.0e9;
+                    track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+                    juce::AudioBuffer<float> sendBus(2, 512);
+                    juce::MidiBuffer         noLiveMidi;
+
+                    for (int pos = 0; pos < totalSamples; pos += 512)
+                    {
+                        const int n = std::min(512, totalSamples - pos);
+
+                        ProcessContext context;
+                        context.sampleRate                   = sampleRate;
+                        context.numSamples                   = n;
+                        context.transport.playing            = true;
+                        context.transport.playheadSamples    = pos;
+                        context.transport.bpm                = bpm;
+                        context.transport.timeSigNumerator   = 4;
+                        context.transport.timeSigDenominator = 4;
+
+                        sendBus.setSize(2, n, false, false, true);
+                        sendBus.clear();
+
+                        juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                        track.render(blockView, sendBus, noLiveMidi, context, false, false);
+                    }
+                    return mix;
+                };
+
+                const auto hosted = renderThroughPlugin(std::move(instance));
+
+                // A bypassed plugin must pass the signal through untouched —
+                // identical to having no chain at all. Unlike "did the plugin
+                // colour the sound", which depends on whichever plugin this
+                // machine happened to offer, this is deterministic and tests
+                // PluginNode's own bypass path.
+                auto second = host.createInstance(chosen->format, chosen->identifier, sampleRate, 512);
+                const auto bypassedRender = renderThroughPlugin(std::move(second), true);
+                const auto noPluginRender = renderThroughPlugin(nullptr);
+
+                float bypassDelta = 0.0f;
+                for (int i = 0; i < bypassedRender.getNumSamples(); ++i)
+                    bypassDelta = std::max(bypassDelta,
+                                           std::abs(bypassedRender.getSample(0, i)
+                                                    - noPluginRender.getSample(0, i)));
+
+                // Every sample must be finite: a plugin writing past its buffer
+                // or returning NaN is the failure mode that matters most, since
+                // it poisons the whole mix downstream.
+                bool  allFinite = true;
+                float peak      = 0.0f;
+                for (int ch = 0; ch < hosted.getNumChannels() && allFinite; ++ch)
+                    for (int i = 0; i < hosted.getNumSamples(); ++i)
+                    {
+                        const float sample = hosted.getSample(ch, i);
+                        if (! std::isfinite(sample)) { allFinite = false; break; }
+                        peak = std::max(peak, std::abs(sample));
+                    }
+
+                pluginHostWorks = allFinite && peak > 0.0f && bypassDelta < 1.0e-9f;
+                std::cerr << "hosted plugin: " << chosen->name << " (" << chosen->format
+                          << "), peak=" << peak << ", bypassDelta=" << bypassDelta << "\n";
+            }
+        }
     }
 
     // Chain-order check.
@@ -975,6 +1120,8 @@ int main(int argc, char** argv)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
               << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
+              << "  pluginsScanned=" << pluginsScanned
+              << "  pluginHostWorks=" << (pluginHostWorks ? 1 : 0)
               << "  effectChainOrderMatters=" << (effectChainOrderMatters ? 1 : 0)
               << "  effectChainRunsAllNodes=" << (effectChainRunsAllNodes ? 1 : 0)
               << "  sessionLaunchQuantizes=" << (sessionLaunchQuantizes ? 1 : 0)
@@ -1009,6 +1156,7 @@ int main(int argc, char** argv)
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && drumPadMixWorks && drumPadPitchWorks
+                 && pluginHostWorks
                  && effectChainOrderMatters && effectChainRunsAllNodes
                  && sessionLaunchQuantizes && sessionStopWorks
                  && trackPanWorks && panAutomationWorks && trackInsertFilterWorks

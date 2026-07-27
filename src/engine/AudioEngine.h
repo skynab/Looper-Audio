@@ -24,6 +24,8 @@
 #include "engine/InstrumentTrack.h"
 #include "engine/MasterBusNode.h"
 #include "engine/Metronome.h"
+#include "engine/PluginHost.h"
+#include "engine/PluginNode.h"
 #include "engine/Pattern.h"
 #include "engine/Transport.h"
 
@@ -217,7 +219,10 @@ public:
         tail in the chain, so parameter changes must go through the setters
         below instead. A no-op when the structure already matches, which is
         what keeps an unrelated document edit from glitching a delay tail. */
-    void setTrackEffectChain(int index, const std::vector<EffectNodeKind>& kinds);
+    void setTrackEffectChain(int index, const std::vector<EffectSlotSpec>& slots);
+
+    /** The plugin host, for the UI's browser and scan. Message thread. */
+    PluginHost& pluginHost() noexcept { return pluginHost_; }
 
     // Per-track insert parameters. Each addresses the *first* node of its kind
     // in that track's chain and does nothing if there isn't one — the UI still
@@ -352,7 +357,8 @@ private:
     // from, and a pointer to the chain last submitted. The pointer is how
     // parameter setters reach live nodes — safe because the newest chain is
     // never the one being reclaimed.
-    std::array<std::vector<EffectNodeKind>, kMaxTracks> chainStructure_;
+    std::array<std::vector<EffectSlotSpec>, kMaxTracks> chainStructure_;
+    PluginHost                                         pluginHost_;
     std::array<EffectChain*, kMaxTracks>                submittedChain_ {};
     int                                                 currentBlockSize_ = 512;
 
