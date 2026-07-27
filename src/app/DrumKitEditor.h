@@ -120,7 +120,15 @@ public:
         if (clamped == selectedPad_)
             return;
         selectedPad_ = clamped;
+
+        // The selection can come from the step grid beside this list, which
+        // shows every pad at once — so the row it picks may be scrolled out
+        // of view here. Bring it back, or the mix strip would describe a pad
+        // that isn't on screen.
+        scrollPadIntoView(clamped);
+
         refreshMixControls();
+        resized(); // the scroll may have moved every row
         repaint();
     }
 
@@ -130,6 +138,12 @@ public:
     {
         g.fillAll(juce::Colour(0xff1e1e22));
         g.setFont(juce::FontOptions(12.0f));
+
+        {
+        // Rows are clipped to their own strip so a partly-scrolled row can't
+        // bleed into the toolbar or the mix strip below.
+        juce::Graphics::ScopedSaveState clipToRows(g);
+        g.reduceClipRegion(rowsArea());
 
         for (int i = 0; i < (int) pads_.size(); ++i)
         {
@@ -161,6 +175,8 @@ public:
                              juce::Justification::centredLeft, 1);
         }
 
+        }
+
         // Divider above the selected pad's mix strip.
         if (selectedPad_ >= 0)
         {
@@ -188,13 +204,42 @@ public:
         layoutMixRow(mixStrip, panLabel_, panSlider_);
         layoutMixRow(mixStrip, pitchLabel_, pitchSlider_);
 
+        scrollOffset_ = juce::jlimit(0, maxScrollOffset(), scrollOffset_);
+
+        const auto visible = rowsArea();
         for (int i = 0; i < (int) pads_.size(); ++i)
         {
             auto row = rowBounds(i);
+
+            // Child components aren't clipped to rowsArea(), so anything
+            // scrolled out of it is hidden rather than left to paint over the
+            // toolbar or the mix strip.
+            const bool onScreen = row.intersects(visible);
+            muteButtons_[i]->setVisible(onScreen);
+            soloButtons_[i]->setVisible(onScreen);
+            loadButtons_[i]->setVisible(onScreen);
+            if (! onScreen)
+                continue;
+
             muteButtons_[i]->setBounds(row.removeFromLeft(kButtonWidth).reduced(2));
             soloButtons_[i]->setBounds(row.removeFromLeft(kButtonWidth).reduced(2));
             loadButtons_[i]->setBounds(row.removeFromRight(kLoadWidth).reduced(3));
         }
+    }
+
+    void mouseWheelMove(const juce::MouseEvent&, const juce::MouseWheelDetails& wheel) override
+    {
+        const int limit = maxScrollOffset();
+        if (limit <= 0)
+            return; // the whole kit fits; nothing to scroll
+
+        const int wanted = juce::jlimit(0, limit, scrollOffset_ - (int) (wheel.deltaY * 60.0f));
+        if (wanted == scrollOffset_)
+            return;
+
+        scrollOffset_ = wanted;
+        resized(); // row widgets move with the scroll, and some come in/out of view
+        repaint();
     }
 
     void mouseDown(const juce::MouseEvent& e) override
@@ -258,15 +303,58 @@ private:
     static constexpr int kButtonsWidth   = 2 * kButtonWidth;
     static constexpr int kLoadWidth      = 60;
 
+    /** The strip the pad rows live in: everything between the toolbar and the
+        selected pad's mix strip. Rows scroll within this rather than running
+        on past it — a kit with more pads than fit used to draw its later rows
+        underneath the mix strip, where they could still be clicked but not
+        seen. */
+    juce::Rectangle<int> rowsArea() const
+    {
+        auto area = getLocalBounds();
+        area.removeFromTop(kToolbarHeight);
+        area.removeFromBottom(kMixStripHeight);
+        return area;
+    }
+
+    /** Scrolls the list the minimum distance needed to show @p index — no
+        movement at all if it's already visible. */
+    void scrollPadIntoView(int index)
+    {
+        const auto area = rowsArea();
+        if (index < 0 || area.getHeight() <= 0)
+            return;
+
+        const int top    = index * kRowHeight;
+        const int bottom = top + kRowHeight;
+
+        if (top < scrollOffset_)
+            scrollOffset_ = top;
+        else if (bottom > scrollOffset_ + area.getHeight())
+            scrollOffset_ = bottom - area.getHeight();
+
+        scrollOffset_ = juce::jlimit(0, maxScrollOffset(), scrollOffset_);
+    }
+
+    int maxScrollOffset() const
+    {
+        const int content = (int) pads_.size() * kRowHeight;
+        return juce::jmax(0, content - rowsArea().getHeight());
+    }
+
     juce::Rectangle<int> rowBounds(int index) const
     {
-        return { 0, kToolbarHeight + index * kRowHeight, getWidth(), kRowHeight };
+        const auto area = rowsArea();
+        return { 0, area.getY() + index * kRowHeight - scrollOffset_, getWidth(), kRowHeight };
     }
 
     int padIndexForY(float y) const
     {
-        const int idx = (int) ((y - (float) kToolbarHeight) / (float) kRowHeight);
-        return (y >= (float) kToolbarHeight && idx >= 0 && idx < (int) pads_.size()) ? idx : -1;
+        const auto area = rowsArea();
+        if (y < (float) area.getY() || y >= (float) area.getBottom())
+            return -1;
+
+        const int idx = (int) ((y - (float) area.getY() + (float) scrollOffset_) / (float) kRowHeight);
+        return (idx >= 0 && idx < (int) pads_.size()) ? idx : -1;
     }
 
     void setupMixSlider(juce::Slider& slider, double lo, double hi, double step,
@@ -357,6 +445,7 @@ private:
     juce::Slider                       gainSlider_, panSlider_, pitchSlider_;
     std::unique_ptr<juce::FileChooser> chooser_;
     int                                dragHighlightRow_ = -1;
+    int                                scrollOffset_     = 0; // pixels, see rowsArea()
     int                                selectedPad_      = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DrumKitEditor)
