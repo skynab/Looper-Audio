@@ -7,10 +7,8 @@
 
 #include "engine/AudioFilePlayerNode.h"
 #include "engine/AutomationCurve.h"
-#include "engine/DelayEffect.h"
 #include "engine/DrumKitNode.h"
-#include "engine/FilterEffect.h"
-#include "engine/ReverbEffect.h"
+#include "engine/EffectChain.h"
 #include "engine/ProcessContext.h"
 #include "engine/Sequencer.h"
 #include "engine/SessionPlayer.h"
@@ -58,14 +56,13 @@ struct InstrumentTrack
     SessionPlayer            session;
     AudioFilePlayerNode      audioPlayer;
 
-    // This track's insert chain, in fixed order, applied to its own output
-    // before the fader (and therefore before the send too, so a send carries
-    // the processed signal — the usual behaviour). Each passes audio through
-    // untouched while disabled, which is how they all start, so a track with
-    // no inserts configured costs three branch-and-returns per block.
-    FilterEffect             insertFilter;
-    DelayEffect              insertDelay;
-    ReverbEffect             insertReverb;
+    // This track's insert chain, applied to its own output before the fader
+    // (and therefore before the send too, so a send carries the processed
+    // sound — the usual behaviour). Owned by the audio thread and replaced
+    // whole; see setEffectChain.
+    EffectChain*                     effectChain_ = nullptr;
+    rt::SpscRingBuffer<EffectChain*> effectChainInbox_   { 8 };
+    rt::SpscRingBuffer<EffectChain*> effectChainReclaim_ { 16 };
     std::atomic<bool>        active      { false };
     std::atomic<bool>        muted       { false };
     std::atomic<bool>        solo        { false };
@@ -89,6 +86,28 @@ struct InstrumentTrack
         TrackAutomation* straggler = nullptr;
         while (automationInbox_.pop(straggler))
             delete straggler;
+
+        collectRetiredEffectChain();
+        delete effectChain_;
+
+        EffectChain* chainStraggler = nullptr;
+        while (effectChainInbox_.pop(chainStraggler))
+            delete chainStraggler;
+    }
+
+    /** Hands ownership of a rebuilt chain to the audio thread. Structural
+        changes only — parameters are set on the live nodes' atomics. */
+    void setEffectChain(EffectChain* chain)
+    {
+        if (! effectChainInbox_.push(chain))
+            delete chain;
+    }
+
+    void collectRetiredEffectChain()
+    {
+        EffectChain* retired = nullptr;
+        while (effectChainReclaim_.pop(retired))
+            delete retired;
     }
 
     // ---- message thread ----
@@ -114,9 +133,6 @@ struct InstrumentTrack
         synth.prepare(sampleRate, blockSize);
         drumKit.prepare(sampleRate, blockSize);
         audioPlayer.prepare(sampleRate, blockSize);
-        insertFilter.prepare(sampleRate, blockSize);
-        insertDelay.prepare(sampleRate, blockSize);
-        insertReverb.prepare(sampleRate, blockSize);
         trackMidi.ensureSize(2048);
         scratch.setSize(2, juce::jmax(1, blockSize));
     }
@@ -221,9 +237,16 @@ public:
         // Inserts run on the summed track output, before gain and before the
         // send is taken — so lowering the fader doesn't change the effect, and
         // the send carries the processed sound.
-        insertFilter.process(scratch);
-        insertDelay.process(scratch);
-        insertReverb.process(scratch);
+        EffectChain* incomingChain = nullptr;
+        while (effectChainInbox_.pop(incomingChain))
+        {
+            if (effectChain_ != nullptr)
+                effectChainReclaim_.push(effectChain_);
+            effectChain_ = incomingChain;
+        }
+
+        if (effectChain_ != nullptr)
+            effectChain_->process(scratch);
 
         const float staticGainDb = gainDb.load(std::memory_order_relaxed);
         const float staticPan    = pan.load(std::memory_order_relaxed);

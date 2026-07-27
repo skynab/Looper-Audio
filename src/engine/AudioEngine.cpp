@@ -334,76 +334,136 @@ void AudioEngine::setTrackSynthGainDb(int index, float db)
         tracks_[(size_t) index].synth.setGainDb(db);
 }
 
+void AudioEngine::rebuildTrackEffectChain(int index)
+{
+    if (index < 0 || index >= kMaxTracks)
+        return;
+
+    auto chain = std::make_unique<EffectChain>();
+    for (auto kind : chainStructure_[(size_t) index])
+    {
+        switch (kind)
+        {
+            case EffectNodeKind::Filter: chain->add(std::make_unique<FilterNode>()); break;
+            case EffectNodeKind::Delay:  chain->add(std::make_unique<DelayNode>());  break;
+            case EffectNodeKind::Reverb: chain->add(std::make_unique<ReverbNode>()); break;
+            case EffectNodeKind::Plugin: break; // hosted plugins arrive in the next step
+        }
+    }
+
+    // Prepared here, on the message thread, where allocating a delay line is
+    // allowed. A rate of zero means the device hasn't started yet; the rebuild
+    // in audioDeviceAboutToStart covers that case.
+    const double rate = sampleRate_.load(std::memory_order_relaxed);
+    if (rate > 0.0)
+        chain->prepare(rate, currentBlockSize_);
+
+    auto& track = tracks_[(size_t) index];
+    track.collectRetiredEffectChain();
+
+    submittedChain_[(size_t) index] = chain.get();
+    track.setEffectChain(chain.release());
+}
+
+void AudioEngine::setTrackEffectChain(int index, const std::vector<EffectNodeKind>& kinds)
+{
+    if (index < 0 || index >= kMaxTracks)
+        return;
+
+    // Rebuilding resets every tail in the chain, so only do it when the shape
+    // actually changed — an unrelated document edit must not glitch a delay.
+    if (chainStructure_[(size_t) index] == kinds && submittedChain_[(size_t) index] != nullptr)
+        return;
+
+    chainStructure_[(size_t) index] = kinds;
+    rebuildTrackEffectChain(index);
+}
+
+namespace
+{
+    /** The first node of @p NodeType in the chain a track last had submitted,
+        or nullptr. Parameter setters go through this: the newest chain is
+        never the one being reclaimed, so the message thread can safely poke
+        the atomics inside it. */
+    template <typename NodeType, size_t N>
+    NodeType* firstNode(const std::array<EffectChain*, N>& chains, int index)
+    {
+        if (index < 0 || index >= (int) N || chains[(size_t) index] == nullptr)
+            return nullptr;
+        return chains[(size_t) index]->template firstOfKind<NodeType>();
+    }
+}
+
 void AudioEngine::setTrackInsertFilterEnabled(int index, bool enabled)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertFilter.setEnabled(enabled);
+    if (auto* node = firstNode<FilterNode>(submittedChain_, index))
+        node->effect.setEnabled(enabled);
 }
 
 void AudioEngine::setTrackInsertFilterMode(int index, int mode)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertFilter.setMode(mode);
+    if (auto* node = firstNode<FilterNode>(submittedChain_, index))
+        node->effect.setMode(mode);
 }
 
 void AudioEngine::setTrackInsertFilterCutoff(int index, float hz)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertFilter.setCutoff(hz);
+    if (auto* node = firstNode<FilterNode>(submittedChain_, index))
+        node->effect.setCutoff(hz);
 }
 
 void AudioEngine::setTrackInsertFilterResonance(int index, float q)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertFilter.setResonance(q);
+    if (auto* node = firstNode<FilterNode>(submittedChain_, index))
+        node->effect.setResonance(q);
 }
 
 void AudioEngine::setTrackInsertDelayEnabled(int index, bool enabled)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertDelay.setEnabled(enabled);
+    if (auto* node = firstNode<DelayNode>(submittedChain_, index))
+        node->effect.setEnabled(enabled);
 }
 
 void AudioEngine::setTrackInsertDelayTimeMs(int index, float ms)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertDelay.setTimeMs(ms);
+    if (auto* node = firstNode<DelayNode>(submittedChain_, index))
+        node->effect.setTimeMs(ms);
 }
 
 void AudioEngine::setTrackInsertDelayFeedback(int index, float amount)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertDelay.setFeedback(amount);
+    if (auto* node = firstNode<DelayNode>(submittedChain_, index))
+        node->effect.setFeedback(amount);
 }
 
 void AudioEngine::setTrackInsertDelayMix(int index, float amount)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertDelay.setMix(amount);
+    if (auto* node = firstNode<DelayNode>(submittedChain_, index))
+        node->effect.setMix(amount);
 }
 
 void AudioEngine::setTrackInsertReverbEnabled(int index, bool enabled)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertReverb.setEnabled(enabled);
+    if (auto* node = firstNode<ReverbNode>(submittedChain_, index))
+        node->effect.setEnabled(enabled);
 }
 
 void AudioEngine::setTrackInsertReverbRoomSize(int index, float v)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertReverb.setRoomSize(v);
+    if (auto* node = firstNode<ReverbNode>(submittedChain_, index))
+        node->effect.setRoomSize(v);
 }
 
 void AudioEngine::setTrackInsertReverbDamping(int index, float v)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertReverb.setDamping(v);
+    if (auto* node = firstNode<ReverbNode>(submittedChain_, index))
+        node->effect.setDamping(v);
 }
 
 void AudioEngine::setTrackInsertReverbMix(int index, float v)
 {
-    if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].insertReverb.setMix(v);
+    if (auto* node = firstNode<ReverbNode>(submittedChain_, index))
+        node->effect.setMix(v);
 }
 
 void AudioEngine::setArmedTrack(int index)
@@ -420,6 +480,7 @@ void AudioEngine::pump() noexcept
         track.drumKit.collectRetired();
         track.collectRetiredAutomation();
         track.session.collectRetired();
+        track.collectRetiredEffectChain();
     }
 
     filePlayer_.collectRetiredClips();
@@ -529,8 +590,17 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     incomingMidi_.ensureSize(2048);
     transport_.prepare(sampleRate);
 
+    currentBlockSize_ = blockSize;
+
     for (auto& track : tracks_)
         track.prepare(sampleRate, blockSize);
+
+    // A chain must be prepared for the rate it will actually run at, and one
+    // submitted before the device started (or before a rate change) was
+    // prepared for the wrong rate, or not at all. Rebuilding here guarantees
+    // it; device starts are rare enough that the cost doesn't matter.
+    for (int i = 0; i < kMaxTracks; ++i)
+        rebuildTrackEffectChain(i);
 
     filePlayer_.prepare(sampleRate, blockSize);
     masterFilter_.prepare(sampleRate, blockSize);

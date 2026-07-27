@@ -1434,11 +1434,26 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackSynthFilterResonance(i, synth.filterResonance);
         engine_.setTrackSynthGainDb(i, synth.gainDb);
 
-        // The engine still applies one built-in of each kind — a variable-length
-        // chain, and hosted plugins, are stage 2 of §20 — so the chain's first
-        // slot of each kind drives it. Until the chain editor exists there can
-        // only be one of each anyway; a second would be ignored here, which is
-        // why the chain UI and the engine chain are planned to land together.
+        // The chain's shape, in order. Only pushed when it actually changed —
+        // rebuilding resets every tail in the chain, so an unrelated edit must
+        // not glitch a delay (see AudioEngine::setTrackEffectChain).
+        std::vector<engine::EffectNodeKind> chainKinds;
+        chainKinds.reserve(track.effectChain.size());
+        for (const auto& slot : track.effectChain)
+        {
+            switch (slot.kind)
+            {
+                case model::EffectKind::Filter: chainKinds.push_back(engine::EffectNodeKind::Filter); break;
+                case model::EffectKind::Delay:  chainKinds.push_back(engine::EffectNodeKind::Delay);  break;
+                case model::EffectKind::Reverb: chainKinds.push_back(engine::EffectNodeKind::Reverb); break;
+                case model::EffectKind::Plugin: chainKinds.push_back(engine::EffectNodeKind::Plugin); break;
+            }
+        }
+        engine_.setTrackEffectChain(i, chainKinds);
+
+        // Parameters then go to the first node of each kind. The UI still only
+        // offers one of each; a chain editor (§20 stage 3) addresses nodes by
+        // index instead.
         const auto* filterSlot = track.firstEffect(model::EffectKind::Filter);
         const auto* delaySlot  = track.firstEffect(model::EffectKind::Delay);
         const auto* reverbSlot = track.firstEffect(model::EffectKind::Reverb);

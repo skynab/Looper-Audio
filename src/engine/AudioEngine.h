@@ -212,9 +212,18 @@ public:
     void setTrackSynthFilterResonance(int index, float q);
     void setTrackSynthGainDb(int index, float db);
 
-    // Per-track insert effects (see InstrumentTrack) — the same three the
-    // master bus has, in the same fixed order, but applied to one track's
-    // output before its fader.
+    /** Replaces a track's insert chain with nodes of these kinds, in order.
+        Structural only: rebuilding allocates (on this thread) and resets every
+        tail in the chain, so parameter changes must go through the setters
+        below instead. A no-op when the structure already matches, which is
+        what keeps an unrelated document edit from glitching a delay tail. */
+    void setTrackEffectChain(int index, const std::vector<EffectNodeKind>& kinds);
+
+    // Per-track insert parameters. Each addresses the *first* node of its kind
+    // in that track's chain and does nothing if there isn't one — the UI still
+    // offers one of each; a chain editor (§20 stage 3) will address nodes by
+    // index. Safe from the message thread: these are atomics inside nodes the
+    // message thread built and still owns a pointer to.
     void setTrackInsertFilterEnabled(int index, bool enabled);
     void setTrackInsertFilterMode(int index, int mode);
     void setTrackInsertFilterCutoff(int index, float hz);
@@ -333,6 +342,19 @@ private:
     Metronome     metronome_;
     int           countInBars_ = 0; // message thread only; read when arming
     std::atomic<double> launchQuantumBeats_ { 4.0 }; // one bar of 4/4
+
+    /** Rebuilds and submits a track's chain from chainStructure_. Message
+        thread. Also called when the device (re)starts, since a chain must be
+        prepared for the sample rate it will actually run at. */
+    void rebuildTrackEffectChain(int index);
+
+    // Message-thread view of each track's chain: the structure it was built
+    // from, and a pointer to the chain last submitted. The pointer is how
+    // parameter setters reach live nodes — safe because the newest chain is
+    // never the one being reclaimed.
+    std::array<std::vector<EffectNodeKind>, kMaxTracks> chainStructure_;
+    std::array<EffectChain*, kMaxTracks>                submittedChain_ {};
+    int                                                 currentBlockSize_ = 512;
 
     juce::String loadedClipName_;
     double       loadedClipSeconds_ = 0.0;

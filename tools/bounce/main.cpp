@@ -11,6 +11,7 @@
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
 #include "engine/DrumKitNode.h"
+#include "engine/EffectChain.h"
 #include "engine/FilterEffect.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/Metronome.h"
@@ -445,6 +446,110 @@ int main(int argc, char** argv)
         panAutomationWorks = earlyLeft > earlyRight * 2.0f && lateRight > lateLeft * 2.0f;
     }
 
+    // Chain-order check.
+    //
+    // Note the trap here: the three built-ins (filter, delay, reverb) are all
+    // linear and time-invariant, and LTI systems *commute* — filter-then-delay
+    // and delay-then-filter produce bit-comparable output (measured: a peak
+    // difference of 2e-7, pure float ordering). A first attempt at this check
+    // used them and reported "order doesn't matter", which was true and told
+    // us nothing about the chain. Reordering the built-ins genuinely won't
+    // change the sound, and that's correct DSP rather than a bug.
+    //
+    // So the mechanism is tested with two deliberately non-commuting nodes —
+    // a gain and a hard clip, where halving before clipping differs from
+    // clipping before halving. This tests EffectChain, not the DSP.
+    bool effectChainOrderMatters = false;
+    bool effectChainRunsAllNodes = false;
+    {
+        struct GainNode final : EffectProcessor
+        {
+            EffectNodeKind kind() const noexcept override { return EffectNodeKind::Filter; }
+            void prepare(double, int) override {}
+            void process(juce::AudioBuffer<float>& buffer) override { buffer.applyGain(0.25f); }
+        };
+
+        struct ClipNode final : EffectProcessor
+        {
+            EffectNodeKind kind() const noexcept override { return EffectNodeKind::Filter; }
+            void prepare(double, int) override {}
+            void process(juce::AudioBuffer<float>& buffer) override
+            {
+                for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                    for (int i = 0; i < buffer.getNumSamples(); ++i)
+                        buffer.setSample(ch, i, juce::jlimit(-0.02f, 0.02f, buffer.getSample(ch, i)));
+            }
+        };
+
+        // 0 = gain then clip, 1 = clip then gain, 2 = gain only.
+        auto renderChain = [&](int layout)
+        {
+            const int totalSamples = (int) (sampleRate * 1.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+
+            auto chain = std::make_unique<EffectChain>();
+            if (layout == 0)      { chain->add(std::make_unique<GainNode>()); chain->add(std::make_unique<ClipNode>()); }
+            else if (layout == 1) { chain->add(std::make_unique<ClipNode>()); chain->add(std::make_unique<GainNode>()); }
+            else                  { chain->add(std::make_unique<GainNode>()); }
+            chain->prepare(sampleRate, 512);
+            track.setEffectChain(chain.release());
+
+            ClipSlot slot;
+            slot.pattern     = arp;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+            return mix;
+        };
+
+        auto peakDifference = [](const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+        {
+            const int n = std::min(a.getNumSamples(), b.getNumSamples());
+            float worst = 0.0f;
+            for (int i = 0; i < n; ++i)
+                worst = std::max(worst, std::abs(a.getSample(0, i) - b.getSample(0, i)));
+            return worst;
+        };
+
+        const auto gainThenClip = renderChain(0);
+        const auto clipThenGain = renderChain(1);
+        const auto gainOnly     = renderChain(2);
+
+        effectChainOrderMatters = gainThenClip.getRMSLevel(0, 0, gainThenClip.getNumSamples()) > 1.0e-4f
+                               && peakDifference(gainThenClip, clipThenGain) > 1.0e-3f;
+
+        // ...and a two-node chain must differ from a one-node chain, or the
+        // second node isn't being run at all.
+        effectChainRunsAllNodes = peakDifference(gainThenClip, gainOnly) > 1.0e-3f;
+    }
+
     // Session-launch check: the whole point of the session grid is that a clip
     // launched mid-bar starts at the *next bar line*, not immediately. Renders
     // one track whose session slot is launched a fraction of a bar in, and
@@ -609,10 +714,15 @@ int main(int argc, char** argv)
 
             InstrumentTrack track;
             track.prepare(sampleRate, 512);
-            track.insertFilter.setEnabled(filterEnabled);
-            track.insertFilter.setMode(0); // low-pass
-            track.insertFilter.setCutoff(150.0f);
-            track.insertFilter.setResonance(0.707f);
+            auto chain = std::make_unique<EffectChain>();
+            auto filter = std::make_unique<FilterNode>();
+            filter->effect.setEnabled(filterEnabled);
+            filter->effect.setMode(0); // low-pass
+            filter->effect.setCutoff(150.0f);
+            filter->effect.setResonance(0.707f);
+            chain->add(std::move(filter));
+            chain->prepare(sampleRate, 512);
+            track.setEffectChain(chain.release());
 
             ClipSlot slot;
             slot.pattern     = arp;
@@ -865,6 +975,8 @@ int main(int argc, char** argv)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
               << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
+              << "  effectChainOrderMatters=" << (effectChainOrderMatters ? 1 : 0)
+              << "  effectChainRunsAllNodes=" << (effectChainRunsAllNodes ? 1 : 0)
               << "  sessionLaunchQuantizes=" << (sessionLaunchQuantizes ? 1 : 0)
               << "  sessionStopWorks=" << (sessionStopWorks ? 1 : 0)
               << "  trackPanWorks=" << (trackPanWorks ? 1 : 0)
@@ -897,6 +1009,7 @@ int main(int argc, char** argv)
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && drumPadMixWorks && drumPadPitchWorks
+                 && effectChainOrderMatters && effectChainRunsAllNodes
                  && sessionLaunchQuantizes && sessionStopWorks
                  && trackPanWorks && panAutomationWorks && trackInsertFilterWorks
                  && metronomeWorks && metronomeSilentWhenOff && recorderWorks;
