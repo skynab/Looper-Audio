@@ -197,6 +197,10 @@ private:
 
     juce::MenuBarComponent          menuBar_;
 
+    // Every tooltip in the app was dead text until this existed: JUCE only
+    // shows them while some TooltipWindow is alive to draw them.
+    juce::TooltipWindow             tooltips_;
+
     // The whole dockable workspace: a tree of tab groups the user arranges by
     // dragging tabs (onto a region's middle to add a tab there, onto an edge
     // to split it). See DockWorkspace; the default arrangement this app ships

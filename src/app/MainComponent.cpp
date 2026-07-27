@@ -22,8 +22,82 @@ static constexpr int kFirstPanelMenuId = 100;
 
 using Cmd = engine::EngineCommand::Type;
 
+/**
+    The keyboard shortcuts, defined once.
+
+    Each is the single source for both the key the app listens for and the
+    text its menu item advertises, so the two can't drift — a menu promising
+    a shortcut that does nothing is worse than no shortcut. Written as
+    descriptions rather than raw key codes because "command" already means
+    Ctrl away from macOS, and because they read as what the user sees.
+*/
+namespace keys
+{
+    inline const juce::KeyPress newProject = juce::KeyPress::createFromDescription("command + N");
+    inline const juce::KeyPress open       = juce::KeyPress::createFromDescription("command + O");
+    inline const juce::KeyPress save       = juce::KeyPress::createFromDescription("command + S");
+    inline const juce::KeyPress saveAs     = juce::KeyPress::createFromDescription("command + shift + S");
+    inline const juce::KeyPress bounce     = juce::KeyPress::createFromDescription("command + shift + B");
+
+    inline const juce::KeyPress undo       = juce::KeyPress::createFromDescription("command + Z");
+    inline const juce::KeyPress redo       = juce::KeyPress::createFromDescription("command + shift + Z");
+    inline const juce::KeyPress redoAlt    = juce::KeyPress::createFromDescription("command + Y");
+
+    // Notes and clips get separate shortcuts for the same reason they get
+    // separate menu commands: one pair whose meaning depends on which pane
+    // has focus is a coin toss at the moment you press it.
+    inline const juce::KeyPress copyNotes  = juce::KeyPress::createFromDescription("command + C");
+    inline const juce::KeyPress pasteNotes = juce::KeyPress::createFromDescription("command + V");
+    inline const juce::KeyPress copyClip   = juce::KeyPress::createFromDescription("command + shift + C");
+    inline const juce::KeyPress pasteClip  = juce::KeyPress::createFromDescription("command + shift + V");
+    inline const juce::KeyPress duplicate  = juce::KeyPress::createFromDescription("command + D");
+    inline const juce::KeyPress quantize   = juce::KeyPress::createFromDescription("command + U");
+
+    // Transport. Space is unmodified because it's the control reached for
+    // most, and every DAW spells it this way; a focused text field consumes
+    // its own keys first, so it can't interrupt typing.
+    inline const juce::KeyPress playPause  = juce::KeyPress(juce::KeyPress::spaceKey);
+    inline const juce::KeyPress toStart    = juce::KeyPress(juce::KeyPress::homeKey);
+    inline const juce::KeyPress toEnd      = juce::KeyPress(juce::KeyPress::endKey);
+    inline const juce::KeyPress backOneBar = juce::KeyPress::createFromDescription("command + cursor left");
+    inline const juce::KeyPress onOneBar   = juce::KeyPress::createFromDescription("command + cursor right");
+    inline const juce::KeyPress record     = juce::KeyPress::createFromDescription("command + R");
+    inline const juce::KeyPress loop       = juce::KeyPress::createFromDescription("command + L");
+
+    /** Every shortcut above, for the startup check. A description with a typo
+        in it parses to an invalid KeyPress that matches nothing and prints no
+        shortcut text — a failure that otherwise surfaces only when someone
+        presses the key and nothing happens. */
+    inline const juce::KeyPress all[] = {
+        newProject, open, save, saveAs, bounce,
+        undo, redo, redoAlt,
+        copyNotes, pasteNotes, copyClip, pasteClip, duplicate, quantize,
+        playPause, toStart, toEnd, backOneBar, onOneBar, record, loop
+    };
+}
+
 namespace
 {
+    /** Adds a menu item that advertises its shortcut. PopupMenu's plain
+        addItem overload has nowhere to put one, and an undiscoverable
+        shortcut may as well not exist. */
+    void addItem(juce::PopupMenu& menu, int id, const juce::String& text,
+                 const juce::KeyPress& shortcut, bool enabled = true)
+    {
+        juce::PopupMenu::Item item(text);
+        item.itemID                = id;
+        item.isEnabled             = enabled;
+        item.shortcutKeyDescription = shortcut.getTextDescriptionWithIcons();
+        menu.addItem(std::move(item));
+    }
+
+    /** "Play / pause  (space)" — a control with no menu entry has nowhere
+        else to say what its shortcut is. */
+    juce::String withShortcut(const juce::String& text, const juce::KeyPress& key)
+    {
+        return text + "  (" + key.getTextDescriptionWithIcons() + ")";
+    }
+
     juce::PropertiesFile::Options makeSettingsOptions()
     {
         juce::PropertiesFile::Options opts;
@@ -115,11 +189,13 @@ MainComponent::MainComponent()
         button->setColour(juce::DrawableButton::backgroundOnColourId, juce::Colours::transparentBlack);
     }
 
-    firstFrameButton.setTooltip("Go to start");
-    previousFrameButton.setTooltip("Back one bar");
-    playPauseButton.setTooltip("Play / pause");
-    nextFrameButton.setTooltip("Forward one bar");
-    lastFrameButton.setTooltip("Go to end");
+    // The transport has no menu to advertise its shortcuts from, so its
+    // tooltips carry them — built from the same KeyPress the app listens for.
+    firstFrameButton.setTooltip(withShortcut("Go to start", keys::toStart));
+    previousFrameButton.setTooltip(withShortcut("Back one bar", keys::backOneBar));
+    playPauseButton.setTooltip(withShortcut("Play / pause", keys::playPause));
+    nextFrameButton.setTooltip(withShortcut("Forward one bar", keys::onOneBar));
+    lastFrameButton.setTooltip(withShortcut("Go to end", keys::toEnd));
     loopButton.onClick = [this]
     {
         post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
@@ -138,7 +214,7 @@ MainComponent::MainComponent()
     // them in.
     recordButton.setColour(juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
     recordButton.setColour(juce::DrawableButton::backgroundOnColourId, juce::Colours::transparentBlack);
-    recordButton.setTooltip("Record");
+    recordButton.setTooltip(withShortcut("Record", keys::record));
     // Collapse toggle: hides everything below the button row, leaving just the
     // transport controls. The dock region's height is the user's to set by
     // dragging its divider — this is what makes a one-row pane worth dragging
@@ -701,6 +777,9 @@ MainComponent::MainComponent()
     engine_.deviceManager().addChangeListener(this);
     logAudioDeviceStatus();
 
+    for ([[maybe_unused]] const auto& shortcut : keys::all)
+        jassert(shortcut.isValid());
+
     setWantsKeyboardFocus(true);
     setSize(900, 800);
     startTimerHz(30);
@@ -725,16 +804,17 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
 
     if (topLevelMenuIndex == 0) // File
     {
-        menu.addItem(1, "New Project");
-        menu.addItem(2, "Open Project...");
-        menu.addItem(3, "Save Project", hasUnsavedChanges() || projectFile_ == juce::File{});
-        menu.addItem(24, "Save Project As...");
+        addItem(menu, 1, "New Project", keys::newProject);
+        addItem(menu, 2, "Open Project...", keys::open);
+        addItem(menu, 3, "Save Project", keys::save,
+                hasUnsavedChanges() || projectFile_ == juce::File{});
+        addItem(menu, 24, "Save Project As...", keys::saveAs);
         menu.addSeparator();
         menu.addItem(4, "Import Audio...");
         menu.addItem(7, "Import Audio to Track...");
         menu.addItem(8, "Import MIDI...");
         menu.addItem(9, "Export MIDI...");
-        menu.addItem(5, "Bounce to WAV...");
+        addItem(menu, 5, "Bounce to WAV...", keys::bounce);
         menu.addSeparator();
         menu.addItem(13, "Set Project Root Folder...");
         menu.addSeparator();
@@ -742,21 +822,21 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
     }
     else if (topLevelMenuIndex == 1) // Edit
     {
-        menu.addItem(10, "Undo", history_.canUndo());
-        menu.addItem(11, "Redo", history_.canRedo());
+        addItem(menu, 10, "Undo", keys::undo, history_.canUndo());
+        addItem(menu, 11, "Redo", keys::redo, history_.canRedo());
         menu.addSeparator();
         menu.addItem(12, "Clear Notes");
         menu.addSeparator();
         // Notes and clips get their own commands rather than one pair whose
         // meaning depends on which pane has focus.
-        menu.addItem(15, "Copy Notes");
-        menu.addItem(16, "Paste Notes", ! noteClipboard_.empty());
+        addItem(menu, 15, "Copy Notes", keys::copyNotes);
+        addItem(menu, 16, "Paste Notes", keys::pasteNotes, ! noteClipboard_.empty());
         menu.addSeparator();
-        menu.addItem(17, "Copy Clip");
-        menu.addItem(18, "Paste Clip", ! clipClipboard_.empty());
-        menu.addItem(19, "Duplicate Clip");
+        addItem(menu, 17, "Copy Clip", keys::copyClip);
+        addItem(menu, 18, "Paste Clip", keys::pasteClip, ! clipClipboard_.empty());
+        addItem(menu, 19, "Duplicate Clip", keys::duplicate);
         menu.addSeparator();
-        menu.addItem(20, "Quantize");
+        addItem(menu, 20, "Quantize", keys::quantize);
         menu.addItem(21, "Swing - Light");
         menu.addItem(22, "Swing - Medium");
         menu.addItem(23, "Swing - Heavy");
@@ -2317,25 +2397,44 @@ void MainComponent::refreshFromModel()
 
 bool MainComponent::keyPressed(const juce::KeyPress& key)
 {
-    if (key.getModifiers().isCommandDown())
+    // Undo and redo refresh the whole UI from the model afterwards, so they
+    // are handled apart from the commands that don't.
+    if (key == keys::undo || key == keys::redo || key == keys::redoAlt)
     {
-        const int code = key.getKeyCode();
-        if (code == 'Z' || code == 'z')
-        {
-            if (key.getModifiers().isShiftDown())
-                history_.redo();
-            else
-                history_.undo();
-            refreshFromModel();
-            return true;
-        }
-        if (code == 'Y' || code == 'y')
-        {
+        if (key == keys::undo)
+            history_.undo();
+        else
             history_.redo();
-            refreshFromModel();
-            return true;
-        }
+
+        refreshFromModel();
+        return true;
     }
+
+    // Transport shortcuts trigger the buttons rather than repeating what they
+    // do: the button stays the single definition of the action, and it
+    // visibly reacts — pressing space and seeing nothing move on screen reads
+    // as a dropped keystroke.
+    if (key == keys::playPause)  { playPauseButton.triggerClick();     return true; }
+    if (key == keys::toStart)    { firstFrameButton.triggerClick();    return true; }
+    if (key == keys::toEnd)      { lastFrameButton.triggerClick();     return true; }
+    if (key == keys::backOneBar) { previousFrameButton.triggerClick(); return true; }
+    if (key == keys::onOneBar)   { nextFrameButton.triggerClick();     return true; }
+    if (key == keys::record)     { recordButton.triggerClick();        return true; }
+    if (key == keys::loop)       { loopButton.triggerClick();          return true; }
+
+    if (key == keys::newProject) { newProject();       return true; }
+    if (key == keys::open)       { openProject();      return true; }
+    if (key == keys::save)       { saveProject();      return true; }
+    if (key == keys::saveAs)     { saveProjectAs();    return true; }
+    if (key == keys::bounce)     { bounceProject();    return true; }
+
+    if (key == keys::copyNotes)  { copyNotes();        return true; }
+    if (key == keys::pasteNotes) { pasteNotes();       return true; }
+    if (key == keys::copyClip)   { copyClip();         return true; }
+    if (key == keys::pasteClip)  { pasteClip();        return true; }
+    if (key == keys::duplicate)  { duplicateClip();    return true; }
+    if (key == keys::quantize)   { quantizeNotes(0.0); return true; }
+
     return false;
 }
 
@@ -2579,7 +2678,7 @@ void MainComponent::toggleRecording()
 
         awaitingRecordedTake_ = true;
         recordButton.setToggleState(true, juce::dontSendNotification); // swaps to the stop square
-        recordButton.setTooltip("Stop recording");
+        recordButton.setTooltip(withShortcut("Stop recording", keys::record));
         post(Cmd::SetPlaying, 1.0);
     }
     else
@@ -2587,7 +2686,7 @@ void MainComponent::toggleRecording()
         engine_.stopRecording();
         post(Cmd::SetPlaying, 0.0);
         recordButton.setToggleState(false, juce::dontSendNotification); // back to the record disc
-        recordButton.setTooltip("Record");
+        recordButton.setTooltip(withShortcut("Record", keys::record));
     }
 }
 
