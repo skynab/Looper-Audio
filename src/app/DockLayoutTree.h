@@ -154,4 +154,57 @@ inline std::unique_ptr<DockLayoutNode> parseDockLayout(const std::string& text)
     return (node != nullptr && index == text.size()) ? std::move(node) : nullptr;
 }
 
+/** One tab group, as much of it as choosing a home for a panel depends on. */
+struct DockLeafSummary
+{
+    std::vector<std::string> panels;
+    long long                area = 0; // on-screen pixels; ties are broken by this
+};
+
+/**
+    Which tab group a reopened panel should join.
+
+    Closing a pane and reopening it should land it back where it was, or the
+    close/reopen pair silently rearranges the workspace — which is worse than
+    not being able to close it at all. The layout has no slots to remember,
+    though: regions are created and collapsed as the tree changes, so the
+    region a panel was closed from may no longer exist.
+
+    What survives is the *company it kept*. A panel is put back with whichever
+    group still holds the most of its former tab-mates, since that group is
+    the same region if it survived, and the region that inherited its
+    neighbours if it didn't.
+
+    With no former neighbours recorded, or none of them still open, every
+    group scores zero and the largest wins — the plain "put it somewhere
+    sensible" fallback, which is all a first-ever open can do.
+
+    Returns an index into @p leaves, or -1 if there are none.
+*/
+inline int chooseReopenLeaf(const std::vector<DockLeafSummary>& leaves,
+                            const std::vector<std::string>&     formerNeighbours)
+{
+    int       best      = -1;
+    int       bestScore = -1;
+    long long bestArea  = -1;
+
+    for (size_t i = 0; i < leaves.size(); ++i)
+    {
+        int score = 0;
+        for (const auto& neighbour : formerNeighbours)
+            for (const auto& panel : leaves[i].panels)
+                if (panel == neighbour)
+                    ++score;
+
+        if (score > bestScore || (score == bestScore && leaves[i].area > bestArea))
+        {
+            best      = (int) i;
+            bestScore = score;
+            bestArea  = leaves[i].area;
+        }
+    }
+
+    return best;
+}
+
 } // namespace looper

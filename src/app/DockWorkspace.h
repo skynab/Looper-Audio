@@ -145,37 +145,78 @@ public:
         if (region == nullptr)
             return;
 
+        rememberNeighbours(name, region->panelNames());
         region->removePanel(name);
         collapseEmptyRegions();
         resized();
         notifyLayoutChanged();
     }
 
-    /** Reopens a closed panel as a tab of the largest region on screen, which
-        is the one most likely to have room for it. Does nothing if it's
-        already open — the caller should activate it instead. */
+    /** Closes every tab of @p region except @p keep. The panels all remember
+        the same group, so reopening any of them brings it back here. */
+    void closeOtherPanels(DockRegion& region, const juce::String& keep)
+    {
+        const auto names = region.panelNames(); // snapshot: removing mutates it
+
+        for (const auto& name : names)
+        {
+            if (name == keep)
+                continue;
+
+            // Every one of them remembers the group as it was *before* the
+            // first removal, so reopening the third doesn't find only the
+            // remnants left by closing the first two.
+            rememberNeighbours(name, names);
+            region.removePanel(name);
+        }
+
+        collapseEmptyRegions();
+        resized();
+        notifyLayoutChanged();
+    }
+
+    /** Reopens a closed panel, putting it back with the group that still holds
+        most of the tabs it sat beside — see chooseReopenLeaf, which is where
+        that decision lives and is tested. Does nothing if it's already open;
+        the caller should activate it instead. */
     void openPanel(const juce::String& name)
+    {
+        if (isPanelOpen(name) || contentFor(name) == nullptr)
+            return;
+
+        const auto regions = allRegions();
+
+        std::vector<DockLeafSummary> leaves;
+        leaves.reserve(regions.size());
+        for (auto* region : regions)
+        {
+            DockLeafSummary leaf;
+            for (const auto& panel : region->panelNames())
+                leaf.panels.push_back(panel.toStdString());
+            leaf.area = (long long) region->getWidth() * (long long) region->getHeight();
+            leaves.push_back(std::move(leaf));
+        }
+
+        std::vector<std::string> remembered;
+        if (const auto it = lastNeighbours_.find(name); it != lastNeighbours_.end())
+            for (const auto& neighbour : it->second)
+                remembered.push_back(neighbour.toStdString());
+
+        const int index = chooseReopenLeaf(leaves, remembered);
+        if (index >= 0)
+            openPanelIn(*regions[(size_t) index], name);
+    }
+
+    /** Reopens a closed panel as a tab of one specific region — what the tab
+        context menu's "Open Here" does, where the user has named the place
+        and no guess is wanted. */
+    void openPanelIn(DockRegion& region, const juce::String& name)
     {
         auto* content = contentFor(name);
         if (content == nullptr || isPanelOpen(name))
             return;
 
-        DockRegion* target  = nullptr;
-        int         largest = -1;
-        for (auto* region : allRegions())
-        {
-            const int area = region->getWidth() * region->getHeight();
-            if (area > largest)
-            {
-                largest = area;
-                target  = region;
-            }
-        }
-
-        if (target == nullptr)
-            return;
-
-        target->addPanel(name, *content);
+        region.addPanel(name, *content);
         resized();
         notifyLayoutChanged();
     }
@@ -363,6 +404,10 @@ private:
         auto node = std::make_unique<DockNode>();
         node->region = std::make_unique<DockRegion>();
         node->region->onPanelCloseRequested = [this](const juce::String& name) { closePanel(name); };
+        node->region->onPanelContextMenuRequested = [this](const juce::String& name, DockRegion& region)
+        {
+            showPanelContextMenu(name, region);
+        };
         node->region->onForeignPanelDropped = [this](const juce::String& name, DockRegion& target, DropZone zone)
         {
             movePanel(name, target, zone);
@@ -520,6 +565,60 @@ private:
             onLayoutChanged();
     }
 
+    /** Records the tab group @p name is leaving, so reopening it can find its
+        way back. @p group may include @p name itself; it's filtered out, since
+        a panel is never its own neighbour. */
+    void rememberNeighbours(const juce::String& name, const std::vector<juce::String>& group)
+    {
+        std::vector<juce::String> neighbours;
+        for (const auto& panel : group)
+            if (panel != name)
+                neighbours.push_back(panel);
+
+        lastNeighbours_[name] = std::move(neighbours);
+    }
+
+    /** The right-click menu on a tab. Built here rather than in DockRegion
+        because every useful entry needs to know about panels the region
+        doesn't host — the closed ones, and the fact that closing may collapse
+        the region entirely. */
+    void showPanelContextMenu(const juce::String& name, DockRegion& region)
+    {
+        std::vector<juce::String> closed;
+        for (const auto& panel : registeredPanels())
+            if (! isPanelOpen(panel))
+                closed.push_back(panel);
+
+        juce::PopupMenu reopen;
+        for (size_t i = 0; i < closed.size(); ++i)
+            reopen.addItem((int) i + 10, closed[i]);
+
+        juce::PopupMenu menu;
+        menu.addItem(1, "Close \"" + name + "\"");
+        menu.addItem(2, "Close Other Tabs", region.numPanels() > 1);
+        menu.addSeparator();
+        menu.addSubMenu("Open Here", reopen, ! closed.empty());
+
+        // Both the region and the workspace can be gone by the time the menu
+        // closes — a region collapses the moment its last tab leaves — so the
+        // callback holds neither by raw pointer.
+        juce::Component::SafePointer<DockWorkspace> self(this);
+        juce::Component::SafePointer<DockRegion>    target(&region);
+
+        menu.showMenuAsync(juce::PopupMenu::Options(), [self, target, name, closed](int result)
+        {
+            if (self == nullptr || target == nullptr || result == 0)
+                return;
+
+            if (result == 1)
+                self->closePanel(name);
+            else if (result == 2)
+                self->closeOtherPanels(*target, name);
+            else if (const size_t index = (size_t) (result - 10); index < closed.size())
+                self->openPanelIn(*target, closed[index]);
+        });
+    }
+
     // ---- persistence helpers -------------------------------------------
     /** Live tree -> plain description (see DockLayoutTree.h). */
     static std::unique_ptr<DockLayoutNode> describe(const DockNode* node)
@@ -589,6 +688,12 @@ private:
 
     std::unique_ptr<DockNode>                 root_;
     std::map<juce::String, juce::Component*>  panels_;
+
+    // Which tabs each closed panel sat beside, so reopening can put it back
+    // rather than dropping it wherever there happens to be room. Deliberately
+    // not persisted: it's a hint for undoing a close the user just made, and a
+    // restored workspace has its saved arrangement instead.
+    std::map<juce::String, std::vector<juce::String>> lastNeighbours_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DockWorkspace)
 };

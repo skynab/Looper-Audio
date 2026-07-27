@@ -28,6 +28,7 @@ public:
     std::function<void()> onClick;
     std::function<void()> onDragStarted;
     std::function<void()> onCloseClicked;
+    std::function<void()> onContextMenu;
 
     void setText(const juce::String& text) { text_ = text; repaint(); }
     void setActive(bool active) { active_ = active; repaint(); }
@@ -61,7 +62,15 @@ public:
     void mouseEnter(const juce::MouseEvent& e) override { updateHover(true, e.position); }
     void mouseExit(const juce::MouseEvent&) override    { updateHover(false, {}); }
 
-    void mouseDown(const juce::MouseEvent&) override { dragStarted_ = false; }
+    void mouseDown(const juce::MouseEvent& e) override
+    {
+        dragStarted_ = false;
+
+        // Handled on mouseDown, not mouseUp: a context menu that waits for the
+        // button to come up feels broken, and it's the platform convention.
+        if (e.mods.isPopupMenu() && onContextMenu)
+            onContextMenu();
+    }
 
     void mouseDrag(const juce::MouseEvent& e) override
     {
@@ -78,8 +87,8 @@ public:
         const bool wasClick = ! dragStarted_ && e.getDistanceFromDragStart() < 4;
         dragStarted_ = false;
 
-        if (! wasClick)
-            return;
+        if (! wasClick || e.mods.isPopupMenu())
+            return; // the popup was already opened on mouseDown
 
         // Closing takes precedence over activating: a click on the cross of an
         // inactive tab should close it, not merely bring it forward.
@@ -159,11 +168,22 @@ public:
         the region entirely — so it only reports the request. */
     std::function<void(const juce::String& panelName)> onPanelCloseRequested;
 
+    /** Fired when a tab is right-clicked. Like the close request, the region
+        only reports it: every entry the menu wants to offer — closing, and
+        reopening a pane that lives nowhere right now — is the workspace's to
+        know about. */
+    std::function<void(const juce::String& panelName, DockRegion& region)> onPanelContextMenuRequested;
+
     void addPanel(const juce::String& name, juce::Component& content)
     {
         auto header = std::make_unique<DockTabHeader>();
         header->setText(name);
         header->onClick       = [this, name] { showPanel(name); };
+        header->onContextMenu = [this, name]
+        {
+            if (onPanelContextMenuRequested)
+                onPanelContextMenuRequested(name, *this);
+        };
         header->onCloseClicked = [this, name]
         {
             if (onPanelCloseRequested)
@@ -279,6 +299,17 @@ public:
             g.setColour(juce::Colours::orange.withAlpha(0.8f));
             g.drawRect(highlightBounds(), 2);
         }
+        // A region with no tabs left is the one place the workspace shows
+        // nothing at all. Say where the panes went, rather than leaving what
+        // reads as a rendering failure.
+        if (panels_.empty())
+        {
+            g.setColour(juce::Colours::white.withAlpha(0.35f));
+            g.setFont(13.0f);
+            g.drawFittedText("No panes open\nReopen one from the View menu",
+                             getLocalBounds().reduced(12), juce::Justification::centred, 2);
+        }
+
         g.setColour(juce::Colours::black.withAlpha(0.4f));
         g.drawRect(getLocalBounds());
     }

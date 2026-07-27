@@ -116,3 +116,69 @@ TEST_CASE("parseDockLayout rejects malformed input", "[app][dock]")
     REQUIRE(parseDockLayout("[|A]trailing") == nullptr);       // trailing junk
     REQUIRE(parseDockLayout("[Aterminated") == nullptr);       // unterminated leaf
 }
+
+TEST_CASE("A reopened panel goes back to the group that kept its neighbours", "[app][dock]")
+{
+    // Synth was closed while sitting beside Keys. Reopening it must not land
+    // it in the big arrangement pane just because that one has more room:
+    // close-then-reopen should be as close to a no-op as the layout allows.
+    const std::vector<DockLeafSummary> leaves {
+        { { "Tracks" },        400000 }, // much the largest
+        { { "Keys" },           60000 },
+        { { "Files" },          40000 },
+    };
+
+    REQUIRE(chooseReopenLeaf(leaves, { "Keys" }) == 1);
+}
+
+TEST_CASE("The best-matching group wins, not merely a matching one", "[app][dock]")
+{
+    // A panel that was grouped with three others belongs with whichever group
+    // inherited most of them, since that's the region its old one became.
+    const std::vector<DockLeafSummary> leaves {
+        { { "Mixer", "Session" }, 10000 },
+        { { "Keys", "Drums", "Guitar" }, 10000 },
+    };
+
+    REQUIRE(chooseReopenLeaf(leaves, { "Keys", "Drums", "Guitar", "Mixer" }) == 1);
+}
+
+TEST_CASE("With no neighbours left open, the largest group takes it", "[app][dock]")
+{
+    // The fallback is the plain "somewhere sensible" rule — and it has to be,
+    // because a panel opened for the very first time has no history at all.
+    const std::vector<DockLeafSummary> leaves {
+        { { "Files" },  1000 },
+        { { "Tracks" }, 9000 },
+        { { "Mixer" },  5000 },
+    };
+
+    REQUIRE(chooseReopenLeaf(leaves, {}) == 1);
+    REQUIRE(chooseReopenLeaf(leaves, { "Keyboard", "Synth" }) == 1); // none of them open
+}
+
+TEST_CASE("An emptied workspace still offers somewhere to reopen into", "[app][dock]")
+{
+    // Closing every pane leaves one empty region. Reopening has to find it,
+    // or the View menu would appear to do nothing and the workspace would be
+    // stuck blank.
+    const std::vector<DockLeafSummary> leaves { { {}, 500000 } };
+    REQUIRE(chooseReopenLeaf(leaves, { "Keys" }) == 0);
+}
+
+TEST_CASE("Choosing a home reports failure rather than guessing", "[app][dock]")
+{
+    REQUIRE(chooseReopenLeaf({}, { "Keys" }) == -1);
+}
+
+TEST_CASE("A remembered neighbour is matched exactly, not by prefix", "[app][dock]")
+{
+    // "Track FX" and "Tracks" are both real panel names here; a sloppy
+    // substring match would send one to the other's region.
+    const std::vector<DockLeafSummary> leaves {
+        { { "Tracks" },   90000 },
+        { { "Track FX" }, 10000 },
+    };
+
+    REQUIRE(chooseReopenLeaf(leaves, { "Track FX" }) == 1);
+}
