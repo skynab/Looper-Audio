@@ -104,6 +104,24 @@ static Song makeSampleSong()
     s.tracks[2].insertReverb.damping   = 0.2f;
     s.tracks[2].insertReverb.mix       = 0.35f;
 
+    // A session grid: two scenes, with clips in some cells and not others —
+    // the empty ones matter as much, since the slot index is the scene.
+    addScene(s, "Intro");
+    addScene(s, "Chorus B");        // with a space, deliberately
+
+    Clip sessionClipA;
+    sessionClipA.type                = ClipType::Instrument;
+    sessionClipA.lengthBeats         = 4.0;
+    sessionClipA.pattern.lengthBeats = 4.0;
+    sessionClipA.pattern.notes.push_back({ 0.0, 0.5, 62, 0.7f });
+    setSessionClip(s, 0, 0, sessionClipA);
+
+    Clip sessionClipB;
+    sessionClipB.type                = ClipType::Instrument;
+    sessionClipB.lengthBeats         = 8.0;
+    sessionClipB.pattern.lengthBeats = 8.0;
+    setSessionClip(s, 2, 1, sessionClipB); // drum track, second scene
+
     return s;
 }
 
@@ -152,6 +170,30 @@ TEST_CASE("A file from a newer build is refused, not part-parsed", "[model][io]"
     std::string error;
     REQUIRE_FALSE(deserialize(newer, out, &error));
     REQUIRE(error.find("newer") != std::string::npos);
+}
+
+TEST_CASE("The session grid round-trips, empty cells included", "[model][io]")
+{
+    const Song original = makeSampleSong();
+
+    Song restored;
+    REQUIRE(deserialize(serialize(original), restored));
+
+    REQUIRE(restored.scenes.size() == 2);
+    REQUIRE(restored.scenes[1].name == "Chorus B");
+
+    // Every track's column stays the same length as the scene list, so the
+    // grid can't go ragged on a round trip.
+    for (const auto& track : restored.tracks)
+        REQUIRE(track.sessionSlots.size() == restored.scenes.size());
+
+    const auto* filled = sessionClip(restored, 0, 0);
+    REQUIRE(filled != nullptr);
+    REQUIRE(filled->pattern.notes.size() == 1);
+    REQUIRE(filled->pattern.notes[0].noteNumber == 62);
+
+    REQUIRE(sessionClip(restored, 0, 1) == nullptr); // deliberately empty
+    REQUIRE(sessionClip(restored, 2, 1) != nullptr);
 }
 
 TEST_CASE("A project from before per-track synths still opens", "[model][io]")
@@ -211,6 +253,10 @@ TEST_CASE("A project from before per-track synths still opens", "[model][io]")
     REQUIRE_FALSE(track.insertFilter.enabled);
     REQUIRE_FALSE(track.insertDelay.enabled);
     REQUIRE_FALSE(track.insertReverb.enabled);
+
+    // The session grid arrived in v17; a file this old simply has none.
+    REQUIRE(restored.scenes.empty());
+    REQUIRE(track.sessionSlots.empty());
 
     // Pan joined TRACK in v15; this file predates it, so it reads as centred.
     REQUIRE(track.pan == 0.0f);

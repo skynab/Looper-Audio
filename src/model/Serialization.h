@@ -37,8 +37,9 @@ namespace looper::model
       13  DPAD carries per-pad gain/pan/pitch/mute/solo before its sample path
       14  + TFX (per-track insert filter/delay/reverb)
       15  TRACK carries pan before its (rest-of-line) name
-      16  TAUTO (one gain lane) -> TAUTOS/TLANE (a lane per parameter) */
-inline constexpr int kFormatVersion = 16;
+      16  TAUTO (one gain lane) -> TAUTOS/TLANE (a lane per parameter)
+      17  + SCENES/SCENE and per-track SESSION/SSLOT (the session grid) */
+inline constexpr int kFormatVersion = 17;
 namespace detail
 {
     inline std::string num(double v)
@@ -46,6 +47,20 @@ namespace detail
         char buffer[64];
         std::snprintf(buffer, sizeof(buffer), "%.17g", v);
         return buffer;
+    }
+
+    /** One clip record: its header plus its note list. Shared by the
+        arrangement's clips and the session grid's, so the two can't drift. */
+    inline void writeClip(std::ostringstream& out, const Clip& clip)
+    {
+        out << "CLIP " << clip.id << " " << (int) clip.type << " "
+            << num(clip.startBeats) << " " << num(clip.lengthBeats) << " "
+            << num(clip.pattern.lengthBeats) << " " << clip.audioFile << "\n";
+        out << "NOTES " << clip.pattern.notes.size() << "\n";
+
+        for (const auto& note : clip.pattern.notes)
+            out << "NOTE " << num(note.startBeats) << " " << num(note.lengthBeats)
+                << " " << note.noteNumber << " " << num((double) note.velocity) << "\n";
     }
 
     inline std::string trimLeadingSpace(std::string s)
@@ -86,6 +101,10 @@ inline std::string serialize(const Song& song)
     out << "AUTO " << song.masterGainDb.points().size() << "\n";
     for (const auto& p : song.masterGainDb.points())
         out << "APT " << detail::num(p.beat) << " " << detail::num((double) p.value) << "\n";
+    out << "SCENES " << song.scenes.size() << "\n";
+    for (const auto& scene : song.scenes)
+        out << "SCENE " << scene.name << "\n"; // name is rest-of-line, so it may contain spaces
+
     out << "TRACKS " << song.tracks.size() << "\n";
 
     for (const auto& track : song.tracks)
@@ -145,19 +164,20 @@ inline std::string serialize(const Song& song)
             << detail::num((double) track.insertReverb.damping) << " "
             << detail::num((double) track.insertReverb.mix) << "\n";
 
+        // The session grid's column for this track. Slots are written by index
+        // including the empty ones, since the index is the scene.
+        out << "SESSION " << track.sessionSlots.size() << "\n";
+        for (const auto& slot : track.sessionSlots)
+        {
+            out << "SSLOT " << (slot.hasClip ? 1 : 0) << "\n";
+            if (slot.hasClip)
+                detail::writeClip(out, slot.clip);
+        }
+
         out << "CLIPS " << track.clips.size() << "\n";
 
         for (const auto& clip : track.clips)
-        {
-            out << "CLIP " << clip.id << " " << (int) clip.type << " "
-                << detail::num(clip.startBeats) << " " << detail::num(clip.lengthBeats) << " "
-                << detail::num(clip.pattern.lengthBeats) << " " << clip.audioFile << "\n";
-            out << "NOTES " << clip.pattern.notes.size() << "\n";
-
-            for (const auto& note : clip.pattern.notes)
-                out << "NOTE " << detail::num(note.startBeats) << " " << detail::num(note.lengthBeats)
-                    << " " << note.noteNumber << " " << detail::num((double) note.velocity) << "\n";
-        }
+            detail::writeClip(out, clip);
     }
 
     return out.str();
@@ -210,6 +230,42 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
     };
 
     std::string rest;
+
+    /** One clip record, the mirror of detail::writeClip — used for both the
+        arrangement's clips and the session grid's, so the two can't drift
+        apart. Returns false if the record is missing or truncated. */
+    auto readClip = [&](Clip& clip) -> bool
+    {
+        if (! readTagged("CLIP", rest))
+            return false;
+        {
+            std::istringstream cs(rest);
+            int typeInt = 0;
+            cs >> clip.id >> typeInt >> clip.startBeats >> clip.lengthBeats >> clip.pattern.lengthBeats;
+            clip.type = (ClipType) typeInt;
+            std::string audio;
+            std::getline(cs, audio);
+            clip.audioFile = detail::trimLeadingSpace(std::move(audio));
+        }
+
+        if (! readTagged("NOTES", rest))
+            return false;
+        const int noteCount = std::atoi(rest.c_str());
+
+        for (int k = 0; k < noteCount; ++k)
+        {
+            if (! readTagged("NOTE", rest))
+                return false;
+            std::istringstream ns(rest);
+            engine::Note note;
+            double velocity = 0.0;
+            ns >> note.startBeats >> note.lengthBeats >> note.noteNumber >> velocity;
+            note.velocity = (float) velocity;
+            clip.pattern.notes.push_back(note);
+        }
+        return true;
+    };
+
     if (! readTagged("LOOPER", rest))
         return fail("not a Looper project file");
 
@@ -296,6 +352,16 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             double beat = 0.0, value = 0.0;
             ps >> beat >> value;
             song.masterGainDb.addPoint(beat, (float) value);
+        }
+    }
+
+    if (readTagged("SCENES", rest)) // added in v17; older files have no session grid
+    {
+        const int sceneCount = std::atoi(rest.c_str());
+        for (int s = 0; s < sceneCount; ++s)
+        {
+            if (! readTagged("SCENE", rest)) return fail("truncated scene list");
+            song.scenes.push_back(Scene { rest });
         }
     }
 
@@ -451,42 +517,30 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             track.insertReverb.mix       = (float) reverbMix;
         }
 
+        if (readTagged("SESSION", rest)) // added in v17
+        {
+            const int slotCount = std::atoi(rest.c_str());
+            for (int s = 0; s < slotCount; ++s)
+            {
+                if (! readTagged("SSLOT", rest)) return fail("truncated session grid");
+
+                SessionSlot slot;
+                slot.hasClip = std::atoi(rest.c_str()) != 0;
+                if (slot.hasClip && ! readClip(slot.clip))
+                    return fail("truncated session clip");
+                track.sessionSlots.push_back(std::move(slot));
+            }
+        }
+
         if (! readTagged("CLIPS", rest))
             return fail("missing clip list");
         const int clipCount = std::atoi(rest.c_str());
 
         for (int j = 0; j < clipCount; ++j)
         {
-            if (! readTagged("CLIP", rest))
-                return fail("truncated clip list");
-
             Clip clip;
-            {
-                std::istringstream cs(rest);
-                int typeInt = 0;
-                cs >> clip.id >> typeInt >> clip.startBeats >> clip.lengthBeats >> clip.pattern.lengthBeats;
-                clip.type = (ClipType) typeInt;
-                std::string audio;
-                std::getline(cs, audio);
-                clip.audioFile = detail::trimLeadingSpace(std::move(audio));
-            }
-
-            if (! readTagged("NOTES", rest))
-                return fail("missing note list");
-            const int noteCount = std::atoi(rest.c_str());
-
-            for (int k = 0; k < noteCount; ++k)
-            {
-                if (! readTagged("NOTE", rest))
-                    return fail("truncated note list");
-                std::istringstream ns(rest);
-                engine::Note note;
-                double velocity = 0.0;
-                ns >> note.startBeats >> note.lengthBeats >> note.noteNumber >> velocity;
-                note.velocity = (float) velocity;
-                clip.pattern.notes.push_back(note);
-            }
-
+            if (! readClip(clip))
+                return fail("truncated clip list");
             track.clips.push_back(std::move(clip));
         }
 

@@ -32,7 +32,8 @@ This is a living document. As sections mature they should graduate into their ow
 16. [Immediate next steps](#16-immediate-next-steps)
 17. [Next planned features: MIDI I/O, file manager 2.0, piano-roll & drum tools](#17-next-planned-features-midi-io-file-manager-20-piano-roll--drum-tools)
 18. [Next planned features: project-format versioning, metronome, editable clips & notes](#18-next-planned-features-project-format-versioning-metronome-editable-clips--notes)
-19. [Appendix: reference reading](#19-appendix-reference-reading)
+19. [Session view: clip launching and scenes](#19-session-view-clip-launching-and-scenes)
+20. [Appendix: reference reading](#20-appendix-reference-reading)
 
 ---
 
@@ -932,7 +933,79 @@ no choke groups or velocity layers.
 
 ---
 
-## 19. Appendix: reference reading
+## 19. Session view: clip launching and scenes
+
+The thing §1 says this product *is* — "a workflow built around clips and loops (like Ableton's
+Session View) rather than only a linear tape timeline" — and the one major piece of that identity
+that has never been built. Everything so far is a linear-timeline DAW that happens to be good at
+loops.
+
+### The shape of it
+
+A grid: **tracks are columns, scenes are rows**, and each cell either holds a clip or is empty.
+Clips are *launched* rather than positioned — you click one and it starts at the next musical
+boundary and loops until something replaces or stops it. A scene launches its whole row at once.
+Nothing about this is on a timeline; a session clip has no start position, only a slot.
+
+### What v1 covers
+
+1. **Model.** A `SessionSlot` per (track, scene), and a list of `Scene`s on the Song. Deliberately a
+   *separate container* from `Track::clips` rather than a flag on the existing clips: session and
+   arrangement are genuinely different things — one is a grid of alternatives, the other a sequence
+   of placements — and conflating them would put a meaningless `startBeats` on every session clip.
+2. **Launch quantization.** A clip launched mid-bar waits for the next bar line. This is what makes
+   the workflow musical rather than a game of reflexes, so it is not optional polish.
+3. **Engine playback.** Each track plays at most one session clip, looping from wherever it was
+   launched. Per-track stop, and a global stop-all.
+4. **UI.** A dockable Session pane: the grid, clip cells you click to launch, a scene-launch column,
+   and stop buttons.
+5. **Serialization**, so a session survives a save.
+
+### Deliberately not in v1
+
+Recording into session slots; follow actions; per-clip launch modes (gate/toggle/repeat) beyond
+plain looping; audio clips in the session grid (MIDI first — audio clips need warping to be useful
+at a tempo other than the one they were recorded at, and that's its own entry); and dragging clips
+between the session grid and the arrangement. Each is worth having; none is needed for the workflow
+to be real, and shipping them together would make the first version unverifiable.
+
+### The decisions worth recording
+
+- **Session and arrangement are mutually exclusive per track, chosen by the track itself.** A track
+  playing a session clip ignores its timeline clips and vice versa. Ableton resolves this the same
+  way (launching a clip takes the track out of arrangement playback). The alternative — summing both
+  — has no musical meaning.
+- **Launch quantization is engine-side, not UI-side.** The UI records "the user wants slot 3"; the
+  audio thread decides *when* that becomes true, because only it knows the sample-accurate playhead.
+  Doing it on the message thread would quantize to the 30 Hz timer, which is exactly the mistake the
+  automation work just undid.
+- **The quantum is a transport property**, like tempo — one setting for the whole session (off, 1
+  bar, 2 bars...), not per clip. Per-clip quantum is an Ableton feature worth having eventually and
+  is pure addition later.
+- **Launching is a request, not a command.** The message thread writes a single atomic per track;
+  the audio thread consumes it at the next boundary. No queue, because a second click before the
+  boundary should *replace* the pending launch rather than stack up behind it — which a queue would
+  get wrong and an atomic gets right for free.
+- **The pattern-playback loop is shared with the arrangement sequencer** rather than copied. Both
+  emit the same notes from the same Pattern; only the question of *which* pattern and *from when*
+  differs. Copying it would mean two places to fix the next timing bug.
+
+### Build order
+
+Three independently verifiable stages, in this order:
+
+1. **Model, serialization, and the launch-boundary maths** (JUCE-free and unit-tested, like
+   SequencerMath and MetronomeMath before it). Nothing audible yet, but the part where an off-by-one
+   is silent and permanent.
+2. **Engine playback** — the session player, per-track routing, stop-all — verified by the bounce
+   tool: a launched clip must sound, must start *on* the boundary and not before, and must stop when
+   told.
+3. **The Session pane.** Last, because by then the thing underneath it is already known to work, and
+   the UI is the part that can't be verified here.
+
+---
+
+## 20. Appendix: reference reading
 
 - **Real-time audio programming:** Ross Bencina, *"Real-time audio programming 101: time waits for
   nothing"* (the no-locks/no-allocations canon).

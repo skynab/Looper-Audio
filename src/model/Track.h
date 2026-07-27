@@ -34,6 +34,20 @@ enum class TrackParam
     SendLevel = 2  // 0..1
 };
 
+/** One cell of the session grid: a clip, or nothing. A vector of these on a
+    track is indexed by scene, so an empty slot has to be representable rather
+    than simply absent — the index *is* the scene.
+
+    The clip's startBeats is meaningless here and ignored: a session clip has
+    no timeline position, only a slot and a length to loop on. */
+struct SessionSlot
+{
+    bool hasClip = false;
+    Clip clip;
+
+    bool operator==(const SessionSlot&) const = default;
+};
+
 struct Track
 {
     int               id     = 0;
@@ -45,6 +59,14 @@ struct Track
     bool              solo       = false;
     float             sendLevel  = 0.0f; // 0..1, pre-fader send to the shared send bus
     std::vector<Clip> clips;
+
+    // The session grid's column for this track, indexed by scene. Kept the
+    // same length as Song::scenes (see model::addScene). Deliberately a
+    // separate container from `clips` rather than a flag on them: the
+    // arrangement is a sequence of placements, the session is a grid of
+    // alternatives, and merging the two would put a meaningless startBeats on
+    // every session clip. A track plays from one or the other, never both.
+    std::vector<SessionSlot> sessionSlots;
 
     // Automation lanes, keyed by TrackParam. A parameter with no lane (or an
     // empty one) simply uses its static value, which is why an unautomated
