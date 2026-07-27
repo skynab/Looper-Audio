@@ -104,11 +104,17 @@ public:
         file couldn't be read (the others still load). */
     bool setTrackAudioClips(int index, const std::vector<AudioClipSpec>& clips);
 
-    /** Marks a track as driving its drum kit instead of its synth for any
-        notes it receives (see InstrumentTrack::isDrumTrack) — unlike audio
-        clips, the synth doesn't naturally stay silent without content, so
-        this routing has to be explicit. Message thread. */
-    void setTrackIsDrum(int index, bool isDrum);
+    /** Chooses which instrument a track's notes drive. Explicit rather than
+        inferred: unlike audio clips, every note-driven instrument produces
+        sound for any note it receives, so the routing has to be stated.
+        Message thread. */
+    void setTrackInstrument(int index, TrackInstrument instrument);
+
+    /** Per-track guitar settings (see model::GuitarSettings / GuitarNode).
+        Message thread. */
+    void setTrackGuitarSettings(int index, float decaySeconds, float brightness,
+                                float pickPosition, float pickHardness, float muteOnNoteOff);
+    void setTrackGuitarTuning(int index, const std::array<int, kNumGuitarStrings>& tuning);
 
     /** Replaces a track's whole drum-kit pad→sample mapping, decoding any
         file not already cached (see decodeOrGetCached — same cache
@@ -202,7 +208,7 @@ public:
 
     // Per-track synth timbre (see model::SynthSettings / SynthInstrumentNode)
     // — meaningless for a Drum track, but harmless to set regardless since
-    // it's simply not read while isDrumTrack routes notes to the drum kit.
+    // it's simply not read while `instrument` routes notes elsewhere.
     void setTrackSynthWaveform(int index, int waveform);
     void setTrackSynthAttackMs(int index, float ms);
     void setTrackSynthDecayMs(int index, float ms);

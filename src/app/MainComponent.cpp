@@ -1584,12 +1584,22 @@ void MainComponent::syncEngineTracks()
             engine_.setTrackAudioClips(i, audioSpecs);
 
         // Drum kit -> routes this track's notes to the drum sampler instead
-        // of the synth (see InstrumentTrack::isDrumTrack — unlike audio
+        // of the synth (see InstrumentTrack::instrument — unlike audio
         // clips, the synth doesn't naturally stay silent without content, so
         // this has to be explicit). Unconditionally resubmitted every sync
         // for the same reason as the clip lists above: cheap, since
         // AudioEngine caches decoded samples by path.
-        engine_.setTrackIsDrum(i, track.type == model::TrackType::Drum);
+        engine_.setTrackInstrument(i, track.type == model::TrackType::Drum   ? engine::TrackInstrument::Drum
+                                    : track.type == model::TrackType::Guitar ? engine::TrackInstrument::Guitar
+                                                                             : engine::TrackInstrument::Synth);
+
+        if (track.type == model::TrackType::Guitar)
+        {
+            const auto& guitar = track.guitarSettings;
+            engine_.setTrackGuitarSettings(i, guitar.decaySeconds, guitar.brightness,
+                                           guitar.pickPosition, guitar.pickHardness, guitar.muteOnNoteOff);
+            engine_.setTrackGuitarTuning(i, guitar.tuning);
+        }
         if (track.type == model::TrackType::Drum)
         {
             // Pad solo is resolved here rather than on the audio thread: the

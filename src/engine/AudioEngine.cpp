@@ -132,10 +132,33 @@ bool AudioEngine::setTrackAudioClips(int index, const std::vector<AudioClipSpec>
     return allOk;
 }
 
-void AudioEngine::setTrackIsDrum(int index, bool isDrum)
+void AudioEngine::setTrackInstrument(int index, TrackInstrument instrument)
 {
     if (index >= 0 && index < kMaxTracks)
-        tracks_[(size_t) index].isDrumTrack.store(isDrum, std::memory_order_relaxed);
+        tracks_[(size_t) index].instrument.store(instrument, std::memory_order_relaxed);
+}
+
+void AudioEngine::setTrackGuitarSettings(int index, float decaySeconds, float brightness,
+                                         float pickPosition, float pickHardness, float muteOnNoteOff)
+{
+    if (index < 0 || index >= kMaxTracks)
+        return;
+
+    auto& guitar = tracks_[(size_t) index].guitar;
+    guitar.setDecaySeconds(decaySeconds);
+    guitar.setBrightness(brightness);
+    guitar.setPickPosition(pickPosition);
+    guitar.setPickHardness(pickHardness);
+    guitar.setMuteOnNoteOff(muteOnNoteOff);
+}
+
+void AudioEngine::setTrackGuitarTuning(int index, const std::array<int, kNumGuitarStrings>& tuning)
+{
+    if (index < 0 || index >= kMaxTracks)
+        return;
+
+    for (int s = 0; s < kNumGuitarStrings; ++s)
+        tracks_[(size_t) index].guitar.setOpenNote(s, tuning[(size_t) s]);
 }
 
 void AudioEngine::setTrackDrumKit(int index, const std::vector<DrumPadSpec>& pads)

@@ -150,6 +150,24 @@ static Song makeSampleSong()
     sessionClipB.pattern.lengthBeats = 8.0;
     setSessionClip(s, 2, 1, sessionClipB); // drum track, second scene
 
+    // A guitar track in drop-D with non-default tone, so the round trip has to
+    // carry both the tuning array and the scalars.
+    const int guitarId = addTrack(s, TrackType::Guitar, "Gtr").id;
+    Clip guitarClip;
+    guitarClip.type                = ClipType::Instrument;
+    guitarClip.lengthBeats         = 4.0;
+    guitarClip.pattern.lengthBeats = 4.0;
+    guitarClip.pattern.notes.push_back({ 0.0, 1.0, 40, 0.9f });
+    addClip(s, guitarId, guitarClip);
+
+    auto& guitar = s.tracks[3].guitarSettings;
+    guitar.tuning        = { 38, 45, 50, 55, 59, 64 }; // drop D
+    guitar.decaySeconds  = 4.5f;
+    guitar.brightness    = 0.35f;
+    guitar.pickPosition  = 0.11f;
+    guitar.pickHardness  = 0.9f;
+    guitar.muteOnNoteOff = 0.25f;
+
     return s;
 }
 
@@ -198,6 +216,23 @@ TEST_CASE("A file from a newer build is refused, not part-parsed", "[model][io]"
     std::string error;
     REQUIRE_FALSE(deserialize(newer, out, &error));
     REQUIRE(error.find("newer") != std::string::npos);
+}
+
+TEST_CASE("Guitar settings round-trip, tuning included", "[model][io]")
+{
+    const Song original = makeSampleSong();
+
+    Song restored;
+    REQUIRE(deserialize(serialize(original), restored));
+
+    REQUIRE(restored.tracks[3].type == TrackType::Guitar);
+
+    const auto& guitar = restored.tracks[3].guitarSettings;
+    REQUIRE(guitar.tuning[0] == 38); // drop D survives
+    REQUIRE(guitar.tuning[5] == 64);
+    REQUIRE(guitar.decaySeconds == 4.5f);
+    REQUIRE(guitar.pickPosition == 0.11f);
+    REQUIRE(guitar.muteOnNoteOff == 0.25f);
 }
 
 TEST_CASE("An effect chain round-trips with its order and mixed kinds", "[model][io]")
@@ -341,6 +376,10 @@ TEST_CASE("A project from before per-track synths still opens", "[model][io]")
     // from before they existed sounds exactly as it did.
     // v11 predates inserts entirely, so there's no chain at all.
     REQUIRE(track.effectChain.empty());
+
+    // Guitar settings arrived in v19; a file this old gets the defaults, which
+    // are standard tuning.
+    REQUIRE(track.guitarSettings == GuitarSettings {});
 
     // The session grid arrived in v17; a file this old simply has none.
     REQUIRE(restored.scenes.empty());

@@ -370,7 +370,7 @@ public:
     }
 
     /** Renders a drum pattern through a track's drum kit, bypassing the
-        synth entirely (isDrumTrack routes notes to drumKit instead) — for
+        synth entirely (`instrument` routes notes to drumKit instead) — for
         verifying DrumKitNode's per-pad one-shot playback, driven by the
         normal sequencer path like any other pattern. @p pads maps note
         numbers to decoded samples. */
@@ -385,7 +385,7 @@ public:
 
         InstrumentTrack track;
         track.prepare(sampleRate, blockSize);
-        track.isDrumTrack.store(true);
+        track.instrument.store(TrackInstrument::Drum);
         track.drumKit.setPadMap(new DrumPadMap(pads));
 
         ClipSlot slot;

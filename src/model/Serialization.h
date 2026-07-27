@@ -40,8 +40,9 @@ namespace looper::model
       16  TAUTO (one gain lane) -> TAUTOS/TLANE (a lane per parameter)
       17  + SCENES/SCENE and per-track SESSION/SSLOT (the session grid)
       18  TFX (a fixed filter/delay/reverb trio) -> FXCHAIN/FXSLOT (an
-          ordered chain whose slots may be built-ins or hosted plugins) */
-inline constexpr int kFormatVersion = 18;
+          ordered chain whose slots may be built-ins or hosted plugins)
+      19  + GUITAR (per-track model::GuitarSettings) */
+inline constexpr int kFormatVersion = 19;
 namespace detail
 {
     inline std::string num(double v)
@@ -153,6 +154,16 @@ inline std::string serialize(const Song& song)
             << (synth.filterEnabled ? 1 : 0) << " " << synth.filterMode << " "
             << detail::num((double) synth.filterCutoff) << " " << detail::num((double) synth.filterResonance) << " "
             << detail::num((double) synth.gainDb) << "\n";
+
+        const auto& guitar = track.guitarSettings;
+        out << "GUITAR";
+        for (int note : guitar.tuning)
+            out << " " << note;
+        out << " " << detail::num((double) guitar.decaySeconds)
+            << " " << detail::num((double) guitar.brightness)
+            << " " << detail::num((double) guitar.pickPosition)
+            << " " << detail::num((double) guitar.pickHardness)
+            << " " << detail::num((double) guitar.muteOnNoteOff) << "\n";
 
         // The effect chain, in order. A slot carries every built-in's settings
         // regardless of its kind, so switching kind doesn't lose the others.
@@ -508,6 +519,21 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             track.synthSettings.filterCutoff    = (float) filterCutoff;
             track.synthSettings.filterResonance = (float) filterResonance;
             track.synthSettings.gainDb          = (float) gainDb;
+        }
+
+        if (readTagged("GUITAR", rest)) // added in v19; older files keep the defaults
+        {
+            std::istringstream gs(rest);
+            for (int s = 0; s < kNumGuitarStrings; ++s)
+                gs >> track.guitarSettings.tuning[(size_t) s];
+
+            double decay = 0.0, brightness = 0.0, position = 0.0, hardness = 0.0, mute = 0.0;
+            gs >> decay >> brightness >> position >> hardness >> mute;
+            track.guitarSettings.decaySeconds  = (float) decay;
+            track.guitarSettings.brightness    = (float) brightness;
+            track.guitarSettings.pickPosition  = (float) position;
+            track.guitarSettings.pickHardness  = (float) hardness;
+            track.guitarSettings.muteOnNoteOff = (float) mute;
         }
 
         // v14..v17 stored a fixed filter/delay/reverb trio. Migrate it into

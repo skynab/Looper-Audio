@@ -12,6 +12,7 @@
 #include "engine/DelayEffect.h"
 #include "engine/DrumKitNode.h"
 #include "engine/EffectChain.h"
+#include "engine/GuitarNode.h"
 #include "engine/PluginHost.h"
 #include "engine/PluginNode.h"
 #include "engine/FilterEffect.h"
@@ -591,6 +592,122 @@ int main(int argc, char** argv)
         }
     }
 
+    // Guitar checks. The DSP itself is covered by unit tests; what the bounce
+    // tool adds is the *performance* model, which is what separates a guitar
+    // from a synth with a plucked patch.
+    bool guitarSounds          = false;
+    bool guitarCutsSameString  = false;
+    bool guitarPlaysSixAtOnce  = false;
+    bool guitarPicksLowestFret = false;
+    {
+        // Renders a guitar node given (noteNumber, sampleOffset) note-ons.
+        auto renderNotes = [&](const std::vector<std::pair<int, int>>& notes, double seconds)
+        {
+            const int totalSamples = (int) (sampleRate * seconds);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            GuitarNode guitar;
+            guitar.prepare(sampleRate, 512);
+            guitar.setDecaySeconds(4.0f);
+
+            juce::MidiBuffer midi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                midi.clear();
+                for (const auto& [note, offset] : notes)
+                    if (offset >= pos && offset < pos + n)
+                        midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.9f), offset - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                juce::AudioBuffer<float> view(mix.getArrayOfWritePointers(), 2, pos, n);
+                guitar.process(view, midi, context);
+            }
+            return mix;
+        };
+
+        auto magnitude = [&](const juce::AudioBuffer<float>& buffer, double frequency, int from, int count)
+        {
+            double real = 0.0, imaginary = 0.0;
+            for (int i = 0; i < count && from + i < buffer.getNumSamples(); ++i)
+            {
+                const double angle = 2.0 * juce::MathConstants<double>::pi * frequency * i / sampleRate;
+                real      += buffer.getSample(0, from + i) * std::cos(angle);
+                imaginary += buffer.getSample(0, from + i) * std::sin(angle);
+            }
+            return std::hypot(real, imaginary) / count;
+        };
+
+        // A single plucked low E must sound.
+        const auto single = renderNotes({ { 40, 0 } }, 1.0);
+        guitarSounds = single.getRMSLevel(0, 0, single.getNumSamples()) > 0.001f;
+
+        // One note per string: E2 (40) then F2 (41). Only the low E string can
+        // reach either, so the second note must *cut* the first — the single
+        // most audible thing separating this from a polyphonic synth.
+        const int  window = (int) (0.3 * sampleRate);
+        const int  second = (int) (0.5 * sampleRate);
+        const auto cut    = renderNotes({ { 40, 0 }, { 41, second } }, 1.5);
+
+        const double e2Before = magnitude(cut, 82.41, (int) (0.05 * sampleRate), window);
+        const double e2After  = magnitude(cut, 82.41, second + (int) (0.05 * sampleRate), window);
+        const double f2After  = magnitude(cut, 87.31, second + (int) (0.05 * sampleRate), window);
+
+        // E2 must be largely gone, and F2 present in its place.
+        guitarCutsSameString = e2Before > 1.0e-4 && e2After < e2Before * 0.25 && f2After > e2After;
+
+        // ...but six notes that fit six different strings must all ring: the
+        // cut rule is per string, not a global monophony.
+        const auto chord = renderNotes({ { 40, 0 }, { 45, 0 }, { 50, 0 },
+                                         { 55, 0 }, { 59, 0 }, { 64, 0 } }, 1.0);
+        const int  from  = (int) (0.05 * sampleRate);
+        int        heard = 0;
+        for (double f : { 82.41, 110.0, 146.83, 196.0, 246.94, 329.63 })
+            if (magnitude(chord, f, from, window) > 1.0e-4)
+                ++heard;
+
+        guitarPlaysSixAtOnce = heard == 6;
+
+        // Allocation preference, checked directly rather than inferred from
+        // the audio: E4 is reachable on every string (fret 24 on the low E
+        // down to open on the high E), and the rule is to take the one needing
+        // the lowest fret. The cut check above can't see this, because the
+        // notes it uses are only reachable on one string either way.
+        {
+            GuitarNode guitar;
+            guitar.prepare(sampleRate, 512);
+
+            juce::AudioBuffer<float> scratch(2, 512);
+            scratch.clear();
+
+            juce::MidiBuffer midi;
+            midi.addEvent(juce::MidiMessage::noteOn(1, 64, 0.9f), 0); // E4
+
+            ProcessContext context;
+            context.sampleRate                   = sampleRate;
+            context.numSamples                   = 512;
+            context.transport.playing            = true;
+            context.transport.bpm                = bpm;
+            context.transport.timeSigNumerator   = 4;
+            context.transport.timeSigDenominator = 4;
+            guitar.process(scratch, midi, context);
+
+            guitarPicksLowestFret = guitar.noteOnString(5) == 64  // open high E
+                                 && guitar.noteOnString(0) == -1; // not fret 24 on the low E
+        }
+    }
+
     // Chain-order check.
     //
     // Note the trap here: the three built-ins (filter, delay, reverb) are all
@@ -1124,6 +1241,10 @@ int main(int argc, char** argv)
               << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
               << "  pluginsScanned=" << pluginsScanned
               << "  pluginHostWorks=" << (pluginHostWorks ? 1 : 0)
+              << "  guitarSounds=" << (guitarSounds ? 1 : 0)
+              << "  guitarCutsSameString=" << (guitarCutsSameString ? 1 : 0)
+              << "  guitarPlaysSixAtOnce=" << (guitarPlaysSixAtOnce ? 1 : 0)
+              << "  guitarPicksLowestFret=" << (guitarPicksLowestFret ? 1 : 0)
               << "  effectChainOrderMatters=" << (effectChainOrderMatters ? 1 : 0)
               << "  effectChainRunsAllNodes=" << (effectChainRunsAllNodes ? 1 : 0)
               << "  sessionLaunchQuantizes=" << (sessionLaunchQuantizes ? 1 : 0)
@@ -1159,6 +1280,8 @@ int main(int argc, char** argv)
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks
+                 && guitarSounds && guitarCutsSameString && guitarPlaysSixAtOnce
+                 && guitarPicksLowestFret
                  && effectChainOrderMatters && effectChainRunsAllNodes
                  && sessionLaunchQuantizes && sessionStopWorks
                  && trackPanWorks && panAutomationWorks && trackInsertFilterWorks

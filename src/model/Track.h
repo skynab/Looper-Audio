@@ -7,6 +7,7 @@
 #include "model/AutomationLane.h"
 #include "model/Clip.h"
 #include "model/DrumKit.h"
+#include "model/GuitarSettings.h"
 #include "model/Effects.h"
 #include "model/SynthSettings.h"
 
@@ -16,7 +17,8 @@ enum class TrackType
 {
     Instrument, // MIDI clips driving a synth
     Audio,      // audio-file clips
-    Drum        // MIDI clips driving a per-pad drum kit (see DrumKit)
+    Drum,       // MIDI clips driving a per-pad drum kit (see DrumKit)
+    Guitar      // MIDI clips driving six plucked strings (see engine::GuitarNode)
 };
 
 /** Which of a track's parameters an automation lane drives (see
@@ -74,6 +76,7 @@ struct Track
     std::map<int, AutomationLane> automation;
     DrumKit           drumKit; // only meaningful when type == Drum; empty pads otherwise
     SynthSettings     synthSettings; // only meaningful when type == Instrument
+    GuitarSettings    guitarSettings; // only meaningful when type == Guitar
 
     // This track's insert effects, in order, applied to its output before the
     // fader (and so before its send too). A slot is a built-in or a hosted

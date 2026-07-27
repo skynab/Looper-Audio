@@ -1,0 +1,40 @@
+#pragma once
+
+#include <array>
+
+namespace looper::model
+{
+/** How many strings the instrument has. Mirrors engine::kNumGuitarStrings;
+    `model` can't include the engine's guitar header, and six is not a number
+    either side should be guessing at. */
+inline constexpr int kNumGuitarStrings = 6;
+
+/**
+    Per-track guitar settings (model::Track::guitarSettings) — the model-side
+    counterpart to engine::GuitarNode, the same way SynthSettings pairs with
+    SynthInstrumentNode.
+
+    Tuning is stored as MIDI note numbers rather than frequencies, because
+    that's how players describe it: standard is E2 A2 D3 G3 B3 E4, and drop-D
+    is one number changed.
+
+    Every default is chosen so a freshly added guitar track sounds like a
+    guitar without touching anything.
+*/
+struct GuitarSettings
+{
+    std::array<int, kNumGuitarStrings> tuning { 40, 45, 50, 55, 59, 64 };
+
+    float decaySeconds = 3.0f;  // T60 at the fundamental
+    float brightness   = 0.7f;  // 0 = dull, 1 = bright
+    float pickPosition = 0.22f; // 0 = at the bridge, 0.5 = middle of the string
+    float pickHardness = 0.6f;  // 0 = fingertip, 1 = plectrum
+
+    // 0 leaves strings ringing after a note-off, which is what a guitar does;
+    // 1 stops them dead. See engine::GuitarNode for why ringing is the default.
+    float muteOnNoteOff = 0.0f;
+
+    bool operator==(const GuitarSettings&) const = default;
+};
+
+} // namespace looper::model
