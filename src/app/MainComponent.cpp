@@ -1301,6 +1301,21 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackGainDb(i, track.gainDb);
         engine_.setTrackPan(i, track.pan);
         engine_.setTrackAutomation(i, toTrackAutomation(track));
+
+        // The session grid's column for this track. Empty slots are submitted
+        // too — the index is the scene, so the list has to stay aligned with
+        // Song::scenes even where there's nothing to play.
+        std::vector<engine::SessionSlotData> sessionSlots;
+        sessionSlots.reserve(track.sessionSlots.size());
+        for (const auto& slot : track.sessionSlots)
+        {
+            engine::SessionSlotData data;
+            data.hasClip = slot.hasClip && slot.clip.type == model::ClipType::Instrument;
+            if (data.hasClip)
+                data.pattern = slot.clip.pattern;
+            sessionSlots.push_back(std::move(data));
+        }
+        engine_.setTrackSessionSlots(i, sessionSlots);
         engine_.setTrackSendLevel(i, track.sendLevel);
 
         const auto& synth = track.synthSettings;

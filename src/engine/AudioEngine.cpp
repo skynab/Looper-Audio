@@ -227,6 +227,43 @@ void AudioEngine::setTrackSendLevel(int index, float level)
         tracks_[(size_t) index].sendLevel.store(level, std::memory_order_relaxed);
 }
 
+void AudioEngine::setTrackSessionSlots(int index, const std::vector<SessionSlotData>& slots)
+{
+    if (index < 0 || index >= kMaxTracks)
+        return;
+
+    auto& track = tracks_[(size_t) index];
+    track.session.collectRetired();
+    track.session.submitSlots(new SessionPlayer::SlotList(slots));
+}
+
+void AudioEngine::launchSessionSlot(int index, int sceneIndex)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].session.requestLaunch(sceneIndex);
+}
+
+void AudioEngine::stopSessionSlot(int index)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].session.requestStop();
+}
+
+void AudioEngine::launchScene(int sceneIndex)
+{
+    // Every track is told something, including the ones with nothing in this
+    // scene: a scene says what the whole grid should be playing, so a track
+    // with an empty slot falls silent rather than keeping its previous clip.
+    for (auto& track : tracks_)
+        track.session.requestLaunch(sceneIndex);
+}
+
+void AudioEngine::stopAllSessionSlots()
+{
+    for (auto& track : tracks_)
+        track.session.requestStop();
+}
+
 void AudioEngine::setTrackAutomation(int index, const TrackAutomation& curves)
 {
     if (index < 0 || index >= kMaxTracks)
@@ -382,6 +419,7 @@ void AudioEngine::pump() noexcept
         track.audioPlayer.collectRetiredClips();
         track.drumKit.collectRetired();
         track.collectRetiredAutomation();
+        track.session.collectRetired();
     }
 
     filePlayer_.collectRetiredClips();
@@ -438,11 +476,18 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
     sendBus_.setSize(2, numSamples, false, false, true);
     sendBus_.clear();
 
+    // Launch quantization is expressed in beats and converted here, once per
+    // block, from the tempo actually in force.
+    const double samplesPerBeat       = context.transport.bpm > 0.0
+                                          ? context.sampleRate * 60.0 / context.transport.bpm : 0.0;
+    const double launchQuantumSamples = samplesPerBeat * launchQuantumBeats_.load(std::memory_order_relaxed);
+
     const int armed = armedTrack_.load(std::memory_order_relaxed);
     for (int i = 0; i < kMaxTracks; ++i)
     {
         if (tracks_[(size_t) i].active.load(std::memory_order_relaxed))
-            tracks_[(size_t) i].render(output, sendBus_, incomingMidi_, context, i == armed, anySolo);
+            tracks_[(size_t) i].render(output, sendBus_, incomingMidi_, context, i == armed, anySolo,
+                                       launchQuantumSamples);
     }
 
     if (sendBusEnabled_.load(std::memory_order_relaxed))

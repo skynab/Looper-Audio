@@ -159,6 +159,30 @@ public:
     void setTrackPan(int index, float pan);
     void setTrackSendLevel(int index, float level);
 
+    // ---- session view (message thread) ----
+    /** Replaces a track's session column. Slot index is the scene. */
+    void setTrackSessionSlots(int index, const std::vector<SessionSlotData>& slots);
+
+    /** Asks a track to start @p sceneIndex at the next launch boundary. */
+    void launchSessionSlot(int index, int sceneIndex);
+
+    /** Asks a track to stop whatever session clip it's playing, handing it
+        back to the arrangement. */
+    void stopSessionSlot(int index);
+
+    /** Launches a whole scene across every active track — a track with an
+        empty slot in that scene stops rather than carrying on, so a scene is a
+        complete statement of what should be playing. */
+    void launchScene(int sceneIndex);
+
+    /** Stops every track's session clip. */
+    void stopAllSessionSlots();
+
+    /** How long a launch boundary is, in beats. 0 launches immediately;
+        the default of one bar is what makes launching musical. */
+    void setLaunchQuantumBeats(double beats) { launchQuantumBeats_.store(beats, std::memory_order_relaxed); }
+    double launchQuantumBeats() const noexcept { return launchQuantumBeats_.load(std::memory_order_relaxed); }
+
     /** Replaces a track's automation curves. Sample-accurate: the track
         ramps them across each block itself rather than the UI poking a
         value in every 33ms. Pass nullptr-equivalent (an empty set) to
@@ -300,6 +324,7 @@ private:
     AudioRecorder recorder_;
     Metronome     metronome_;
     int           countInBars_ = 0; // message thread only; read when arming
+    std::atomic<double> launchQuantumBeats_ { 4.0 }; // one bar of 4/4
 
     juce::String loadedClipName_;
     double       loadedClipSeconds_ = 0.0;

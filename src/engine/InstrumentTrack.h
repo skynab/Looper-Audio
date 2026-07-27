@@ -13,6 +13,7 @@
 #include "engine/ReverbEffect.h"
 #include "engine/ProcessContext.h"
 #include "engine/Sequencer.h"
+#include "engine/SessionPlayer.h"
 #include "engine/SynthInstrumentNode.h"
 
 namespace looper::engine
@@ -54,6 +55,7 @@ struct InstrumentTrack
     SynthInstrumentNode      synth;
     DrumKitNode              drumKit;
     Sequencer                sequencer;
+    SessionPlayer            session;
     AudioFilePlayerNode      audioPlayer;
 
     // This track's insert chain, in fixed order, applied to its own output
@@ -169,7 +171,8 @@ public:
         its pre-fader send additively into @p sendBus. */
     void render(juce::AudioBuffer<float>& mix, juce::AudioBuffer<float>& sendBus,
                 const juce::MidiBuffer& liveMidi,
-                const ProcessContext& context, bool receivesLiveMidi, bool anySoloActive)
+                const ProcessContext& context, bool receivesLiveMidi, bool anySoloActive,
+                double launchQuantumSamples = 0.0)
     {
         TrackAutomation* incoming = nullptr;
         while (automationInbox_.pop(incoming))
@@ -180,7 +183,16 @@ public:
         }
 
         trackMidi.clear();
-        sequencer.renderBlock(trackMidi, context);
+
+        // A launched session clip takes the track over completely: the
+        // arrangement's clips are ignored while one is engaged, and its
+        // sequencer is reset so nothing it left sounding hangs behind the
+        // session clip. Stopping the session hands the track back. Summing
+        // both would have no musical meaning.
+        if (session.renderBlock(trackMidi, context, launchQuantumSamples))
+            sequencer.reset(trackMidi);
+        else
+            sequencer.renderBlock(trackMidi, context);
 
         if (receivesLiveMidi)
             trackMidi.addEvents(liveMidi, 0, context.numSamples, 0);

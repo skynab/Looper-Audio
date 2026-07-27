@@ -6,6 +6,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "engine/ClipSlot.h"
+#include "engine/PatternPlayback.h"
 #include "engine/ProcessContext.h"
 #include "engine/SequencerMath.h"
 #include "rt/SpscRingBuffer.h"
@@ -123,55 +124,21 @@ public:
         if (foundIndex < 0)
             return; // between clips, or before/after every clip's window
 
-        const auto&  slot   = (*current_)[(size_t) foundIndex];
-        const double length = slot.pattern.lengthBeats * samplesPerBeat;
-        if (length <= 1.0)
-            return;
+        const auto& slot = (*current_)[(size_t) foundIndex];
+        PatternPlayback::emitBlock(midi, slot.pattern, localStart, samplesPerBeat, numSamples, activeNotes_);
+    }
 
-        const double blockStart = wrapPositive(localStart, length);
-
-        for (const auto& note : slot.pattern.notes)
-        {
-            double onSample  = note.startBeats * samplesPerBeat;
-            double offSample = (note.startBeats + note.lengthBeats) * samplesPerBeat;
-
-            if (onSample >= length)
-                continue;
-            if (offSample >= length)
-                offSample = length - 1.0;
-            if (offSample <= onSample)
-                offSample = onSample + 1.0;
-
-            const int noteNumber = juce::jlimit(0, 127, note.noteNumber);
-            int offset = 0;
-
-            if (edgeInBlock(onSample, blockStart, length, numSamples, offset))
-            {
-                const auto velocity = (juce::uint8) juce::jlimit(1, 127, (int) (note.velocity * 127.0f));
-                midi.addEvent(juce::MidiMessage::noteOn(1, noteNumber, velocity), offset);
-                activeNotes_[(size_t) noteNumber] = true;
-            }
-
-            if (edgeInBlock(offSample, blockStart, length, numSamples, offset))
-            {
-                midi.addEvent(juce::MidiMessage::noteOff(1, noteNumber), offset);
-                activeNotes_[(size_t) noteNumber] = false;
-            }
-        }
+    /** Releases anything this sequencer has sounding and forgets which clip it
+        was on. Used when something else takes over the track — a launched
+        session clip — so arrangement notes can't hang behind it. */
+    void reset(juce::MidiBuffer& midi)
+    {
+        flushActiveNotes(midi);
+        activeClipIndex_ = -1;
     }
 
 private:
-    void flushActiveNotes(juce::MidiBuffer& midi)
-    {
-        for (int n = 0; n < 128; ++n)
-        {
-            if (activeNotes_[(size_t) n])
-            {
-                midi.addEvent(juce::MidiMessage::noteOff(1, n), 0);
-                activeNotes_[(size_t) n] = false;
-            }
-        }
-    }
+    void flushActiveNotes(juce::MidiBuffer& midi) { PatternPlayback::flush(midi, activeNotes_); }
 
     ClipList* current_ = nullptr;
     rt::SpscRingBuffer<ClipList*> inbox_   { 16 };
@@ -179,7 +146,7 @@ private:
 
     bool                  wasPlaying_      = false;
     int                   activeClipIndex_ = -1;
-    std::array<bool, 128> activeNotes_ {};
+    ActiveNotes           activeNotes_ {};
 };
 
 } // namespace looper::engine

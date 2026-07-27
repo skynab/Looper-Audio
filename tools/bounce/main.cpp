@@ -14,6 +14,7 @@
 #include "engine/FilterEffect.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/Metronome.h"
+#include "engine/SessionPlayer.h"
 #include "engine/MidiFileIO.h"
 #include "engine/OfflineRenderer.h"
 #include "engine/ReverbEffect.h"
@@ -444,6 +445,95 @@ int main(int argc, char** argv)
         panAutomationWorks = earlyLeft > earlyRight * 2.0f && lateRight > lateLeft * 2.0f;
     }
 
+    // Session-launch check: the whole point of the session grid is that a clip
+    // launched mid-bar starts at the *next bar line*, not immediately. Renders
+    // one track whose session slot is launched a fraction of a bar in, and
+    // requires silence until the boundary and sound after it.
+    bool sessionLaunchQuantizes = false;
+    bool sessionStopWorks       = false;
+    {
+        const double samplesPerBeat = sampleRate * 60.0 / bpm;
+        const double barSamples     = samplesPerBeat * 4.0; // 4/4
+
+        // A clip that hits on every beat, so "is it sounding" is easy to read.
+        Pattern sessionPattern;
+        sessionPattern.lengthBeats = 4.0;
+        for (int i = 0; i < 4; ++i)
+            sessionPattern.notes.push_back({ (double) i, 0.5, 60, 0.9f });
+
+        auto renderSession = [&](bool stopAfterFirstBar)
+        {
+            const int totalSamples = (int) (barSamples * 3.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+
+            auto* slots = new SessionPlayer::SlotList();
+            slots->push_back({ true, sessionPattern });
+            track.session.submitSlots(slots);
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+            bool                     launched = false, stopped = false;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                // Launch a quarter of the way into the first bar: the clip
+                // must not start here, but at the bar line that follows.
+                if (! launched && pos >= (int) (barSamples * 0.25))
+                {
+                    track.session.requestLaunch(0);
+                    launched = true;
+                }
+                if (stopAfterFirstBar && ! stopped && pos >= (int) (barSamples * 1.25))
+                {
+                    track.session.requestStop();
+                    stopped = true;
+                }
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false, barSamples);
+            }
+            return mix;
+        };
+
+        const auto launchedMix = renderSession(false);
+
+        // Just before the bar line the clip must still be silent; just after,
+        // sounding. A launch that ignored quantization would fill both.
+        const int   probe        = (int) (sampleRate * 0.15);
+        const float beforeLaunch = launchedMix.getRMSLevel(0, (int) (barSamples * 0.5), probe);
+        const float afterLaunch  = launchedMix.getRMSLevel(0, (int) barSamples + 1000, probe);
+
+        sessionLaunchQuantizes = beforeLaunch < 1.0e-6f && afterLaunch > 0.01f;
+
+        // Stopping mid-bar likewise takes effect at the next bar line: asked
+        // for a quarter into bar 1, it happens at bar 2. So the clip is still
+        // sounding halfway through bar 1 and gone by bar 2.5 (the track has no
+        // arrangement clips here to fall back to).
+        const auto  stoppedMix  = renderSession(true);
+        const float beforeStop  = stoppedMix.getRMSLevel(0, (int) (barSamples * 1.5), probe);
+        const float afterStop   = stoppedMix.getRMSLevel(0, (int) (barSamples * 2.5), probe);
+
+        sessionStopWorks = beforeStop > 0.01f && afterStop < 1.0e-6f;
+    }
+
     // Per-track pan check: the same part hard-panned left must vanish from
     // the right channel while staying present on the left, and a centred
     // track must be identical on both — the unity-centre pan law is what
@@ -775,6 +865,8 @@ int main(int argc, char** argv)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
               << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
+              << "  sessionLaunchQuantizes=" << (sessionLaunchQuantizes ? 1 : 0)
+              << "  sessionStopWorks=" << (sessionStopWorks ? 1 : 0)
               << "  trackPanWorks=" << (trackPanWorks ? 1 : 0)
               << "  panAutomationWorks=" << (panAutomationWorks ? 1 : 0)
               << "  trackInsertFilterWorks=" << (trackInsertFilterWorks ? 1 : 0)
@@ -805,6 +897,7 @@ int main(int argc, char** argv)
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && drumPadMixWorks && drumPadPitchWorks
+                 && sessionLaunchQuantizes && sessionStopWorks
                  && trackPanWorks && panAutomationWorks && trackInsertFilterWorks
                  && metronomeWorks && metronomeSilentWhenOff && recorderWorks;
     return ok ? 0 : 2;
