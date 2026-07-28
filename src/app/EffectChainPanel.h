@@ -108,6 +108,25 @@ public:
         filterMode_.onChange = [this] { pushParams(); };
         addAndMakeVisible(filterMode_);
 
+        // Laying out, showing and hiding a component that was never parented
+        // all succeed silently and draw nothing — which is exactly how the
+        // drive pedal shipped invisible. So parenting is taken from the same
+        // list the show/hide code uses, rather than trusting each control's
+        // own setup to have done it: addChildComponent is a no-op for a
+        // component that is already a child, so this can only ever fix the
+        // case that was broken.
+        //
+        // The assertion is still worth having in a debug build. It fires
+        // earlier and says something happened, where the loop alone silently
+        // repairs it — and a control that reaches here unparented is also a
+        // control whose range and callback were never set, which this cannot
+        // fix. It would at least be visible rather than absent.
+        for (auto* control : paramControls())
+        {
+            jassert(getIndexOfChildComponent(control) >= 0);
+            addChildComponent(control);
+        }
+
         setContentVisible(false);
     }
 
@@ -329,6 +348,27 @@ private:
         });
     }
 
+    /** Every parameter control, in one place.
+
+        This list existed twice, verbatim, and that is how a bug shipped: the
+        drive controls were added to both copies and to the layout, but
+        setupSlider — which is what actually parents them — was never called
+        on them. They were laid out, shown and hidden all correctly while
+        never being child components at all, so none of it drew anything.
+
+        One definition, plus the assertion in the constructor that checks the
+        list against reality, is what makes that unrepresentable rather than
+        merely unlikely. */
+    std::vector<juce::Component*> paramControls()
+    {
+        return { &filterMode_, &cutoff_, &resonance_, &timeMs_,
+                 &feedback_, &mix_, &roomSize_, &damping_, &editorButton_,
+                 &driveAmount_, &driveTone_, &driveLevel_,
+                 &driveHardClip_, &driveCabinet_,
+                 &compThreshold_, &compRatio_, &compAttack_,
+                 &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_ };
+    }
+
     void setupSlider(juce::Slider& slider, double lo, double hi, double step,
                      const juce::String& suffix, std::function<void()> onChange)
     {
@@ -344,13 +384,7 @@ private:
         the ones that slot's kind actually uses. */
     void refreshParamControls()
     {
-        juce::Component* all[] = { &filterMode_, &cutoff_, &resonance_, &timeMs_,
-                                   &feedback_, &mix_, &roomSize_, &damping_, &editorButton_,
-                                   &driveAmount_, &driveTone_, &driveLevel_,
-                                   &driveHardClip_, &driveCabinet_,
-                                   &compThreshold_, &compRatio_, &compAttack_,
-                                   &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_ };
-        for (auto* c : all)
+        for (auto* c : paramControls())
             c->setVisible(false);
 
         if (! isValidSlot(selected_))
@@ -482,13 +516,7 @@ private:
 
         if (! visible)
         {
-            juce::Component* params[] = { &filterMode_, &cutoff_, &resonance_, &timeMs_,
-                                          &feedback_, &mix_, &roomSize_, &damping_, &editorButton_,
-                                          &driveAmount_, &driveTone_, &driveLevel_,
-                                          &driveHardClip_, &driveCabinet_,
-                                          &compThreshold_, &compRatio_, &compAttack_,
-                                          &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_ };
-            for (auto* c : params)
+            for (auto* c : paramControls())
                 c->setVisible(false);
         }
         resized();

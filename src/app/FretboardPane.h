@@ -113,6 +113,14 @@ public:
         setupLabel(pickHardnessLabel_, "Pick");
         setupLabel(muteOnReleaseLabel_, "Damp off");
 
+        // Same guarantee as EffectChainPanel: a control that was never
+        // parented lays out and hides perfectly while drawing nothing.
+        for (auto* control : managedControls())
+        {
+            jassert(getIndexOfChildComponent(control) >= 0);
+            addChildComponent(control);
+        }
+
         setContentVisible(false);
     }
 
@@ -428,25 +436,34 @@ private:
         repaint(); // a tuning change relabels the whole board
     }
 
+    /** Every control this pane shows and hides, in one place — see the same
+        list in EffectChainPanel, and the bug that made it worth having. */
+    std::vector<juce::Component*> managedControls()
+    {
+        std::vector<juce::Component*> controls {
+            &decayLabel_, &decay_, &brightnessLabel_, &brightness_,
+            &pickPositionLabel_, &pickPosition_, &pickHardnessLabel_,
+            &pickHardness_, &muteOnReleaseLabel_, &muteOnRelease_,
+            &strumDirection_, &strumSpread_, &strumHumanise_,
+            &strumSpreadLabel_, &strumHumaniseLabel_,
+            &chordMode_, &writeToClip_
+        };
+
+        for (auto& box : tuningBoxes_)
+            controls.push_back(&box);
+        for (auto* button : chordButtons_)
+            controls.push_back(button);
+
+        return controls;
+    }
+
     void setContentVisible(bool visible)
     {
         contentVisible_ = visible;
         placeholder_.setVisible(! visible);
 
-        for (auto& box : tuningBoxes_)
-            box.setVisible(visible);
-
-        juce::Component* tone[] = { &decayLabel_, &decay_, &brightnessLabel_, &brightness_,
-                                    &pickPositionLabel_, &pickPosition_, &pickHardnessLabel_,
-                                    &pickHardness_, &muteOnReleaseLabel_, &muteOnRelease_,
-                                    &strumDirection_, &strumSpread_, &strumHumanise_,
-                                    &strumSpreadLabel_, &strumHumaniseLabel_,
-                                    &chordMode_, &writeToClip_ };
-        for (auto* c : tone)
+        for (auto* c : managedControls())
             c->setVisible(visible);
-
-        for (auto* button : chordButtons_)
-            button->setVisible(visible);
 
         resized();
         repaint();
