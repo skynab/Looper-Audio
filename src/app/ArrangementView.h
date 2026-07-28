@@ -64,6 +64,9 @@ public:
     /** Fired when a track's gear button is clicked. The owner shows the menu:
         it knows what the options do, and the view doesn't. */
     std::function<void(int trackIndex)> onTrackSettingsRequested;
+
+    /** Fired when a track's header is alt-dragged: duplicate that track. */
+    std::function<void(int trackIndex)> onTrackDuplicateRequested;
     std::function<void(const juce::File& file, double dropBeat, int trackIndex)> onFileDropped;
 
     void setSong(const model::Song& song)
@@ -216,6 +219,13 @@ public:
                 icon->drawWithin(g, bounds, juce::RectanglePlacement::centred, 1.0f);
             }
 
+            // While an alt-drag is live, mark the track it would copy.
+            if (i == duplicateDragTrack_ && duplicateDragMoved_)
+            {
+                g.setColour(juce::Colours::cyan.withAlpha(0.18f));
+                g.fillRect(0.0f, y, geometry_.gutterWidth, geometry_.laneHeight);
+            }
+
             if (gearIcon_ != nullptr)
             {
                 const auto bounds = gearButtonBounds(i);
@@ -305,6 +315,8 @@ public:
     juce::Rectangle<float> gearButtonBoundsForTesting(int trackIndex) const { return gearButtonBounds(trackIndex); }
     static constexpr float gearGlyphSizeForTesting() { return kGearGlyphSize; }
     bool  isOnRulerForTesting(juce::Point<float> point) const { return isOnRuler(point); }
+    int   trackAtYForTesting(float y) const { return trackAtY(y); }
+    float laneHeightForTesting() const { return geometry_.laneHeight; }
     float rulerHeightForTesting() const { return geometry_.rulerHeight; }
     static constexpr float muteSizeForTesting() { return kMuteSize; }
     int   gearButtonAtForTesting(juce::Point<float> point) const { return gearButtonAt(point); }
@@ -323,6 +335,16 @@ private:
         return juce::Rectangle<float>(geometry_.gutterWidth - 2.0f * kMuteSize - 10.0f,
                                       top + (geometry_.laneHeight - kMuteSize) * 0.5f,
                                       kMuteSize, kMuteSize);
+    }
+
+    /** The lane a y-coordinate falls in, or -1 above or below them all. */
+    int trackAtY(float y) const
+    {
+        if (y < geometry_.rulerHeight)
+            return -1;
+
+        const int index = (int) ((y - geometry_.rulerHeight) / geometry_.laneHeight);
+        return index >= 0 && index < (int) song_.tracks.size() ? index : -1;
     }
 
     /** True for a point on the ruler strip, right of the gutter. The gutter's
@@ -454,7 +476,22 @@ private:
         }
 
         if (e.position.x < geometry_.gutterWidth)
-            return; // clicked the track-name gutter, not the timeline
+        {
+            // Alt-dragging a track's header duplicates it. Armed here and
+            // fired on release after a real drag, so a stray alt-click on a
+            // header can't silently add a track.
+            //
+            // The gesture lives on the header rather than on a clip because
+            // alt already means "don't snap" while dragging a clip, and one
+            // modifier meaning two things on the same surface is how a user
+            // ends up duplicating a track they meant to nudge.
+            if (e.mods.isAltDown())
+            {
+                duplicateDragTrack_ = trackAtY(e.position.y);
+                duplicateDragMoved_ = false;
+            }
+            return; // otherwise the gutter is not the timeline
+        }
 
         if (onSeek)
             onSeek(geometry_.beatForX(e.position.x));
@@ -462,6 +499,16 @@ private:
 
     void mouseDrag(const juce::MouseEvent& e) override
     {
+        if (duplicateDragTrack_ >= 0)
+        {
+            if (! duplicateDragMoved_ && e.getDistanceFromDragStart() >= kDuplicateDragPixels)
+            {
+                duplicateDragMoved_ = true;
+                repaint();
+            }
+            return;
+        }
+
         if (scrubbing_)
         {
             // Deliberately not restricted to the ruler: once the press has
@@ -492,6 +539,20 @@ private:
 
     void mouseUp(const juce::MouseEvent&) override
     {
+        if (duplicateDragTrack_ >= 0)
+        {
+            const int track = duplicateDragTrack_;
+            const bool dragged = duplicateDragMoved_;
+
+            duplicateDragTrack_ = -1;
+            duplicateDragMoved_ = false;
+            repaint();
+
+            if (dragged && onTrackDuplicateRequested)
+                onTrackDuplicateRequested(track);
+            return;
+        }
+
         if (scrubbing_)
         {
             scrubbing_ = false;
@@ -670,9 +731,14 @@ private:
     }
 
     std::unique_ptr<juce::Drawable> unmutedIcon_, mutedIcon_, gearIcon_;
-    int hoveredMuteTrack_ = -1;
-    int hoveredGearTrack_ = -1;
-    bool scrubbing_       = false;
+    int  hoveredMuteTrack_    = -1;
+    int  hoveredGearTrack_    = -1;
+    bool scrubbing_           = false;
+    int  duplicateDragTrack_  = -1;    // the header being alt-dragged, or -1
+    bool duplicateDragMoved_  = false; // ...and whether it has moved far enough to count
+
+    // Far enough that a twitch during an alt-click isn't a duplicate.
+    static constexpr int kDuplicateDragPixels = 8;
 
     TimelineGeometry geometry_;
     model::Song      song_;

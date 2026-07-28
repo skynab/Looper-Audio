@@ -4,6 +4,7 @@
 #include <juce_data_structures/juce_data_structures.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "engine/AudioEngine.h"
@@ -169,6 +170,9 @@ private:
     void                   pasteNotes();
     void                   copyClip();
     void                   pasteClip();
+    void                   copyTrack();
+    void                   pasteTrack();
+    void                   duplicateTrackAt(int trackIndex);
     void                   duplicateClip();
     void                   deleteSelectedClip();
     void                   deleteSelectedTrack();
@@ -336,6 +340,10 @@ private:
     // on which pane happens to have focus.
     std::vector<engine::Note> noteClipboard_;
     std::vector<model::Clip>  clipClipboard_;
+
+    // Its own buffer rather than sharing the clip one: pasting a track when a
+    // clip was copied, or the reverse, is the kind of guess that loses work.
+    std::optional<model::Track> trackClipboard_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

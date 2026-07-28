@@ -165,3 +165,148 @@ TEST_CASE("A track can be renamed", "[model][song]")
     REQUIRE(findTrack(song, id)->name == "Lead");
     REQUIRE_FALSE(renameTrack(song, 9999, "Nope"));
 }
+
+TEST_CASE("A duplicated track is a separate track", "[model][song]")
+{
+    Song song;
+    const int original = addTrack(song, TrackType::Guitar, "Riff").id;
+    addClip(song, original, Clip {});
+
+    Track* copy = duplicateTrack(song, 0);
+    REQUIRE(copy != nullptr);
+    REQUIRE(song.tracks.size() == 2);
+    REQUIRE(copy->id != original);
+    REQUIRE(copy->type == TrackType::Guitar); // it's still a guitar track
+}
+
+TEST_CASE("A duplicated track's clips get their own ids", "[model][song]")
+{
+    // Ids are how the rest of the app addresses clips. Sharing them would
+    // make an edit to one resolve to the other at random.
+    Song song;
+    const int trackId = addTrack(song, TrackType::Instrument, "Keys").id;
+    addClip(song, trackId, Clip {});
+    addClip(song, trackId, Clip {});
+
+    const auto originalIds = std::vector<int> { song.tracks[0].clips[0].id,
+                                                song.tracks[0].clips[1].id };
+
+    Track* copy = duplicateTrack(song, 0);
+    REQUIRE(copy != nullptr);
+    REQUIRE(copy->clips.size() == 2);
+
+    for (const auto& clip : copy->clips)
+        for (int id : originalIds)
+            REQUIRE(clip.id != id);
+
+    // ...and not the same as each other either.
+    REQUIRE(copy->clips[0].id != copy->clips[1].id);
+}
+
+TEST_CASE("A duplicated track's session clips get their own ids", "[model][song]")
+{
+    Song song;
+    addTrack(song, TrackType::Instrument, "Keys");
+    addScene(song, "A");
+    setSessionClip(song, 0, 0, Clip {});
+
+    const int originalSlotId = song.tracks[0].sessionSlots[0].clip.id;
+
+    Track* copy = duplicateTrack(song, 0);
+    REQUIRE(copy != nullptr);
+    REQUIRE(copy->sessionSlots.size() == 1);
+    REQUIRE(copy->sessionSlots[0].hasClip);
+    REQUIRE(copy->sessionSlots[0].clip.id != originalSlotId);
+}
+
+TEST_CASE("A duplicate keeps the music and lands next to the original", "[model][song]")
+{
+    Song song;
+    addTrack(song, TrackType::Instrument, "One");
+    const int second = addTrack(song, TrackType::Instrument, "Two").id;
+    addTrack(song, TrackType::Instrument, "Three");
+
+    Clip clip;
+    clip.startBeats  = 8.0;
+    clip.lengthBeats = 4.0;
+    clip.pattern.notes.push_back({ 1.0, 0.5, 64, 0.9f });
+    addClip(song, second, clip);
+
+    song.tracks[1].gainDb = -6.0f;
+    song.tracks[1].colour = 0xff36618e;
+
+    Track* copy = duplicateTrack(song, 1);
+    REQUIRE(copy != nullptr);
+
+    // Directly after the original, not at the end.
+    REQUIRE(song.tracks.size() == 4);
+    REQUIRE(song.tracks[1].id == second);
+    REQUIRE(song.tracks[2].id == copy->id);
+
+    REQUIRE(song.tracks[2].gainDb == -6.0f);
+    REQUIRE(song.tracks[2].colour == 0xff36618e);
+    REQUIRE(song.tracks[2].clips.size() == 1);
+    REQUIRE(song.tracks[2].clips[0].startBeats == 8.0);
+    REQUIRE(song.tracks[2].clips[0].pattern.notes.size() == 1);
+    REQUIRE(song.tracks[2].clips[0].pattern.notes[0].noteNumber == 64);
+}
+
+TEST_CASE("A duplicate is named so it can be told apart", "[model][song]")
+{
+    Song song;
+    addTrack(song, TrackType::Instrument, "Bass");
+    REQUIRE(duplicateTrack(song, 0)->name == "Bass copy");
+}
+
+TEST_CASE("Duplicating a track that isn't there does nothing", "[model][song]")
+{
+    Song song;
+    addTrack(song, TrackType::Instrument, "One");
+
+    REQUIRE(duplicateTrack(song, -1) == nullptr);
+    REQUIRE(duplicateTrack(song, 5) == nullptr);
+    REQUIRE(song.tracks.size() == 1);
+}
+
+TEST_CASE("Pasting the same track twice gives two separate tracks", "[model][song]")
+{
+    // A paste buffer is used more than once. If the ids came from the buffer
+    // rather than being reissued, the second paste would produce a track the
+    // app couldn't tell from the first.
+    Song song;
+    const int sourceId = addTrack(song, TrackType::Instrument, "Pad").id;
+    addClip(song, sourceId, Clip {});
+
+    const Track buffer = song.tracks[0]; // as a clipboard would hold it
+
+    Track& first  = appendTrackCopy(song, buffer);
+    const int firstId = first.id;
+    const int firstClipId = first.clips[0].id;
+
+    Track& second = appendTrackCopy(song, buffer);
+
+    REQUIRE(song.tracks.size() == 3);
+    REQUIRE(second.id != firstId);
+    REQUIRE(second.id != sourceId);
+    REQUIRE(second.clips[0].id != firstClipId);
+    REQUIRE(second.clips[0].id != song.tracks[0].clips[0].id);
+}
+
+TEST_CASE("An appended copy keeps its music and its name", "[model][song]")
+{
+    // Unlike duplicating, pasting doesn't rename: the buffer already carries
+    // whatever the user called it.
+    Song song;
+    const int id = addTrack(song, TrackType::Guitar, "Riff").id;
+    Clip clip;
+    clip.pattern.notes.push_back({ 0.0, 1.0, 55, 0.8f });
+    addClip(song, id, clip);
+
+    const Track buffer = song.tracks[0];
+    Track& pasted = appendTrackCopy(song, buffer);
+
+    REQUIRE(pasted.name == "Riff");
+    REQUIRE(pasted.type == TrackType::Guitar);
+    REQUIRE(pasted.clips.size() == 1);
+    REQUIRE(pasted.clips[0].pattern.notes[0].noteNumber == 55);
+}

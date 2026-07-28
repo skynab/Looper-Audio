@@ -72,6 +72,13 @@ namespace keys
     // Both spellings of "delete": on macOS the key labelled Delete is
     // backspace, while forward-delete is a separate key that PC keyboards
     // label Delete. Accepting both means the same keycap works everywhere.
+    // Track-level copy/paste sits on the alt variants: cmd+C/V are notes,
+    // cmd+shift+C/V are clips, so tracks take the remaining pair rather than
+    // overloading one of those with a third meaning.
+    inline const juce::KeyPress copyTrack      = juce::KeyPress::createFromDescription("command + alt + C");
+    inline const juce::KeyPress pasteTrack     = juce::KeyPress::createFromDescription("command + alt + V");
+    inline const juce::KeyPress duplicateTrack = juce::KeyPress::createFromDescription("command + shift + D");
+
     inline const juce::KeyPress deleteTrack    = juce::KeyPress(juce::KeyPress::backspaceKey);
     inline const juce::KeyPress deleteTrackAlt = juce::KeyPress(juce::KeyPress::deleteKey);
 
@@ -100,7 +107,7 @@ namespace keys
         newProject, open, save, saveAs, bounce,
         undo, redo, redoAlt,
         copyNotes, pasteNotes, copyClip, pasteClip, duplicate, quantize, deleteClip,
-        deleteTrack, deleteTrackAlt,
+        deleteTrack, deleteTrackAlt, copyTrack, pasteTrack, duplicateTrack,
         playPause, toStart, toEnd, backOneBar, onOneBar, record, loop,
         zoomIn, zoomOut
     };
@@ -729,6 +736,11 @@ MainComponent::MainComponent()
         showTrackSettingsMenu(trackIndex);
     };
 
+    arrangementView_.onTrackDuplicateRequested = [this](int trackIndex)
+    {
+        duplicateTrackAt(trackIndex);
+    };
+
     arrangementView_.onClipSelected = [this](int trackIndex, int clipIndex)
     {
         selectTrackAndClip(trackIndex, clipIndex);
@@ -958,6 +970,10 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         addItem(menu, 17, "Copy Clip", keys::copyClip);
         addItem(menu, 18, "Paste Clip", keys::pasteClip, ! clipClipboard_.empty());
         addItem(menu, 19, "Duplicate Clip", keys::duplicate);
+        menu.addSeparator();
+        addItem(menu, 28, "Copy Track", keys::copyTrack);
+        addItem(menu, 29, "Paste Track", keys::pasteTrack, trackClipboard_.has_value());
+        addItem(menu, 30, "Duplicate Track", keys::duplicateTrack);
         addItem(menu, 25, "Delete Clip", keys::deleteClip);
         menu.addSeparator();
         menu.addItem(26, "Rename Track...");
@@ -1001,6 +1017,9 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 25: deleteSelectedClip(); break;
         case 26: renameSelectedTrack(); break;
         case 27: deleteSelectedTrack(); break;
+        case 28: copyTrack(); break;
+        case 29: pasteTrack(); break;
+        case 30: duplicateTrackAt(selectedTrackIndex_); break;
         case 4:  chooseFile(); break; // import audio (preview player)
         case 5:  bounceProject(); break;
         case 6:  showAudioSettings(); break;
@@ -1934,6 +1953,83 @@ void MainComponent::deleteSelectedTrack()
 void MainComponent::renameSelectedTrack()
 {
     renameTrackAt(selectedTrackIndex_);
+}
+
+/** Copies a track and everything on it, putting the copy directly after it.
+
+    The point of duplicating a track here is a second copy of a part to loop
+    against the first, so the copy has to be complete — clips, instrument
+    settings, effect chain and all — and it has to be genuinely separate,
+    which is what model::duplicateTrack's reissuing of every id gives. */
+void MainComponent::duplicateTrackAt(int trackIndex)
+{
+    const auto& song = history_.current();
+    if (trackIndex < 0 || trackIndex >= (int) song.tracks.size())
+    {
+        showError("No track to duplicate");
+        return;
+    }
+
+    if (trackCount() >= engine_.maxTracks())
+    {
+        showError("Track limit reached");
+        return;
+    }
+
+    const auto sourceName = juce::String(song.tracks[(size_t) trackIndex].name);
+
+    history_.edit("Duplicate track", [trackIndex](model::Song& s)
+    {
+        model::duplicateTrack(s, trackIndex);
+    });
+
+    selectTrackAndRefreshAll(trackIndex + 1); // the copy, so it can be worked on straight away
+    showStatus("Duplicated " + (sourceName.isEmpty() ? juce::String("track") : "\"" + sourceName + "\""));
+}
+
+/** Copies the selected track for later pasting. Deliberately its own
+    clipboard rather than sharing the clip one: pasting a track when a clip
+    was copied, or the reverse, is the kind of guess that loses work. */
+void MainComponent::copyTrack()
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+    {
+        showError("No track selected");
+        return;
+    }
+
+    const auto& track = song.tracks[(size_t) selectedTrackIndex_];
+    trackClipboard_   = track;
+
+    showStatus("Copied " + (track.name.empty() ? juce::String("track")
+                                               : "\"" + juce::String(track.name) + "\""));
+}
+
+void MainComponent::pasteTrack()
+{
+    if (! trackClipboard_.has_value())
+    {
+        showError("No track copied");
+        return;
+    }
+
+    if (trackCount() >= engine_.maxTracks())
+    {
+        showError("Track limit reached");
+        return;
+    }
+
+    const auto copied = *trackClipboard_;
+
+    // appendTrackCopy reissues every id, so pasting the same buffer twice
+    // gives two genuinely separate tracks rather than two the app can't tell
+    // apart.
+    history_.edit("Paste track", [&copied](model::Song& s) { model::appendTrackCopy(s, copied); });
+
+    selectTrackAndRefreshAll(trackCount() - 1);
+    showStatus("Pasted " + (copied.name.empty() ? juce::String("track")
+                                                : "\"" + juce::String(copied.name) + "\""));
 }
 
 /** The per-track settings menu, opened from the gear in the tracks pane. */
@@ -2964,6 +3060,10 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     if (key == keys::duplicate)  { duplicateClip();    return true; }
     if (key == keys::quantize)   { quantizeNotes(0.0); return true; }
     if (key == keys::deleteClip) { deleteSelectedClip(); return true; }
+
+    if (key == keys::copyTrack)      { copyTrack();  return true; }
+    if (key == keys::pasteTrack)     { pasteTrack(); return true; }
+    if (key == keys::duplicateTrack) { duplicateTrackAt(selectedTrackIndex_); return true; }
 
     // Unmodified, so a focused text field consumes it first and this can't
     // interrupt typing.

@@ -335,3 +335,51 @@ TEST_CASE("Scrubbing across the ruler maps to increasing beats", "[gui][arrangem
     // negative — a playhead before bar 1 isn't a position.
     REQUIRE(view->beatForXForTesting(gutter - 50.0f) == 0.0);
 }
+
+TEST_CASE("A point in the gutter maps to the lane it is over", "[gui][arrangement]")
+{
+    // Alt-dragging a header duplicates that track, so picking the wrong lane
+    // here duplicates the wrong track — and the copy looks plausible enough
+    // that it might not be noticed until later.
+    JuceFixture fixture;
+    auto view = viewWith(4);
+
+    const float ruler = view->rulerHeightForTesting();
+    const float lane  = view->laneHeightForTesting();
+
+    for (int i = 0; i < 4; ++i)
+    {
+        const float middle = ruler + lane * (float) i + lane * 0.5f;
+        INFO("lane " << i << " at y " << middle);
+        REQUIRE(view->trackAtYForTesting(middle) == i);
+    }
+}
+
+TEST_CASE("Lane boundaries belong to the lane below them", "[gui][arrangement]")
+{
+    JuceFixture fixture;
+    auto view = viewWith(3);
+
+    const float ruler = view->rulerHeightForTesting();
+    const float lane  = view->laneHeightForTesting();
+
+    REQUIRE(view->trackAtYForTesting(ruler) == 0);                    // first pixel of lane 0
+    REQUIRE(view->trackAtYForTesting(ruler + lane - 0.5f) == 0);      // last of lane 0
+    REQUIRE(view->trackAtYForTesting(ruler + lane) == 1);             // first of lane 1
+}
+
+TEST_CASE("The ruler and the space past the last lane are not tracks", "[gui][arrangement]")
+{
+    // Alt-dragging above or below the tracks must duplicate nothing rather
+    // than clamping onto the nearest one.
+    JuceFixture fixture;
+    auto view = viewWith(2);
+
+    const float ruler = view->rulerHeightForTesting();
+    const float lane  = view->laneHeightForTesting();
+
+    REQUIRE(view->trackAtYForTesting(0.0f) == -1);
+    REQUIRE(view->trackAtYForTesting(ruler - 0.5f) == -1);
+    REQUIRE(view->trackAtYForTesting(ruler + lane * 2.0f) == -1);      // just past the last
+    REQUIRE(view->trackAtYForTesting(ruler + lane * 50.0f) == -1);
+}

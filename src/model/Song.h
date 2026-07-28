@@ -183,6 +183,60 @@ inline bool removeClip(Song& song, int trackId, int clipIndex)
     return true;
 }
 
+/** Gives @p track and everything on it fresh ids from @p song's counter.
+
+    Ids are how the rest of the app addresses things, so two tracks sharing
+    them is a second track that edits resolve to at random. One function does
+    this for every path that produces a copy — duplicating and pasting — so
+    there is one place to get it right. */
+inline void reissueTrackIds(Song& song, Track& track);
+
+/** Copies a track and everything on it, inserting the copy directly after
+    the original and returning it (nullptr if @p index is out of range).
+
+    Every id is reissued: the track's, each arrangement clip's, and each
+    session slot's. Ids are how the rest of the app addresses things, so a
+    copy sharing them would be a second track that edits resolve to at random
+    — the one bug this function exists to avoid.
+
+    Inserted after the original rather than appended, because duplicating is
+    something you do to work on a variant of that part, and having it turn up
+    at the bottom of a long arrangement is a search. */
+inline void reissueTrackIds(Song& song, Track& track)
+{
+    track.id = allocateId(song);
+
+    for (auto& clip : track.clips)
+        clip.id = allocateId(song);
+
+    for (auto& slot : track.sessionSlots)
+        if (slot.hasClip)
+            slot.clip.id = allocateId(song);
+}
+
+inline Track* duplicateTrack(Song& song, int index)
+{
+    if (index < 0 || index >= (int) song.tracks.size())
+        return nullptr;
+
+    Track copy = song.tracks[(size_t) index];
+    reissueTrackIds(song, copy);
+    copy.name = copy.name.empty() ? std::string("Track copy") : copy.name + " copy";
+
+    const auto at = song.tracks.begin() + index + 1;
+    return &*song.tracks.insert(at, std::move(copy));
+}
+
+/** Appends @p track — a copy held outside the song, as a paste buffer does —
+    with fresh ids. Goes through the same reissuing as duplicateTrack, so
+    pasting the same buffer twice can't produce two tracks sharing ids. */
+inline Track& appendTrackCopy(Song& song, Track track)
+{
+    reissueTrackIds(song, track);
+    song.tracks.push_back(std::move(track));
+    return song.tracks.back();
+}
+
 /** Removes a session-grid row, taking that slot out of every track's column
     so the grid stays rectangular — the invariant every session lookup relies
     on. Returns false if there's no such scene. */
