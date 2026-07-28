@@ -206,7 +206,15 @@ public:
                     g.fillRoundedRectangle(bounds.expanded(2.0f), 3.0f);
                 }
 
-                gearIcon_->drawWithin(g, bounds, juce::RectanglePlacement::centred, 1.0f);
+                // Drawn smaller than the area it responds to. The gear's
+                // artwork is square and fills its box, where the speaker
+                // beside it is wider than it is tall and so fills only 22x18
+                // — drawn at the same size the gear reads as the heaviest
+                // thing in the gutter, which a settings affordance shouldn't
+                // be. The hit target stays the full size: shrinking the
+                // glyph shouldn't make the button harder to hit.
+                gearIcon_->drawWithin(g, bounds.withSizeKeepingCentre(kGearGlyphSize, kGearGlyphSize),
+                                      juce::RectanglePlacement::centred, 1.0f);
             }
 
             for (int c = 0; c < (int) track.clips.size(); ++c)
@@ -275,6 +283,8 @@ public:
     juce::Rectangle<float> muteButtonBoundsForTesting(int trackIndex) const { return muteButtonBounds(trackIndex); }
     int   muteButtonAtForTesting(juce::Point<float> point) const { return muteButtonAt(point); }
     juce::Rectangle<float> gearButtonBoundsForTesting(int trackIndex) const { return gearButtonBounds(trackIndex); }
+    static constexpr float gearGlyphSizeForTesting() { return kGearGlyphSize; }
+    static constexpr float muteSizeForTesting() { return kMuteSize; }
     int   gearButtonAtForTesting(juce::Point<float> point) const { return gearButtonAt(point); }
     float gutterWidthForTesting() const { return geometry_.gutterWidth; }
 
@@ -600,6 +610,9 @@ private:
     static constexpr double kMinClipBeats     = 1.0;  // a clip shorter than a beat isn't useful
     static constexpr float  kResizeEdgePixels = 6.0f;
     static constexpr float  kMuteSize         = 22.0f;
+
+    // How large the gear is *drawn*; its clickable area stays kMuteSize.
+    static constexpr float  kGearGlyphSize    = 12.0f;
 
     /** Rounds to whole beats when snapping is on, with a floor so a snapped
         value can't collapse below its minimum. */

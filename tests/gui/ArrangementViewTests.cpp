@@ -256,3 +256,28 @@ TEST_CASE("The palette offers distinguishable colours", "[gui][arrangement]")
         }
     }
 }
+
+TEST_CASE("The gear is drawn smaller than the area it responds to", "[gui][arrangement]")
+{
+    // The gear's artwork is square and fills its box, while the speaker
+    // beside it is wider than tall and fills only part of one — at equal box
+    // sizes the gear reads as the heaviest thing in the gutter. It is drawn
+    // smaller deliberately, and the hit target is deliberately not, so
+    // shrinking the glyph doesn't make the button harder to hit.
+    JuceFixture fixture;
+    auto view = viewWith(2);
+
+    const float glyph = ArrangementView::gearGlyphSizeForTesting();
+    const float hit   = ArrangementView::muteSizeForTesting();
+
+    REQUIRE(glyph < hit);
+    REQUIRE(glyph >= 8.0f); // still legible as a gear rather than a dot
+
+    for (int i = 0; i < 2; ++i)
+    {
+        const auto bounds = view->gearButtonBoundsForTesting(i);
+        INFO("track " << i << " hit area " << bounds.toString());
+        REQUIRE(bounds.getWidth() == hit);   // unchanged by the glyph shrinking
+        REQUIRE(bounds.getHeight() == hit);
+    }
+}
