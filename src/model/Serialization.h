@@ -44,8 +44,10 @@ namespace looper::model
       19  + GUITAR (per-track model::GuitarSettings)
       20  FXSLOT gains five drive fields (the guitar pedal). A file written
           before this simply stops short of them, and the reader keeps the
-          defaults it started with. */
-inline constexpr int kFormatVersion = 20;
+          defaults it started with.
+      21  + seven more on the same line: compressor and tremolo pedals,
+          read the same tolerant way. */
+inline constexpr int kFormatVersion = 21;
 namespace detail
 {
     inline std::string num(double v)
@@ -187,7 +189,14 @@ inline std::string serialize(const Song& song)
                 << detail::num((double) slot.drive.tone) << " "
                 << detail::num((double) slot.drive.level) << " "
                 << (slot.drive.hardClip ? 1 : 0) << " "
-                << (slot.drive.cabinet ? 1 : 0) << "\n";
+                << (slot.drive.cabinet ? 1 : 0) << " "
+                << detail::num((double) slot.compressor.thresholdDb) << " "
+                << detail::num((double) slot.compressor.ratio) << " "
+                << detail::num((double) slot.compressor.attackMs) << " "
+                << detail::num((double) slot.compressor.releaseMs) << " "
+                << detail::num((double) slot.compressor.makeUpDb) << " "
+                << detail::num((double) slot.tremolo.rateHz) << " "
+                << detail::num((double) slot.tremolo.depth) << "\n";
 
             if (slot.kind == EffectKind::Plugin)
             {
@@ -604,10 +613,15 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 // values are what the slot keeps.
                 double driveAmount = 4.0, driveTone = 0.5, driveLevel = 0.7;
                 int    driveHard = 0, driveCab = 1;
+                double compThreshold = -18.0, compRatio = 4.0, compAttack = 10.0;
+                double compRelease = 120.0, compMakeUp = 0.0;
+                double tremRate = 5.0, tremDepth = 0.5;
 
                 ss >> kind >> enabled >> filterMode >> cutoff >> resonance
                    >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix
-                   >> driveAmount >> driveTone >> driveLevel >> driveHard >> driveCab;
+                   >> driveAmount >> driveTone >> driveLevel >> driveHard >> driveCab
+                   >> compThreshold >> compRatio >> compAttack >> compRelease >> compMakeUp
+                   >> tremRate >> tremDepth;
 
                 EffectSlot slot;
                 slot.kind              = (EffectKind) kind;
@@ -630,6 +644,15 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 slot.drive.level       = (float) driveLevel;
                 slot.drive.hardClip    = driveHard != 0;
                 slot.drive.cabinet     = driveCab != 0;
+                slot.compressor.enabled     = slot.enabled && slot.kind == EffectKind::Compressor;
+                slot.compressor.thresholdDb = (float) compThreshold;
+                slot.compressor.ratio       = (float) compRatio;
+                slot.compressor.attackMs    = (float) compAttack;
+                slot.compressor.releaseMs   = (float) compRelease;
+                slot.compressor.makeUpDb    = (float) compMakeUp;
+                slot.tremolo.enabled        = slot.enabled && slot.kind == EffectKind::Tremolo;
+                slot.tremolo.rateHz         = (float) tremRate;
+                slot.tremolo.depth          = (float) tremDepth;
 
                 if (slot.kind == EffectKind::Plugin)
                 {

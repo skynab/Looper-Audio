@@ -8,6 +8,7 @@
 
 #include "engine/DelayEffect.h"
 #include "engine/DriveEffect.h"
+#include "engine/PedalEffects.h"
 #include "engine/FilterEffect.h"
 #include "engine/ReverbEffect.h"
 
@@ -23,7 +24,9 @@ enum class EffectNodeKind
     Delay  = 1,
     Reverb = 2,
     Plugin = 3,
-    Drive  = 4
+    Drive      = 4,
+    Compressor = 5,
+    Tremolo    = 6
 };
 
 /** What a chain slot should be. Carries plugin identity as plain strings —
@@ -71,6 +74,15 @@ struct EffectSlotParams
     float driveLevel    = 0.7f;
     bool  driveHardClip = false;
     bool  driveCabinet  = true;
+
+    float compThresholdDb = -18.0f;
+    float compRatio       = 4.0f;
+    float compAttackMs    = 10.0f;
+    float compReleaseMs   = 120.0f;
+    float compMakeUpDb    = 0.0f;
+
+    float tremoloRateHz = 5.0f;
+    float tremoloDepth  = 0.5f;
 };
 
 /** One effect in a track's chain. Virtual dispatch costs one indirect call
@@ -115,6 +127,26 @@ struct DriveNode final : EffectProcessor
     DriveEffect effect;
 
     EffectNodeKind kind() const noexcept override { return EffectNodeKind::Drive; }
+    void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
+    void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
+};
+
+struct CompressorNode final : EffectProcessor
+{
+    CompressorEffect effect;
+
+    EffectNodeKind kind() const noexcept override { return EffectNodeKind::Compressor; }
+    void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
+    void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
+};
+
+struct TremoloNode final : EffectProcessor
+{
+    TremoloEffect effect;
+
+    EffectNodeKind kind() const noexcept override { return EffectNodeKind::Tremolo; }
     void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
     void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
     void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
@@ -195,6 +227,19 @@ public:
             reverb->effect.setRoomSize(params.reverbRoomSize);
             reverb->effect.setDamping(params.reverbDamping);
             reverb->effect.setMix(params.reverbMix);
+        }
+        else if (auto* comp = dynamic_cast<CompressorNode*>(&node))
+        {
+            comp->effect.setThresholdDb(params.compThresholdDb);
+            comp->effect.setRatio(params.compRatio);
+            comp->effect.setAttackMs(params.compAttackMs);
+            comp->effect.setReleaseMs(params.compReleaseMs);
+            comp->effect.setMakeUpDb(params.compMakeUpDb);
+        }
+        else if (auto* trem = dynamic_cast<TremoloNode*>(&node))
+        {
+            trem->effect.setRateHz(params.tremoloRateHz);
+            trem->effect.setDepth(params.tremoloDepth);
         }
         else if (auto* drive = dynamic_cast<DriveNode*>(&node))
         {

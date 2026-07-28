@@ -836,6 +836,114 @@ int main(int argc, char** argv)
         driveCabinetWorks = worstDifference(withCab, noCab) > 1.0e-3f;
     }
 
+    // Compressor and tremolo in a real chain. Both are claims about what comes
+    // out of the speakers, so both are measured here and not only headless.
+    bool compressorSquashes = false;
+    bool tremoloModulates   = false;
+    {
+        auto renderPedal = [&](int layout) // 0 = clean, 1 = compressor, 2 = tremolo
+        {
+            const int totalSamples = (int) (sampleRate * 1.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+
+            if (layout != 0)
+            {
+                auto chain = std::make_unique<EffectChain>();
+                if (layout == 1)
+                {
+                    auto node = std::make_unique<CompressorNode>();
+                    node->effect.setEnabled(true);
+                    node->effect.setThresholdDb(-40.0f); // well under the arp, so it bites
+                    node->effect.setRatio(12.0f);
+                    node->effect.setAttackMs(1.0f);
+                    node->effect.setReleaseMs(80.0f);
+                    chain->add(std::move(node));
+                }
+                else
+                {
+                    auto node = std::make_unique<TremoloNode>();
+                    node->effect.setEnabled(true);
+                    node->effect.setRateHz(6.0f);
+                    node->effect.setDepth(1.0f);
+                    chain->add(std::move(node));
+                }
+                chain->prepare(sampleRate, 512);
+                track.setEffectChain(chain.release());
+            }
+
+            ClipSlot slot;
+            slot.pattern     = arp;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+            return mix;
+        };
+
+        const auto clean      = renderPedal(0);
+        const auto compressed = renderPedal(1);
+        const auto tremmed    = renderPedal(2);
+
+        // Compression must reduce the peak while leaving the part audible —
+        // a "compressor" that merely turned everything down would pass a
+        // peak test alone, so the RMS floor is checked too.
+        const float cleanPeak = clean.getMagnitude(0, 0, clean.getNumSamples());
+        const float compPeak  = compressed.getMagnitude(0, 0, compressed.getNumSamples());
+        compressorSquashes = cleanPeak > 1.0e-3f && compPeak < cleanPeak * 0.9f
+                          && compressed.getRMSLevel(0, 0, compressed.getNumSamples()) > 1.0e-5f;
+
+        // Comparing the quietest window of each render would prove nothing:
+        // the arp has near-silent gaps of its own, so the clean render's
+        // quietest window is already ~0 and no dip can beat it. Instead,
+        // compare the two renders window by window and only over windows the
+        // clean one actually fills — that isolates what the tremolo did from
+        // what the part was doing anyway.
+        const int   window     = (int) (sampleRate * 0.02);
+        const float cleanPeakW = clean.getMagnitude(0, 0, clean.getNumSamples());
+
+        float deepestDip = 1.0f;
+        int   loudWindows = 0;
+        for (int start = 0; start + window <= clean.getNumSamples(); start += window)
+        {
+            const float cleanLevel = clean.getMagnitude(0, start, window);
+            if (cleanLevel < cleanPeakW * 0.5f)
+                continue; // the part isn't playing here; nothing to modulate
+
+            ++loudWindows;
+            deepestDip = std::min(deepestDip, tremmed.getMagnitude(0, start, window) / cleanLevel);
+        }
+
+        // Somewhere in a second at 6Hz, a full-depth tremolo has to have taken
+        // a loud passage most of the way to silence.
+        tremoloModulates = loudWindows > 4 && deepestDip < 0.3f;
+    }
+
     bool effectChainOrderMatters = false;
     bool effectChainRunsAllNodes = false;
     {
@@ -1361,6 +1469,8 @@ int main(int argc, char** argv)
               << "  guitarPlaysSixAtOnce=" << (guitarPlaysSixAtOnce ? 1 : 0)
               << "  guitarPicksLowestFret=" << (guitarPicksLowestFret ? 1 : 0)
               << "  guitarHammerOn=" << (guitarHammerOn ? 1 : 0)
+              << "  compressorSquashes=" << (compressorSquashes ? 1 : 0)
+              << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  driveChangesSound=" << (driveChangesSound ? 1 : 0)
               << "  driveCabinetWorks=" << (driveCabinetWorks ? 1 : 0)
               << "  effectChainOrderMatters=" << (effectChainOrderMatters ? 1 : 0)

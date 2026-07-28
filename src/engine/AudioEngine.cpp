@@ -373,6 +373,8 @@ void AudioEngine::rebuildTrackEffectChain(int index)
             case EffectNodeKind::Delay:  chain->add(std::make_unique<DelayNode>());  break;
             case EffectNodeKind::Reverb: chain->add(std::make_unique<ReverbNode>()); break;
             case EffectNodeKind::Drive:  chain->add(std::make_unique<DriveNode>());  break;
+            case EffectNodeKind::Compressor: chain->add(std::make_unique<CompressorNode>()); break;
+            case EffectNodeKind::Tremolo:    chain->add(std::make_unique<TremoloNode>());    break;
 
             case EffectNodeKind::Plugin:
             {

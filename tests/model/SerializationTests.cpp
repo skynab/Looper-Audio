@@ -135,7 +135,24 @@ static Song makeSampleSong()
         driveSlot.drive.hardClip = true;
         driveSlot.drive.cabinet  = false;
 
-        s.tracks[0].effectChain = { filterSlot, pluginSlot, delaySlot, driveSlot };
+        EffectSlot compSlot;
+        compSlot.kind                    = EffectKind::Compressor;
+        compSlot.enabled                 = true;
+        compSlot.compressor.enabled      = true;
+        compSlot.compressor.thresholdDb  = -23.5f;
+        compSlot.compressor.ratio        = 6.5f;
+        compSlot.compressor.attackMs     = 3.5f;
+        compSlot.compressor.releaseMs    = 275.0f;
+        compSlot.compressor.makeUpDb     = 4.5f;
+
+        EffectSlot tremSlot;
+        tremSlot.kind            = EffectKind::Tremolo;
+        tremSlot.enabled         = true;
+        tremSlot.tremolo.enabled = true;
+        tremSlot.tremolo.rateHz  = 6.25f;
+        tremSlot.tremolo.depth   = 0.85f;
+
+        s.tracks[0].effectChain = { filterSlot, pluginSlot, delaySlot, driveSlot, compSlot, tremSlot };
     }
 
     {
@@ -261,7 +278,7 @@ TEST_CASE("An effect chain round-trips with its order and mixed kinds", "[model]
     REQUIRE(deserialize(serialize(original), restored));
 
     const auto& chain = restored.tracks[0].effectChain;
-    REQUIRE(chain.size() == 4);
+    REQUIRE(chain.size() == 6);
     REQUIRE(chain[0].kind == EffectKind::Filter);
     REQUIRE(chain[1].kind == EffectKind::Plugin);
     REQUIRE(chain[2].kind == EffectKind::Delay);
@@ -274,6 +291,17 @@ TEST_CASE("An effect chain round-trips with its order and mixed kinds", "[model]
     REQUIRE(chain[3].drive.level == 0.44f);
     REQUIRE(chain[3].drive.hardClip);
     REQUIRE_FALSE(chain[3].drive.cabinet);
+
+    REQUIRE(chain[4].kind == EffectKind::Compressor);
+    REQUIRE(chain[4].compressor.thresholdDb == -23.5f);
+    REQUIRE(chain[4].compressor.ratio == 6.5f);
+    REQUIRE(chain[4].compressor.attackMs == 3.5f);
+    REQUIRE(chain[4].compressor.releaseMs == 275.0f);
+    REQUIRE(chain[4].compressor.makeUpDb == 4.5f);
+
+    REQUIRE(chain[5].kind == EffectKind::Tremolo);
+    REQUIRE(chain[5].tremolo.rateHz == 6.25f);
+    REQUIRE(chain[5].tremolo.depth == 0.85f);
 
     // The plugin's free-form fields survive intact, spaces and all — the
     // document has to be able to say which plugin it wanted even on a machine

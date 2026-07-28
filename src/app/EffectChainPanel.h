@@ -79,6 +79,28 @@ public:
         setupSlider(roomSize_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
         setupSlider(damping_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
 
+        setupSlider(driveAmount_, 1.0, 40.0, 0.1, " x", [this] { pushParams(); });
+        setupSlider(driveTone_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
+        setupSlider(driveLevel_, 0.0, 150.0, 1.0, " %", [this] { pushParams(); });
+
+        driveHardClip_.setButtonText("Fuzz (hard clip)");
+        driveHardClip_.onClick = [this] { pushParams(); };
+        addChildComponent(driveHardClip_);
+
+        driveCabinet_.setButtonText("Cabinet");
+        driveCabinet_.setTooltip("Speaker simulation - without it, distortion is heard as fizz");
+        driveCabinet_.onClick = [this] { pushParams(); };
+        addChildComponent(driveCabinet_);
+
+        setupSlider(compThreshold_, -60.0, 0.0, 0.5, " dB", [this] { pushParams(); });
+        setupSlider(compRatio_, 1.0, 20.0, 0.1, " :1", [this] { pushParams(); });
+        setupSlider(compAttack_, 0.5, 200.0, 0.5, " ms", [this] { pushParams(); });
+        setupSlider(compRelease_, 10.0, 1000.0, 1.0, " ms", [this] { pushParams(); });
+        setupSlider(compMakeUp_, -12.0, 24.0, 0.5, " dB", [this] { pushParams(); });
+
+        setupSlider(tremRate_, 0.1, 20.0, 0.1, " Hz", [this] { pushParams(); });
+        setupSlider(tremDepth_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
+
         filterMode_.addItem("Low-pass", 1);
         filterMode_.addItem("High-pass", 2);
         filterMode_.addItem("Band-pass", 3);
@@ -201,6 +223,11 @@ public:
         {
             row(driveAmount_); row(driveTone_); row(driveLevel_); row(driveHardClip_); row(driveCabinet_);
         }
+        else if (kind == model::EffectKind::Compressor)
+        {
+            row(compThreshold_); row(compRatio_); row(compAttack_); row(compRelease_); row(compMakeUp_);
+        }
+        else if (kind == model::EffectKind::Tremolo) { row(tremRate_); row(tremDepth_); }
     }
 
 private:
@@ -237,7 +264,9 @@ private:
             case model::EffectKind::Filter: return "Filter";
             case model::EffectKind::Delay:  return "Delay";
             case model::EffectKind::Reverb: return "Reverb";
-            case model::EffectKind::Drive:  return "Drive";
+            case model::EffectKind::Drive:      return "Drive";
+            case model::EffectKind::Compressor: return "Compressor";
+            case model::EffectKind::Tremolo:    return "Tremolo";
             case model::EffectKind::Plugin:
                 // A plugin the machine no longer has still names itself, which
                 // is the whole reason the document stores the name.
@@ -253,6 +282,15 @@ private:
         menu.addItem(1, "Filter");
         menu.addItem(2, "Delay");
         menu.addItem(3, "Reverb");
+
+        // Grouped because a pedal is only sensible on a guitar track while a
+        // filter is sensible anywhere. Presentation only — they all run in
+        // the same chain, in whatever order they are put in.
+        juce::PopupMenu pedals;
+        pedals.addItem(5, "Drive");
+        pedals.addItem(6, "Compressor");
+        pedals.addItem(7, "Tremolo");
+        menu.addSubMenu("Guitar pedals", pedals);
         menu.addSeparator();
 
         if (plugins_.empty())
@@ -277,6 +315,9 @@ private:
             if (result == 1 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Filter);
             else if (result == 2 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Delay);
             else if (result == 3 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Reverb);
+            else if (result == 5 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Drive);
+            else if (result == 6 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Compressor);
+            else if (result == 7 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Tremolo);
             else if (result == 5 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Drive);
             else if (result == 4 && onScanRequested) onScanRequested();
             else if (result >= 100)
@@ -306,7 +347,9 @@ private:
         juce::Component* all[] = { &filterMode_, &cutoff_, &resonance_, &timeMs_,
                                    &feedback_, &mix_, &roomSize_, &damping_, &editorButton_,
                                    &driveAmount_, &driveTone_, &driveLevel_,
-                                   &driveHardClip_, &driveCabinet_ };
+                                   &driveHardClip_, &driveCabinet_,
+                                   &compThreshold_, &compRatio_, &compAttack_,
+                                   &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_ };
         for (auto* c : all)
             c->setVisible(false);
 
@@ -348,6 +391,23 @@ private:
                 driveAmount_.setVisible(true); driveTone_.setVisible(true);
                 driveLevel_.setVisible(true); driveHardClip_.setVisible(true);
                 driveCabinet_.setVisible(true);
+                break;
+
+            case model::EffectKind::Compressor:
+                compThreshold_.setValue(slot.compressor.thresholdDb, juce::dontSendNotification);
+                compRatio_.setValue(slot.compressor.ratio, juce::dontSendNotification);
+                compAttack_.setValue(slot.compressor.attackMs, juce::dontSendNotification);
+                compRelease_.setValue(slot.compressor.releaseMs, juce::dontSendNotification);
+                compMakeUp_.setValue(slot.compressor.makeUpDb, juce::dontSendNotification);
+                compThreshold_.setVisible(true); compRatio_.setVisible(true);
+                compAttack_.setVisible(true); compRelease_.setVisible(true);
+                compMakeUp_.setVisible(true);
+                break;
+
+            case model::EffectKind::Tremolo:
+                tremRate_.setValue(slot.tremolo.rateHz, juce::dontSendNotification);
+                tremDepth_.setValue(slot.tremolo.depth * 100.0, juce::dontSendNotification);
+                tremRate_.setVisible(true); tremDepth_.setVisible(true);
                 break;
 
             case model::EffectKind::Plugin:
@@ -392,6 +452,17 @@ private:
                 slot.drive.hardClip = driveHardClip_.getToggleState();
                 slot.drive.cabinet  = driveCabinet_.getToggleState();
                 break;
+            case model::EffectKind::Compressor:
+                slot.compressor.thresholdDb = (float) compThreshold_.getValue();
+                slot.compressor.ratio       = (float) compRatio_.getValue();
+                slot.compressor.attackMs    = (float) compAttack_.getValue();
+                slot.compressor.releaseMs   = (float) compRelease_.getValue();
+                slot.compressor.makeUpDb    = (float) compMakeUp_.getValue();
+                break;
+            case model::EffectKind::Tremolo:
+                slot.tremolo.rateHz = (float) tremRate_.getValue();
+                slot.tremolo.depth  = (float) (tremDepth_.getValue() / 100.0);
+                break;
             case model::EffectKind::Plugin:
                 return; // a plugin's parameters live in its own editor
         }
@@ -414,7 +485,9 @@ private:
             juce::Component* params[] = { &filterMode_, &cutoff_, &resonance_, &timeMs_,
                                           &feedback_, &mix_, &roomSize_, &damping_, &editorButton_,
                                           &driveAmount_, &driveTone_, &driveLevel_,
-                                          &driveHardClip_, &driveCabinet_ };
+                                          &driveHardClip_, &driveCabinet_,
+                                          &compThreshold_, &compRatio_, &compAttack_,
+                                          &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_ };
             for (auto* c : params)
                 c->setVisible(false);
         }
@@ -433,6 +506,8 @@ private:
     juce::ComboBox   filterMode_;
     juce::Slider     cutoff_, resonance_, timeMs_, feedback_, mix_, roomSize_, damping_;
     juce::Slider       driveAmount_, driveTone_, driveLevel_;
+    juce::Slider       compThreshold_, compRatio_, compAttack_, compRelease_, compMakeUp_;
+    juce::Slider       tremRate_, tremDepth_;
     juce::ToggleButton driveHardClip_, driveCabinet_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EffectChainPanel)

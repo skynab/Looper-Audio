@@ -1489,6 +1489,13 @@ static engine::EffectSlotParams toSlotParams(const model::EffectSlot& slot)
     params.driveLevel      = slot.drive.level;
     params.driveHardClip   = slot.drive.hardClip;
     params.driveCabinet    = slot.drive.cabinet;
+    params.compThresholdDb = slot.compressor.thresholdDb;
+    params.compRatio       = slot.compressor.ratio;
+    params.compAttackMs    = slot.compressor.attackMs;
+    params.compReleaseMs   = slot.compressor.releaseMs;
+    params.compMakeUpDb    = slot.compressor.makeUpDb;
+    params.tremoloRateHz   = slot.tremolo.rateHz;
+    params.tremoloDepth    = slot.tremolo.depth;
     return params;
 }
 
@@ -2195,6 +2202,8 @@ void MainComponent::syncEngineTracks()
                 case model::EffectKind::Delay:  spec.kind = engine::EffectNodeKind::Delay;  break;
                 case model::EffectKind::Reverb: spec.kind = engine::EffectNodeKind::Reverb; break;
                 case model::EffectKind::Drive:  spec.kind = engine::EffectNodeKind::Drive;  break;
+                case model::EffectKind::Compressor: spec.kind = engine::EffectNodeKind::Compressor; break;
+                case model::EffectKind::Tremolo:    spec.kind = engine::EffectNodeKind::Tremolo;    break;
                 case model::EffectKind::Plugin:
                     spec.kind             = engine::EffectNodeKind::Plugin;
                     spec.pluginFormat     = pluginFormatName(slot.plugin.format);

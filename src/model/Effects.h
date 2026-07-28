@@ -112,7 +112,9 @@ enum class EffectKind
     Delay  = 1,
     Reverb = 2,
     Plugin = 3,
-    Drive  = 4  // the guitar pedal — see engine::DriveEffect
+    Drive      = 4, // the guitar pedals — see engine::DriveEffect and PedalEffects.h
+    Compressor = 5,
+    Tremolo    = 6
 };
 
 /**
@@ -143,6 +145,30 @@ struct DriveSettings
     bool operator==(const DriveSettings&) const = default;
 };
 
+/** A compressor pedal. Threshold and ratio are the shape; attack and release
+    are the feel, and they mean what they say — see engine::Compressor. */
+struct CompressorSettings
+{
+    bool  enabled     = false;
+    float thresholdDb = -18.0f;
+    float ratio       = 4.0f;
+    float attackMs    = 10.0f;
+    float releaseMs   = 120.0f;
+    float makeUpDb    = 0.0f;
+
+    bool operator==(const CompressorSettings&) const = default;
+};
+
+/** A tremolo pedal. `depth` is how far the quiet part drops, so zero is off. */
+struct TremoloSettings
+{
+    bool  enabled = false;
+    float rateHz  = 5.0f;
+    float depth   = 0.5f;
+
+    bool operator==(const TremoloSettings&) const = default;
+};
+
 struct EffectSlot
 {
     EffectKind kind    = EffectKind::Filter;
@@ -151,8 +177,10 @@ struct EffectSlot
     FilterSettings filter;
     DelaySettings  delay;
     ReverbSettings reverb;
-    DriveSettings  drive;
-    PluginRef      plugin; // meaningful when kind == Plugin
+    DriveSettings      drive;
+    CompressorSettings compressor;
+    TremoloSettings    tremolo;
+    PluginRef          plugin; // meaningful when kind == Plugin
 
     bool operator==(const EffectSlot&) const = default;
 };
