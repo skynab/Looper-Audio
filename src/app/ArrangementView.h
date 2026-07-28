@@ -61,14 +61,28 @@ public:
         }
     }
 
+    // The range the timeline will zoom over. Named, and readable, so the
+    // owner can tell when a zoom button would do nothing rather than
+    // duplicating the numbers and drifting from them.
+    static constexpr float kMinZoom = 0.25f;
+    static constexpr float kMaxZoom = 4.0f;
+
     void setZoom(float zoom)
     {
-        geometry_.zoom = juce::jlimit(0.25f, 4.0f, zoom);
+        geometry_.zoom = juce::jlimit(kMinZoom, kMaxZoom, zoom);
         updateContentSize();
         repaint();
     }
 
     float zoom() const noexcept { return geometry_.zoom; }
+
+    /** Which beat sits under a given x. Exposed for the GUI tests, which is
+        the only way to assert that zooming actually changed the mapping
+        rather than merely storing a number. */
+    double beatForXForTesting(float x) const { return geometry_.beatForX(x); }
+
+    bool canZoomIn() const noexcept  { return geometry_.zoom < kMaxZoom; }
+    bool canZoomOut() const noexcept { return geometry_.zoom > kMinZoom; }
 
     /** Highlights the clip currently open in the piano roll. */
     void setSelectedClip(int trackIndex, int clipIndex)

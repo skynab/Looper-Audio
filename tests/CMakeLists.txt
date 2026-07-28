@@ -49,7 +49,8 @@ catch_discover_tests(looper_tests)
 # screen: parenting, bounds, visibility and hit-testing.
 if (LOOPER_BUILD_APP)
   add_executable(looper_gui_tests
-    gui/FretboardPaneTests.cpp)
+    gui/FretboardPaneTests.cpp
+    gui/ArrangementViewTests.cpp)
 
   target_include_directories(looper_gui_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 

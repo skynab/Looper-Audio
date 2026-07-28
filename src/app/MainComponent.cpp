@@ -65,6 +65,12 @@ namespace keys
     inline const juce::KeyPress record     = juce::KeyPress::createFromDescription("command + R");
     inline const juce::KeyPress loop       = juce::KeyPress::createFromDescription("command + L");
 
+    // Built from key codes rather than descriptions: the description parser
+    // splits on '+', so "command + -" and "command + +" are ambiguous to it
+    // and would silently produce a shortcut that matches nothing.
+    inline const juce::KeyPress zoomIn  { '=', juce::ModifierKeys::commandModifier, 0 };
+    inline const juce::KeyPress zoomOut { '-', juce::ModifierKeys::commandModifier, 0 };
+
     /** Every shortcut above, for the startup check. A description with a typo
         in it parses to an invalid KeyPress that matches nothing and prints no
         shortcut text — a failure that otherwise surfaces only when someone
@@ -73,7 +79,8 @@ namespace keys
         newProject, open, save, saveAs, bounce,
         undo, redo, redoAlt,
         copyNotes, pasteNotes, copyClip, pasteClip, duplicate, quantize, deleteClip,
-        playPause, toStart, toEnd, backOneBar, onOneBar, record, loop
+        playPause, toStart, toEnd, backOneBar, onOneBar, record, loop,
+        zoomIn, zoomOut
     };
 }
 
@@ -622,8 +629,20 @@ MainComponent::MainComponent()
     arrangementViewport_.setViewedComponent(&arrangementView_, false);
     arrangeTab_.addAndMakeVisible(arrangementViewport_);
 
-    zoomInButton_.onClick  = [this] { arrangementView_.setZoom(arrangementView_.zoom() * 1.25f); };
-    zoomOutButton_.onClick = [this] { arrangementView_.setZoom(arrangementView_.zoom() / 1.25f); };
+    // "+" and "-" alone say nothing about what they act on. The tooltips name
+    // it, the readout beside them shows the result, and they grey out at the
+    // ends of the range — a button that silently does nothing at the limit
+    // is indistinguishable from one that's broken.
+    zoomInButton_.setTooltip(withShortcut("Zoom in on the timeline", keys::zoomIn));
+    zoomOutButton_.setTooltip(withShortcut("Zoom out on the timeline", keys::zoomOut));
+
+    zoomInButton_.onClick  = [this] { setTimelineZoom(arrangementView_.zoom() * 1.25f); };
+    zoomOutButton_.onClick = [this] { setTimelineZoom(arrangementView_.zoom() / 1.25f); };
+
+    zoomLabel_.setJustificationType(juce::Justification::centred);
+    zoomLabel_.setTooltip("Timeline zoom");
+    zoomLabel_.setInterceptsMouseClicks(false, false);
+    arrangeTab_.addAndMakeVisible(zoomLabel_);
     addClipButton_.onClick = [this] { addClipToSelectedTrack(); };
     arrangeTab_.addAndMakeVisible(zoomInButton_);
     arrangeTab_.addAndMakeVisible(zoomOutButton_);
@@ -796,6 +815,7 @@ MainComponent::MainComponent()
     logAudioDeviceStatus();
 
     addChildComponent(status_);
+    updateZoomControls(); // the readout must say something before the first click
 
     // The document the app opens with counts as saved, so an untouched session
     // doesn't prompt on quit. This has to come *after* all the control setup
@@ -2724,6 +2744,9 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     if (key == keys::quantize)   { quantizeNotes(0.0); return true; }
     if (key == keys::deleteClip) { deleteSelectedClip(); return true; }
 
+    if (key == keys::zoomIn)  { setTimelineZoom(arrangementView_.zoom() * 1.25f); return true; }
+    if (key == keys::zoomOut) { setTimelineZoom(arrangementView_.zoom() / 1.25f); return true; }
+
     return false;
 }
 
@@ -3708,12 +3731,29 @@ void MainComponent::saveDockLayout()
     settings_.saveIfNeeded();
 }
 
+/** Applies a new timeline zoom and keeps the controls describing it. */
+void MainComponent::setTimelineZoom(float zoom)
+{
+    arrangementView_.setZoom(zoom);
+    updateZoomControls();
+}
+
+void MainComponent::updateZoomControls()
+{
+    zoomInButton_.setEnabled(arrangementView_.canZoomIn());
+    zoomOutButton_.setEnabled(arrangementView_.canZoomOut());
+    zoomLabel_.setText(juce::String(juce::roundToInt(arrangementView_.zoom() * 100.0f)) + "%",
+                       juce::dontSendNotification);
+}
+
 void MainComponent::layoutArrangeTab()
 {
     auto area = arrangeTab_.getLocalBounds();
 
     auto toolbar = area.removeFromTop(28).reduced(4, 2);
     zoomOutButton_.setBounds(toolbar.removeFromLeft(28));
+    toolbar.removeFromLeft(4);
+    zoomLabel_.setBounds(toolbar.removeFromLeft(48));
     toolbar.removeFromLeft(4);
     zoomInButton_.setBounds(toolbar.removeFromLeft(28));
     toolbar.removeFromLeft(12);

@@ -185,6 +185,8 @@ private:
     void                   saveDockLayout();
     void                   layoutMixerView();
     void                   layoutMasterPanel();
+    void                   setTimelineZoom(float zoom);
+    void                   updateZoomControls();
     void                   layoutArrangeTab();
     void                   layoutEditTab();
     int                    trackCount() const;
@@ -290,6 +292,7 @@ private:
     ArrangementView                    arrangementView_;
     juce::TextButton                   zoomInButton_   { "+" };
     juce::TextButton                   zoomOutButton_  { "-" };
+    juce::Label                        zoomLabel_; // what the +/- act on, in percent
     juce::TextButton                   addClipButton_  { "Add Clip" };
 
     CallbackComponent                  mixerView_;
