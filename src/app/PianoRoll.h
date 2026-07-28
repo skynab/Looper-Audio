@@ -51,6 +51,41 @@ public:
         actually editable rather than showing only its first bar — same rule
         DrumStepGrid uses, capped so a very long pattern can't produce
         hairline columns. */
+    /** Where the transport is inside this pattern, in beats from its start,
+        and whether to show it at all.
+
+        The position is pattern-local because a clip loops: the engine wraps
+        playback within the pattern length, so a playhead drawn from the
+        song's absolute position would leave the grid on the first repeat and
+        never come back. The owner does that wrapping — it is the only thing
+        that knows which clip is open and where it sits. */
+    void setPlayheadBeats(double patternLocalBeats, bool visible)
+    {
+        if (std::abs(patternLocalBeats - playheadBeats_) < 1.0e-6 && visible == playheadVisible_)
+            return;
+
+        playheadBeats_   = patternLocalBeats;
+        playheadVisible_ = visible;
+        repaint();
+    }
+
+    // Test access: the playhead's x and the grid's bar spacing are the two
+    // things that can be silently wrong here — drawn off the grid, or not
+    // following the time signature.
+    float playheadXForTesting(float totalWidth) const { return playheadX(totalWidth); }
+    double beatsPerBarForTesting() const { return beatsPerBar_; }
+
+    /** How many beats make a bar, for the grid's heavy lines. */
+    void setBeatsPerBar(double beats)
+    {
+        const double clamped = beats > 0.0 ? beats : 4.0;
+        if (std::abs(clamped - beatsPerBar_) < 1.0e-9)
+            return;
+
+        beatsPerBar_ = clamped;
+        repaint();
+    }
+
     void setPattern(const engine::Pattern& p)
     {
         pattern_ = p;
@@ -329,12 +364,20 @@ public:
             g.fillRect(juce::Rectangle<float>(gx, y, w - gx, ch));
         }
 
+        // Three weights, not two: the bar line has to be findable at a glance
+        // or a long pattern is an undifferentiated field of beats. Which
+        // steps are bars follows the time signature rather than assuming
+        // four.
         const int stepsPerBeat = juce::jmax(1, (int) std::llround(1.0 / geometry_.stepBeats));
+        const int stepsPerBar  = juce::jmax(1, (int) std::llround(beatsPerBar_ / geometry_.stepBeats));
+
         for (int s = 0; s <= geometry_.numSteps; ++s)
         {
+            const bool bar  = (s % stepsPerBar) == 0;
             const bool beat = (s % stepsPerBeat) == 0;
-            g.setColour(juce::Colours::white.withAlpha(beat ? 0.25f : 0.08f));
-            g.fillRect(geometry_.xForStep(s, w), 0.0f, beat ? 2.0f : 1.0f, h);
+
+            g.setColour(juce::Colours::white.withAlpha(bar ? 0.38f : (beat ? 0.20f : 0.07f)));
+            g.fillRect(geometry_.xForStep(s, w), 0.0f, bar ? 2.0f : 1.0f, h);
         }
 
         // Row separators — melodic mode gets a heavier line at each octave
@@ -349,6 +392,8 @@ public:
 
         g.setColour(juce::Colours::white.withAlpha(0.16f));
         g.fillRect(gx - 1.0f, 0.0f, 1.0f, h);
+
+        paintPlayhead(g, w, h);
 
         for (size_t i = 0; i < pattern_.notes.size(); ++i)
         {
@@ -386,6 +431,36 @@ public:
     }
 
 private:
+    /** The vertical line showing where playback is inside the pattern. Drawn
+        last so it sits over the notes: it is a readout, and a readout behind
+        the data it refers to is worse than none. */
+    /** Where the playhead line sits for a given component width. Clamped to
+        the grid: a position past the pattern's end would otherwise draw
+        outside it, and a line floating beyond the last step reads as a
+        rendering fault rather than as a position. */
+    float playheadX(float totalWidth) const
+    {
+        const double patternBeats = geometry_.numSteps * geometry_.stepBeats;
+        if (patternBeats <= 0.0)
+            return geometry_.gutterWidth;
+
+        const double position = juce::jlimit(0.0, patternBeats, playheadBeats_);
+        return geometry_.gutterWidth
+             + (float) (position / patternBeats) * geometry_.gridWidth(totalWidth);
+    }
+
+    void paintPlayhead(juce::Graphics& g, float w, float h) const
+    {
+        if (! playheadVisible_)
+            return;
+
+        if (geometry_.numSteps * geometry_.stepBeats <= 0.0)
+            return;
+
+        g.setColour(juce::Colours::orange.withAlpha(0.9f));
+        g.fillRect(playheadX(w), 0.0f, 2.0f, h);
+    }
+
     enum class DragMode { None, ResizeNote, Velocity };
 
     static constexpr int   kDefaultLowPitch    = 48; // C3
@@ -593,6 +668,12 @@ private:
     }
 
     PianoRollGeometry           geometry_;
+
+    // Transport readout: where playback is inside this pattern, and whether
+    // anything is playing. beatsPerBar_ drives the grid's bar lines.
+    double playheadBeats_   = 0.0;
+    bool   playheadVisible_ = false;
+    double beatsPerBar_     = 4.0;
     engine::Pattern             pattern_;
     int                         hoverRow_ = -1;
     bool                        drumMode_ = false;

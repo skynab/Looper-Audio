@@ -51,7 +51,8 @@ if (LOOPER_BUILD_APP)
   add_executable(looper_gui_tests
     gui/FretboardPaneTests.cpp
     gui/ArrangementViewTests.cpp
-    gui/IconsTests.cpp)
+    gui/IconsTests.cpp
+    gui/PianoRollTests.cpp)
 
   target_include_directories(looper_gui_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 

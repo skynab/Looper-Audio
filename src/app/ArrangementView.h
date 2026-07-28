@@ -131,6 +131,26 @@ public:
         g.setColour(juce::Colours::white.withAlpha(0.06f));
         g.fillRect(0.0f, 0.0f, width, geometry_.rulerHeight);
         g.setFont(juce::FontOptions(12.0f));
+        // Beat lines inside each bar, so a bar reads as its beats rather than
+        // as one undivided box — in 4/4 that is four subdivisions per bar,
+        // and it follows the time signature rather than assuming four.
+        // Dropped when they'd be closer together than this, since a grid too
+        // fine to resolve is just a lighter background.
+        const float beatSpacing = ppb;
+        if (beatSpacing >= kMinGridSpacing)
+        {
+            g.setColour(juce::Colours::white.withAlpha(0.07f));
+            const int totalBeatLines = (int) std::ceil(totalBeats());
+            for (int beat = 0; beat <= totalBeatLines; ++beat)
+            {
+                if (std::fmod((double) beat, qpb) < 1.0e-9)
+                    continue; // the bar line itself is drawn heavier below
+
+                g.fillRect(geometry_.xForBeat((double) beat), geometry_.rulerHeight,
+                           1.0f, height - geometry_.rulerHeight);
+            }
+        }
+
         for (int bar = 0; bar <= numBars; ++bar)
         {
             const float x = geometry_.xForBeat((double) bar * qpb);
@@ -664,6 +684,10 @@ private:
 
     // How large the gear is *drawn*; its clickable area stays kMuteSize.
     static constexpr float  kGearGlyphSize    = 12.0f;
+
+    // Below this, beat lines are closer together than they can be told apart
+    // and the grid stops being information.
+    static constexpr float  kMinGridSpacing   = 6.0f;
 
     /** Rounds to whole beats when snapping is on, with a floor so a snapped
         value can't collapse below its minimum. */

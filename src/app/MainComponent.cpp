@@ -24,6 +24,17 @@ static constexpr int kFirstPanelMenuId = 100;
     fixed items. */
 static constexpr int kFirstColourMenuId = 200;
 
+/** The time signatures offered. A fixed list because these are the ones
+    people write in; a free numerator and denominator invites 4/7, which the
+    rest of the app would have to have an opinion about. */
+struct TimeSignatureOption { int numerator, denominator; };
+
+static constexpr TimeSignatureOption kTimeSignatures[] = {
+    { 4, 4 }, { 3, 4 }, { 2, 4 }, { 5, 4 }, { 6, 8 }, { 7, 8 }, { 12, 8 },
+};
+
+static constexpr int kNumTimeSignatures = (int) (sizeof(kTimeSignatures) / sizeof(kTimeSignatures[0]));
+
 using Cmd = engine::EngineCommand::Type;
 
 /**
@@ -312,6 +323,24 @@ MainComponent::MainComponent()
     tempoSlider.setRange(40.0, 240.0, 0.1);
     tempoSlider.setValue(120.0, juce::dontSendNotification);
     tempoSlider.setTextValueSuffix(" bpm");
+    // Time signature. A fixed list rather than two spin boxes: these are the
+    // ones anyone actually writes in, and a free numerator invites 4/7.
+    for (int i = 0; i < kNumTimeSignatures; ++i)
+    {
+        const auto& sig = kTimeSignatures[i];
+        timeSigBox_.addItem(juce::String(sig.numerator) + "/" + juce::String(sig.denominator), i + 1);
+    }
+    timeSigBox_.setTooltip("Time signature - sets the bar length, and the grid in the Tracks and Keys panes");
+    timeSigBox_.onChange = [this]
+    {
+        const int index = timeSigBox_.getSelectedId() - 1;
+        if (index >= 0 && index < kNumTimeSignatures)
+            setTimeSignature(kTimeSignatures[index].numerator, kTimeSignatures[index].denominator);
+    };
+    leftPane_.addAndMakeVisible(timeSigBox_);
+    timeSigLabel_.setText("Time", juce::dontSendNotification);
+    timeSigLabel_.attachToComponent(&timeSigBox_, true);
+
     tempoSlider.onValueChange = [this]
     {
         uiTempoMap_.setTempo(tempoSlider.getValue());
@@ -2591,6 +2620,59 @@ void MainComponent::previewNote(int noteNumber)
     });
 }
 
+/** Changes the bar length. Structural document state, so it goes through the
+    history like a track's colour rather than being a live tweak like tempo —
+    a bar length is part of the piece, not a knob you ride while listening.
+
+    Everything that measures bars has to follow: the engine's metronome and
+    count-in, the loop region, and the grids in the tracks and keys panes. */
+void MainComponent::setTimeSignature(int numerator, int denominator)
+{
+    if (numerator <= 0 || denominator <= 0)
+        return;
+
+    const auto& song = history_.current();
+    if (song.timeSigNumerator == numerator && song.timeSigDenominator == denominator)
+        return;
+
+    history_.edit("Change time signature", [numerator, denominator](model::Song& s)
+    {
+        s.timeSigNumerator   = numerator;
+        s.timeSigDenominator = denominator;
+    });
+
+    uiTempoMap_.setTimeSignature(numerator, denominator);
+    post(Cmd::SetTimeSignature, (double) numerator, (double) denominator);
+
+    updateTimeSignatureControls();
+    updateLoopRegion();               // bars just changed length, so the loop did too
+    pianoRoll_.setBeatsPerBar(beatsPerBar());
+    arrangementView_.setSong(history_.current());
+
+    showStatus("Time signature: " + juce::String(numerator) + "/" + juce::String(denominator));
+}
+
+/** Points the control at whatever the document says, without reporting it
+    straight back as a user edit. */
+void MainComponent::updateTimeSignatureControls()
+{
+    const auto& song = history_.current();
+
+    for (int i = 0; i < kNumTimeSignatures; ++i)
+    {
+        if (kTimeSignatures[i].numerator == song.timeSigNumerator
+            && kTimeSignatures[i].denominator == song.timeSigDenominator)
+        {
+            timeSigBox_.setSelectedId(i + 1, juce::dontSendNotification);
+            return;
+        }
+    }
+
+    // A signature loaded from a project that isn't in the list — show nothing
+    // rather than a wrong one.
+    timeSigBox_.setSelectedId(0, juce::dontSendNotification);
+}
+
 void MainComponent::updateEditingLabel()
 {
     const auto& song = history_.current();
@@ -2822,6 +2904,8 @@ void MainComponent::refreshFromModel()
     const auto& song = history_.current();
     uiTempoMap_.setTimeSignature(song.timeSigNumerator, song.timeSigDenominator);
     post(Cmd::SetTimeSignature, (double) song.timeSigNumerator, (double) song.timeSigDenominator);
+    updateTimeSignatureControls();
+    pianoRoll_.setBeatsPerBar(beatsPerBar());
 
     if (selectedTrackIndex_ >= trackCount())
         selectedTrackIndex_ = juce::jmax(0, trackCount() - 1);
@@ -3690,7 +3774,18 @@ void MainComponent::timerCallback()
             if (selectedClipIndex_ >= 0 && selectedClipIndex_ < (int) clips.size())
                 clipStart = clips[(size_t) selectedClipIndex_].startBeats;
         }
-        drumsPane_.setPlayheadBeats(uiTempoMap_.ppqFromSamples(playhead) - clipStart, engine_.isPlaying());
+        const double intoClip = uiTempoMap_.ppqFromSamples(playhead) - clipStart;
+        drumsPane_.setPlayheadBeats(intoClip, engine_.isPlaying());
+
+        // Wrapped into the pattern, because a clip loops: the engine wraps
+        // playback within the pattern length, so an unwrapped position would
+        // walk off the right of the grid on the first repeat and never
+        // return. Only shown while the clip is actually under the playhead.
+        const double patternBeats = currentPattern().lengthBeats;
+        const bool   inClip       = intoClip >= 0.0 && engine_.isPlaying();
+        pianoRoll_.setPlayheadBeats(patternBeats > 0.0 ? engine::wrapPositive(intoClip, patternBeats)
+                                                       : 0.0,
+                                    inClip);
     }
 
     // Gain automation playback (coarse, message-thread; sample-accurate on
@@ -3794,6 +3889,11 @@ void MainComponent::layoutLeftPane()
     area.removeFromTop(6);
 
     tempoSlider.setBounds(area.removeFromTop(26).withTrimmedLeft(64));
+    area.removeFromTop(6);
+
+    // Below tempo, sharing its label gutter: they are the two things that
+    // decide what a bar is.
+    timeSigBox_.setBounds(area.removeFromTop(24).withTrimmedLeft(64).removeFromLeft(90));
 }
 
 /** Shows or hides everything below the transport's button row. The arrow
@@ -3801,7 +3901,8 @@ void MainComponent::layoutLeftPane()
     it's in. */
 void MainComponent::applyTransportCollapse()
 {
-    juce::Component* belowFirstRow[] = { &positionLabel, &clipLabel, &tempoSlider };
+    juce::Component* belowFirstRow[] = { &positionLabel, &clipLabel, &tempoSlider,
+                                        &timeSigBox_, &timeSigLabel_ };
     for (auto* c : belowFirstRow)
         c->setVisible(! transportCollapsed_);
 

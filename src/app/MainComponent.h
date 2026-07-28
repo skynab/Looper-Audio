@@ -178,6 +178,8 @@ private:
     void                   setTrackColour(int trackIndex, unsigned int argb);
     void                   quantizeNotes(double swingAmount);
     void                   setPatternBars(int bars);
+    void                   setTimeSignature(int numerator, int denominator);
+    void                   updateTimeSignatureControls();
     void                   updateBarsControl();
     void                   updateEditingLabel();
     void                   layoutLeftPane();
@@ -254,6 +256,8 @@ private:
     bool               transportCollapsed_ = false;
     juce::ToggleButton metronomeButton { "Click" };
     juce::ComboBox     countInBox_;
+    juce::ComboBox     timeSigBox_;
+    juce::Label        timeSigLabel_;
 
     juce::Slider       tempoSlider, masterSlider;
     juce::ToggleButton filterButton { "Filter" };
