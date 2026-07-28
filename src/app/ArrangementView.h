@@ -284,6 +284,8 @@ public:
     int   muteButtonAtForTesting(juce::Point<float> point) const { return muteButtonAt(point); }
     juce::Rectangle<float> gearButtonBoundsForTesting(int trackIndex) const { return gearButtonBounds(trackIndex); }
     static constexpr float gearGlyphSizeForTesting() { return kGearGlyphSize; }
+    bool  isOnRulerForTesting(juce::Point<float> point) const { return isOnRuler(point); }
+    float rulerHeightForTesting() const { return geometry_.rulerHeight; }
     static constexpr float muteSizeForTesting() { return kMuteSize; }
     int   gearButtonAtForTesting(juce::Point<float> point) const { return gearButtonAt(point); }
     float gutterWidthForTesting() const { return geometry_.gutterWidth; }
@@ -301,6 +303,20 @@ private:
         return juce::Rectangle<float>(geometry_.gutterWidth - 2.0f * kMuteSize - 10.0f,
                                       top + (geometry_.laneHeight - kMuteSize) * 0.5f,
                                       kMuteSize, kMuteSize);
+    }
+
+    /** True for a point on the ruler strip, right of the gutter. The gutter's
+        share of that strip is not a scrub target: it sits above the track
+        names, not above any part of the timeline. */
+    bool isOnRuler(juce::Point<float> point) const
+    {
+        return point.y < geometry_.rulerHeight && point.x >= geometry_.gutterWidth;
+    }
+
+    void scrubTo(float x)
+    {
+        if (onSeek)
+            onSeek(geometry_.beatForX(x));
     }
 
     /** The track whose mute button contains @p point, or -1. */
@@ -386,6 +402,17 @@ private:
             return;
         }
 
+        // The ruler is a scrub bar: press anywhere along it and the playhead
+        // follows the mouse until release. Checked before the clip hit-test
+        // because the ruler sits above every lane, so nothing there can be a
+        // clip anyway — and checking first keeps the two from ever competing.
+        if (isOnRuler(e.position))
+        {
+            scrubbing_ = true;
+            scrubTo(e.position.x);
+            return;
+        }
+
         int trackIndex = -1, clipIndex = -1;
         if (findClipAt(e.position, trackIndex, clipIndex))
         {
@@ -415,6 +442,16 @@ private:
 
     void mouseDrag(const juce::MouseEvent& e) override
     {
+        if (scrubbing_)
+        {
+            // Deliberately not restricted to the ruler: once the press has
+            // started, dragging down into the lanes or off the edge should
+            // keep scrubbing rather than stopping the moment the mouse
+            // strays, which is how every transport scrub bar behaves.
+            scrubTo(e.position.x);
+            return;
+        }
+
         if (! dragging_)
             return;
 
@@ -435,6 +472,12 @@ private:
 
     void mouseUp(const juce::MouseEvent&) override
     {
+        if (scrubbing_)
+        {
+            scrubbing_ = false;
+            return;
+        }
+
         if (! dragging_)
             return;
 
@@ -460,6 +503,13 @@ private:
     {
         updateMuteHover(muteButtonAt(e.position));
         updateGearHover(gearButtonAt(e.position));
+
+        // Nothing else marks the ruler as draggable, so the cursor does.
+        if (isOnRuler(e.position))
+        {
+            setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+            return;
+        }
 
         // The resize cursor is the only hint the clip's edge is grabbable.
         int trackIndex = -1, clipIndex = -1;
@@ -602,6 +652,7 @@ private:
     std::unique_ptr<juce::Drawable> unmutedIcon_, mutedIcon_, gearIcon_;
     int hoveredMuteTrack_ = -1;
     int hoveredGearTrack_ = -1;
+    bool scrubbing_       = false;
 
     TimelineGeometry geometry_;
     model::Song      song_;

@@ -281,3 +281,57 @@ TEST_CASE("The gear is drawn smaller than the area it responds to", "[gui][arran
         REQUIRE(bounds.getHeight() == hit);
     }
 }
+
+TEST_CASE("The ruler is a scrub target, the gutter above it isn't", "[gui][arrangement]")
+{
+    // The strip over the gutter is above the track names, not above any part
+    // of the timeline, so there is no position for it to scrub to.
+    JuceFixture fixture;
+    auto view = viewWith(2);
+
+    const float rulerY = view->rulerHeightForTesting() * 0.5f;
+    const float gutter = view->gutterWidthForTesting();
+
+    REQUIRE(view->isOnRulerForTesting({ gutter + 10.0f, rulerY }));
+    REQUIRE(view->isOnRulerForTesting({ gutter + 400.0f, rulerY }));
+    REQUIRE_FALSE(view->isOnRulerForTesting({ gutter - 10.0f, rulerY })); // over the names
+    REQUIRE_FALSE(view->isOnRulerForTesting({ 4.0f, rulerY }));
+}
+
+TEST_CASE("The ruler ends where the lanes begin", "[gui][arrangement]")
+{
+    // Below the ruler a press belongs to the clips, not to scrubbing.
+    JuceFixture fixture;
+    auto view = viewWith(2);
+
+    const float x      = view->gutterWidthForTesting() + 50.0f;
+    const float height = view->rulerHeightForTesting();
+
+    REQUIRE(view->isOnRulerForTesting({ x, 0.0f }));
+    REQUIRE(view->isOnRulerForTesting({ x, height - 0.5f }));
+    REQUIRE_FALSE(view->isOnRulerForTesting({ x, height }));
+    REQUIRE_FALSE(view->isOnRulerForTesting({ x, height + 20.0f }));
+}
+
+TEST_CASE("Scrubbing across the ruler maps to increasing beats", "[gui][arrangement]")
+{
+    // What the drag actually reports. If this didn't rise with x, dragging
+    // would move the playhead somewhere unrelated to the mouse.
+    JuceFixture fixture;
+    auto view = viewWith(2);
+    view->setZoom(1.0f);
+
+    const float gutter = view->gutterWidthForTesting();
+
+    const double atStart  = view->beatForXForTesting(gutter);
+    const double atMiddle = view->beatForXForTesting(gutter + 100.0f);
+    const double atEnd    = view->beatForXForTesting(gutter + 400.0f);
+
+    REQUIRE(atStart == 0.0);
+    REQUIRE(atMiddle > atStart);
+    REQUIRE(atEnd > atMiddle);
+
+    // Dragging left of the timeline pins to the start rather than going
+    // negative — a playhead before bar 1 isn't a position.
+    REQUIRE(view->beatForXForTesting(gutter - 50.0f) == 0.0);
+}
