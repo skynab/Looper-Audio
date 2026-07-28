@@ -50,7 +50,8 @@ catch_discover_tests(looper_tests)
 if (LOOPER_BUILD_APP)
   add_executable(looper_gui_tests
     gui/FretboardPaneTests.cpp
-    gui/ArrangementViewTests.cpp)
+    gui/ArrangementViewTests.cpp
+    gui/IconsTests.cpp)
 
   target_include_directories(looper_gui_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 

@@ -290,9 +290,11 @@ private:
     CallbackComponent                  arrangeTab_;
     juce::Viewport                     arrangementViewport_;
     ArrangementView                    arrangementView_;
-    juce::TextButton                   zoomInButton_   { "+" };
-    juce::TextButton                   zoomOutButton_  { "-" };
-    juce::Label                        zoomLabel_; // what the +/- act on, in percent
+    // Timeline zoom: a magnifying glass labelling a slider, with an editable
+    // multiplier beside it. Replaced a pair of unlabelled +/- buttons.
+    juce::DrawableButton               zoomIcon_ { "Zoom", juce::DrawableButton::ImageFitted };
+    juce::Slider                       zoomSlider_;
+    juce::Slider                       zoomBox_;
     juce::TextButton                   addClipButton_  { "Add Clip" };
 
     CallbackComponent                  mixerView_;

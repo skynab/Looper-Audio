@@ -629,23 +629,50 @@ MainComponent::MainComponent()
     arrangementViewport_.setViewedComponent(&arrangementView_, false);
     arrangeTab_.addAndMakeVisible(arrangementViewport_);
 
-    // "+" and "-" alone say nothing about what they act on. The tooltips name
-    // it, the readout beside them shows the result, and they grey out at the
-    // ends of the range — a button that silently does nothing at the limit
-    // is indistinguishable from one that's broken.
-    zoomInButton_.setTooltip(withShortcut("Zoom in on the timeline", keys::zoomIn));
-    zoomOutButton_.setTooltip(withShortcut("Zoom out on the timeline", keys::zoomOut));
+    // A magnifying glass, a slider and an editable multiplier, in place of a
+    // pair of unlabelled +/- buttons. The icon says what the control is
+    // without spending width on the word; the slider makes the whole range
+    // reachable in one gesture instead of repeated clicks; the box shows the
+    // exact figure and takes one typed in.
+    // A DrawableButton in ImageFitted mode, as every other SVG in this app
+    // uses — it handles scaling the artwork into whatever bounds the layout
+    // gives it. Clicks are switched off: this labels the slider, it isn't a
+    // control.
+    {
+        auto magnifier = icons::fromSvg(icons::kMagnifier);
+        zoomIcon_.setImages(magnifier.get());
+        zoomIcon_.setInterceptsMouseClicks(false, false);
+        zoomIcon_.setColour(juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
+        arrangeTab_.addAndMakeVisible(zoomIcon_);
+    }
 
-    zoomInButton_.onClick  = [this] { setTimelineZoom(arrangementView_.zoom() * 1.25f); };
-    zoomOutButton_.onClick = [this] { setTimelineZoom(arrangementView_.zoom() / 1.25f); };
+    zoomSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
+    zoomSlider_.setRange(ArrangementView::kMinZoom, ArrangementView::kMaxZoom, 0.0);
+    // Zoom is multiplicative, so a linear track would put 1x a fifth of the
+    // way along and give three quarters of the travel to zooming in. Skewing
+    // about the midpoint puts 1x in the middle, where it belongs.
+    zoomSlider_.setSkewFactorFromMidPoint(1.0);
+    zoomSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    zoomSlider_.setTooltip(withShortcut("Timeline zoom", keys::zoomIn));
+    zoomSlider_.onValueChange = [this] { setTimelineZoom((float) zoomSlider_.getValue()); };
+    arrangeTab_.addAndMakeVisible(zoomSlider_);
 
-    zoomLabel_.setJustificationType(juce::Justification::centred);
-    zoomLabel_.setTooltip("Timeline zoom");
-    zoomLabel_.setInterceptsMouseClicks(false, false);
-    arrangeTab_.addAndMakeVisible(zoomLabel_);
+    zoomBox_.setSliderStyle(juce::Slider::LinearBar); // a text field with a drag, not a track
+    zoomBox_.setRange(ArrangementView::kMinZoom, ArrangementView::kMaxZoom, 0.0);
+    zoomBox_.setSkewFactorFromMidPoint(1.0);
+    zoomBox_.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 52, 20);
+    // "x1.00" rather than "1.00 x": JUCE's suffix appends, and a multiplier
+    // reads as a multiplier only with the x in front.
+    zoomBox_.textFromValueFunction = [](double value) { return "x" + juce::String(value, 2); };
+    zoomBox_.valueFromTextFunction = [](const juce::String& text)
+    {
+        return text.retainCharacters("0123456789.").getDoubleValue();
+    };
+    zoomBox_.setTooltip("Timeline zoom - type a multiplier, or drag");
+    zoomBox_.onValueChange = [this] { setTimelineZoom((float) zoomBox_.getValue()); };
+    arrangeTab_.addAndMakeVisible(zoomBox_);
     addClipButton_.onClick = [this] { addClipToSelectedTrack(); };
-    arrangeTab_.addAndMakeVisible(zoomInButton_);
-    arrangeTab_.addAndMakeVisible(zoomOutButton_);
+
     arrangeTab_.addAndMakeVisible(addClipButton_);
     arrangeTab_.onResized = [this] { layoutArrangeTab(); };
 
@@ -3738,12 +3765,14 @@ void MainComponent::setTimelineZoom(float zoom)
     updateZoomControls();
 }
 
+/** Mirrors the current zoom into both controls without either of them
+    reporting it straight back as a user edit — they set each other, and the
+    keyboard shortcuts set both. */
 void MainComponent::updateZoomControls()
 {
-    zoomInButton_.setEnabled(arrangementView_.canZoomIn());
-    zoomOutButton_.setEnabled(arrangementView_.canZoomOut());
-    zoomLabel_.setText(juce::String(juce::roundToInt(arrangementView_.zoom() * 100.0f)) + "%",
-                       juce::dontSendNotification);
+    const double zoom = arrangementView_.zoom();
+    zoomSlider_.setValue(zoom, juce::dontSendNotification);
+    zoomBox_.setValue(zoom, juce::dontSendNotification);
 }
 
 void MainComponent::layoutArrangeTab()
@@ -3751,11 +3780,12 @@ void MainComponent::layoutArrangeTab()
     auto area = arrangeTab_.getLocalBounds();
 
     auto toolbar = area.removeFromTop(28).reduced(4, 2);
-    zoomOutButton_.setBounds(toolbar.removeFromLeft(28));
-    toolbar.removeFromLeft(4);
-    zoomLabel_.setBounds(toolbar.removeFromLeft(48));
-    toolbar.removeFromLeft(4);
-    zoomInButton_.setBounds(toolbar.removeFromLeft(28));
+
+    zoomIcon_.setBounds(toolbar.removeFromLeft(24));
+    toolbar.removeFromLeft(2);
+    zoomSlider_.setBounds(toolbar.removeFromLeft(120));
+    toolbar.removeFromLeft(6);
+    zoomBox_.setBounds(toolbar.removeFromLeft(56));
     toolbar.removeFromLeft(12);
     addClipButton_.setBounds(toolbar.removeFromLeft(90));
 

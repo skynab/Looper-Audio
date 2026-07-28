@@ -17,6 +17,18 @@ inline std::unique_ptr<juce::Drawable> fromSvg(const char* svgText)
 
 // Two states each (Off = dim white, On = cyan accent), matching how they're
 // actually used in this app — a plain toggle, not a full hover/disabled set.
+/** Magnifying glass, for the timeline zoom. Decorative rather than a button:
+    it labels the slider next to it, which is why there is no On variant. */
+inline constexpr const char* kMagnifier =
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"31\" height=\"25\" viewBox=\"0 0 31 25\">"
+    "<path fill=\"#FFF\" fill-opacity=\".6\" fill-rule=\"evenodd\" d=\"M14,16 C16.7614237,16 19,13.7614237 19,11 "
+    "C19,8.23857625 16.7614237,6 14,6 C11.2385763,6 9,8.23857625 9,11 C9,13.7614237 11.2385763,16 14,16 Z "
+    "M14,5 C17.3137085,5 20,7.6862915 20,11 C20,12.2972304 19.5883209,13.4983081 18.8884831,14.4797126 "
+    "L22.8508769,18.4420163 C23.046139,18.6372785 23.046139,18.953861 22.8508769,19.1491231 "
+    "L22.1437701,19.8562299 C21.948508,20.051492 21.6319255,20.051492 21.4366633,19.8562299 "
+    "L17.4726289,15.8935267 C16.4925311,16.5902985 15.294111,17 14,17 C10.6862915,17 8,14.3137085 8,11 "
+    "C8,7.6862915 10.6862915,5 14,5 Z\"/></svg>";
+
 inline constexpr const char* kStarOn =
     "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"31\" height=\"25\" viewBox=\"0 0 31 25\">"
     "<polygon fill=\"#00EBFF\" fill-rule=\"evenodd\" points=\"15.5 4.25 17.49 9.852 22.833 9.852 18.473 13.142 "
