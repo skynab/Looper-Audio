@@ -58,6 +58,12 @@ namespace keys
     inline const juce::KeyPress quantize   = juce::KeyPress::createFromDescription("command + U");
     inline const juce::KeyPress deleteClip = juce::KeyPress::createFromDescription("command + backspace");
 
+    // Both spellings of "delete": on macOS the key labelled Delete is
+    // backspace, while forward-delete is a separate key that PC keyboards
+    // label Delete. Accepting both means the same keycap works everywhere.
+    inline const juce::KeyPress deleteTrack    = juce::KeyPress(juce::KeyPress::backspaceKey);
+    inline const juce::KeyPress deleteTrackAlt = juce::KeyPress(juce::KeyPress::deleteKey);
+
     // Transport. Space is unmodified because it's the control reached for
     // most, and every DAW spells it this way; a focused text field consumes
     // its own keys first, so it can't interrupt typing.
@@ -83,6 +89,7 @@ namespace keys
         newProject, open, save, saveAs, bounce,
         undo, redo, redoAlt,
         copyNotes, pasteNotes, copyClip, pasteClip, duplicate, quantize, deleteClip,
+        deleteTrack, deleteTrackAlt,
         playPause, toStart, toEnd, backOneBar, onOneBar, record, loop,
         zoomIn, zoomOut
     };
@@ -950,7 +957,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(26, "Rename Track...");
         // The last track isn't deletable: a song with none has no pane that
         // can do anything, and no obvious way back.
-        menu.addItem(27, "Delete Track", trackCount() > 1);
+        addItem(menu, 27, "Delete Track", keys::deleteTrack, trackCount() > 1);
         menu.addSeparator();
         addItem(menu, 20, "Quantize", keys::quantize);
         menu.addItem(21, "Swing - Light");
@@ -1887,17 +1894,32 @@ void MainComponent::deleteSelectedTrack()
 {
     const auto& song = history_.current();
     if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+    {
+        showError("No track selected");
         return;
+    }
 
     if (song.tracks.size() <= 1)
+    {
+        showError("The last track can't be deleted");
         return;
+    }
 
-    const int trackId = song.tracks[(size_t) selectedTrackIndex_].id;
-    const int removed = selectedTrackIndex_;
+    const auto& track   = song.tracks[(size_t) selectedTrackIndex_];
+    const int   trackId = track.id;
+    const int   removed = selectedTrackIndex_;
+
+    const auto name = track.name.empty() ? ("track " + juce::String(removed + 1))
+                                         : ("\"" + juce::String(track.name) + "\"");
 
     history_.edit("Delete track", [trackId](model::Song& s) { model::removeTrack(s, trackId); });
 
     selectTrackAndRefreshAll(juce::jmin(removed, trackCount() - 1));
+
+    // It's on an unmodified key now, so it can be hit by accident. Saying what
+    // went and that undo will bring it back is the difference between a
+    // recoverable slip and a mystery.
+    showStatus("Deleted " + name + " - undo to bring it back");
 }
 
 /** Renames the selected track. Track names are the only label distinguishing
@@ -2881,6 +2903,14 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     if (key == keys::duplicate)  { duplicateClip();    return true; }
     if (key == keys::quantize)   { quantizeNotes(0.0); return true; }
     if (key == keys::deleteClip) { deleteSelectedClip(); return true; }
+
+    // Unmodified, so a focused text field consumes it first and this can't
+    // interrupt typing.
+    if (key == keys::deleteTrack || key == keys::deleteTrackAlt)
+    {
+        deleteSelectedTrack();
+        return true;
+    }
 
     if (key == keys::zoomIn)  { setTimelineZoom(arrangementView_.zoom() * 1.25f); return true; }
     if (key == keys::zoomOut) { setTimelineZoom(arrangementView_.zoom() / 1.25f); return true; }
