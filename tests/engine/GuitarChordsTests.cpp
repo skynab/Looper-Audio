@@ -160,3 +160,135 @@ TEST_CASE("A strum never places a note before the bar it was asked for", "[engin
             REQUIRE(note.startBeats >= 0.0);
     }
 }
+
+TEST_CASE("A power chord on the low E is root, fifth and octave", "[engine][chords]")
+{
+    // 3rd fret of the low E is G. G5 is G, D, G.
+    const auto notes = GuitarChords::notesForRoot(MovableShape::Power, kStandard, 0, 3);
+    REQUIRE(notes == std::vector<int> { 43, 50, 55 });
+}
+
+TEST_CASE("A power chord stays a fifth across the G-B pair", "[engine][chords]")
+{
+    // Rooted on the G string, the familiar "two frets up on each of the next
+    // two strings" fingering is WRONG: G to B is a major third, not a fourth,
+    // so that shape gives a sixth and a minor seventh rather than a fifth and
+    // an octave. Solving each interval against the real tuning can't make
+    // that mistake.
+    const auto notes = GuitarChords::notesForRoot(MovableShape::Power, kStandard, 3, 5);
+    REQUIRE(notes.size() == 3);
+    REQUIRE(notes[1] - notes[0] == 7);  // a fifth, whatever the strings are tuned to
+    REQUIRE(notes[2] - notes[0] == 12); // an octave
+}
+
+TEST_CASE("A stacked shape keeps its intervals wherever it is rooted", "[engine][chords]")
+{
+    // The whole promise of solving against the tuning: the same click gives
+    // the same chord anywhere on the neck, on any string, in any tuning.
+    for (auto shape : { MovableShape::Power, MovableShape::Octave })
+    {
+        const auto wanted = intervalsForShape(shape);
+
+        for (int rootString = 0; rootString + (int) wanted.size() <= 6; ++rootString)
+        {
+            for (int fret = 0; fret <= 10; ++fret)
+            {
+                const auto notes = GuitarChords::notesForRoot(shape, kStandard, rootString, fret);
+                INFO("shape " << movableShapeName(shape) << " string " << rootString << " fret " << fret);
+                REQUIRE(notes.size() == wanted.size());
+
+                for (size_t i = 0; i < notes.size(); ++i)
+                    REQUIRE(notes[i] - notes[0] == wanted[i]);
+            }
+        }
+    }
+}
+
+TEST_CASE("Major and minor come out as barre chords, not stacks", "[engine][chords]")
+{
+    // An E-shape barre at the 3rd fret is G major: the same notes as the open
+    // E shape, every one of them three semitones up.
+    const auto open   = GuitarChords::notesForShape(kChordShapes[0], kStandard, 0); // "E"
+    const auto barred = GuitarChords::notesForRoot(MovableShape::Major, kStandard, 0, 3);
+
+    REQUIRE(barred.size() == open.size());
+    for (size_t i = 0; i < barred.size(); ++i)
+        REQUIRE(barred[i] == open[i] + 3);
+
+    // Rooted on the A string it's the A shape instead — five strings, not six.
+    const auto aShape = GuitarChords::notesForRoot(MovableShape::Major, kStandard, 1, 3);
+    REQUIRE(aShape.size() == 5);
+    REQUIRE(aShape.front() == kStandard[1] + 3); // rooted where it was clicked
+}
+
+TEST_CASE("A minor barre differs from the major by its third", "[engine][chords]")
+{
+    // The one note that distinguishes them; getting it wrong is a chord
+    // that's nearly right, which is harder to notice than one that isn't.
+    const auto major = GuitarChords::notesForRoot(MovableShape::Major, kStandard, 0, 5);
+    const auto minor = GuitarChords::notesForRoot(MovableShape::Minor, kStandard, 0, 5);
+
+    REQUIRE(major.size() == minor.size());
+
+    int differences = 0;
+    for (size_t i = 0; i < major.size(); ++i)
+        if (major[i] != minor[i])
+        {
+            ++differences;
+            REQUIRE(major[i] - minor[i] == 1); // flattened by a semitone
+        }
+
+    REQUIRE(differences == 1);
+}
+
+TEST_CASE("A power chord follows the tuning into drop D", "[engine][chords]")
+{
+    // Drop D lowers the sixth string a whole tone, so the same fret is a
+    // different chord — and the shape above it has to move with it.
+    constexpr int dropD[6] = { 38, 45, 50, 55, 59, 64 };
+
+    const auto standard = GuitarChords::notesForRoot(MovableShape::Power, kStandard, 0, 3);
+    const auto dropped  = GuitarChords::notesForRoot(MovableShape::Power, dropD, 0, 3);
+
+    REQUIRE(dropped[0] == standard[0] - 2); // the root moved down a tone
+    REQUIRE(dropped[1] - dropped[0] == 7);  // and it's still a power chord
+    REQUIRE(dropped[2] - dropped[0] == 12);
+}
+
+TEST_CASE("A shape rooted too high up the neck drops what won't fit", "[engine][chords]")
+{
+    // At the top fret the octave would need a fret past the end of the neck.
+    // Dropping it beats inventing a fret that doesn't exist.
+    const auto notes = GuitarChords::notesForRoot(MovableShape::Power, kStandard, 0, 22, 22);
+    REQUIRE(notes.size() < 3);
+    for (int note : notes)
+        REQUIRE(note <= kStandard[0] + 22 + 12);
+}
+
+TEST_CASE("A shape rooted on the top string still gives its root", "[engine][chords]")
+{
+    // There are no strings above it to carry the rest of the shape.
+    const auto notes = GuitarChords::notesForRoot(MovableShape::Power, kStandard, 5, 5);
+    REQUIRE(notes.size() == 1);
+    REQUIRE(notes[0] == kStandard[5] + 5);
+}
+
+TEST_CASE("Rooting off the neck produces nothing, not a guess", "[engine][chords]")
+{
+    REQUIRE(GuitarChords::notesForRoot(MovableShape::Power, kStandard, -1, 3).empty());
+    REQUIRE(GuitarChords::notesForRoot(MovableShape::Power, kStandard, 6, 3).empty());
+    REQUIRE(GuitarChords::notesForRoot(MovableShape::Power, kStandard, 0, -1).empty());
+    REQUIRE(GuitarChords::notesForRoot(MovableShape::Power, kStandard, 0, 99).empty());
+}
+
+TEST_CASE("A rooted chord is strummed like any other", "[engine][chords]")
+{
+    StrumSettings strum;
+    strum.spreadMs = 20.0;
+
+    const auto notes = GuitarChords::strumRootedChord(MovableShape::Power, kStandard, 0, 5,
+                                                      0.0, 1.0, 120.0, strum);
+    REQUIRE(notes.size() == 3);
+    for (size_t i = 1; i < notes.size(); ++i)
+        REQUIRE(notes[i].startBeats > notes[i - 1].startBeats);
+}

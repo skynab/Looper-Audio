@@ -1327,3 +1327,148 @@ stand-in until then.
 ---
 
 *Document owner: Anthony Lazzaro · Status: draft v1 · License: MIT (see `/LICENSE`).*
+
+---
+
+## 23. Guitar pedals
+
+The guitar synthesis in §21 produces a clean electric-guitar tone. Clean is
+the one sound almost no electric-guitar part actually uses: the instrument's
+voice is mostly what happens *after* the strings. Pedals are that.
+
+### Where they live: the existing chain, not a pedalboard
+
+§20 decided one effect chain per track rather than two, and pedals do not
+justify reopening it. A pedal is an insert effect on a track; the chain
+already runs insert effects in a user-ordered list with bypass, and ordering
+is the whole point of a pedalboard (drive into delay sounds nothing like
+delay into drive). So pedals are new `EffectKind` values in the chain that
+exists, not a parallel system with its own routing, ordering and UI.
+
+The one thing they add is that a pedal is only *sensible* on a guitar track,
+whereas a filter is sensible anywhere. That's a presentation concern — the
+chain's add-menu can group them — not a routing one.
+
+### What actually makes a distorted guitar sound right
+
+Three things, in descending order of how badly they hurt when missing:
+
+1. **Anti-aliasing.** Clipping generates harmonics without limit. Every one
+   above Nyquist folds back to a frequency that is not harmonically related
+   to anything being played, so it doesn't read as "bright" — it reads as
+   metallic, detuned grit that gets worse as you play higher. This is the
+   single biggest difference between a distortion that sounds like an amp and
+   one that sounds like a bit-crusher.
+
+2. **Speaker simulation.** A guitar speaker rolls off hard above ~5kHz. Real
+   distortion is full of energy up there, and without the cab it is heard as
+   fizz. A distorted signal through a cab sim sounds like a guitar; the same
+   signal without one sounds like a broken tweeter. This is why it ships in
+   stage 1 rather than "later" — drive without it would be judged as sounding
+   wrong, and the wrongness would be blamed on the drive.
+
+3. **Where the tone control sits.** A tone stack *before* clipping decides
+   which frequencies get distorted; *after*, it only shapes what came out.
+   Both are real pedal designs and they sound different. We do pre-emphasis
+   before and a tilt after, which is the arrangement most drive pedals use.
+
+### Low-level: antiderivative anti-aliasing
+
+Oversampling is the usual answer to (1) and costs a resampler, its filters,
+and 4x the work in the hot path. First-order ADAA buys a *measured* 4.5-7dB
+of alias reduction for a handful of flops and no buffers at all — which also
+means nothing to allocate, so it stays RT-safe by construction.
+
+4.5-7dB is worth having and is not a solved problem: heavy drive high on the
+neck will still fold audibly. Second-order ADAA or 2x oversampling on top is
+the next step, and both fit behind the same interface. The figure is quoted
+here because it was measured rather than assumed — an earlier draft of this
+section claimed ADAA got "most of the benefit" of oversampling, and the
+measurement did not support it.
+
+For a memoryless shaper `f`, with antiderivative `F`:
+
+    y[n] = (F(x[n]) - F(x[n-1])) / (x[n] - x[n-1])
+
+which is the average of `f` over the segment the signal traversed this
+sample, rather than a point sample of it. That average is what suppresses the
+aliases.
+
+Two details that are easy to get wrong and are therefore pinned by tests:
+
+- As `x[n] -> x[n-1]` the quotient is 0/0. Below a threshold it must fall
+  back to `f((x[n] + x[n-1]) / 2)`, or a sustained note — where consecutive
+  samples are nearly equal — turns into noise, which is precisely backwards.
+- For `f = tanh`, `F = log(cosh(x))`, and `cosh` overflows to infinity around
+  |x| = 710. The stable identity `log(cosh(x)) = |x| + log1p(exp(-2|x|)) -
+  log(2)` has no overflow anywhere. A drive pedal is exactly where large
+  input values show up.
+
+### Verification
+
+The claim "this reduces aliasing" is measurable without a listener, so it
+gets measured. Drive a sine at 5kHz at 48kHz: its 5th harmonic at 25kHz is
+above Nyquist and folds back to 23kHz, which is not a harmonic of 5kHz and so
+lands in a bin nothing else occupies. A DFT at that one bin gives an aliasing
+figure directly, for naive shaping and for ADAA. The test asserts the
+reduction, and fails if ADAA is replaced by the naive shaper.
+
+The cab sim is asserted by magnitude response: unity-ish at 1kHz, strongly
+down at 10kHz. The fallback path is asserted by feeding a constant and a very
+slow ramp, where the quotient is degenerate at every sample.
+
+### Build order
+
+1. DSP core, JUCE-free and headless: `Waveshaper` (ADAA tanh and hard clip),
+   `CabinetSim`. Tests as above.
+2. `DriveEffect` composing them with pre-emphasis and a post tilt, plus the
+   model/serialization/engine wiring as a new `EffectKind::Drive`.
+3. The pedal's controls in EffectChainPanel.
+4. Further pedals on the same seam: compressor, tremolo, chorus. Each is a
+   new kind, and none of them need new architecture.
+
+---
+
+## 24. Chord columns on the fretboard
+
+Stamping chords currently means picking from eight fixed open shapes. That is
+how a beginner's chord chart works, not how a guitar works: a guitarist plays
+a shape *at a fret*, and the same hand position slid up the neck is a
+different chord. The fretboard pane already draws the neck, so the neck should
+be the control.
+
+### The gesture
+
+Clicking a fret plays the note there — that stays. With a chord mode
+selected, clicking a fret instead plays the chord **rooted on that string at
+that fret**: click the 3rd fret of the low E in Power mode and you get G5,
+in Major mode a G barre chord.
+
+Power chords earn their own mode rather than being one more shape, because
+they're most of rock rhythm guitar and because their shape is only two or
+three strings wide, which makes the click target unambiguous.
+
+### Shapes are derived from the tuning, not hardcoded
+
+The obvious implementation is to hardcode the familiar fingering: root, then
+two frets up on each of the next two strings. That is only correct because
+those strings happen to be a fourth apart, and it silently produces a wrong
+chord as soon as it crosses the G–B pair (a major third) or the user
+retunes — and §21 shipped drop tunings, so retuning is expected.
+
+So a shape is a set of *intervals from the root* (power = 0, 7, 12; major =
+0, 4, 7, 12; minor = 0, 3, 7, 12), and the fret for each is solved against
+the actual tuning of the string it lands on. That is correct in every tuning
+by construction, including drop D, and it is exactly what a player does when
+they work out a shape in a new tuning.
+
+A note is dropped if its fret falls outside the neck, so a shape rooted high
+up doesn't invent frets that don't exist.
+
+### Verification
+
+Headless, in the existing GuitarChords tests: a power chord on the low E at
+fret 3 is G, D, G. The same shape crossing the G–B pair must still be a fifth
+and an octave — the case a hardcoded fingering gets wrong. In drop D, a power
+chord at the same fret must move with the tuning. Fret bounds are asserted at
+both ends of the neck.
