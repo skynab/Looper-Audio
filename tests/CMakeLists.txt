@@ -16,6 +16,7 @@ add_executable(looper_tests
   engine/GuitarStringTests.cpp
   engine/GuitarChordsTests.cpp
   engine/WaveshaperTests.cpp
+  engine/PedalDspTests.cpp
   engine/DelayLineTests.cpp
   engine/StateVariableFilterTests.cpp
   engine/ReverbTests.cpp
