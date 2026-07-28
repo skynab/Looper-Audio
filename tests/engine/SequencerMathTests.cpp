@@ -75,3 +75,36 @@ TEST_CASE("A nonsense bar length falls back rather than dividing by zero", "[eng
     REQUIRE(looper::engine::loopEndForContent(10.0, 0.0) == 12.0); // treated as 4/4
     REQUIRE(std::isfinite(looper::engine::loopEndForContent(10.0, -1.0)));
 }
+
+TEST_CASE("Play at the end of the arrangement starts it again", "[engine][transport]")
+{
+    // Otherwise it resumes into silence and the end-of-song check stops it
+    // again within a frame, which reads as a play button that does nothing.
+    REQUIRE(looper::engine::shouldRestartFromStart(16.0, 16.0));
+    REQUIRE(looper::engine::shouldRestartFromStart(20.0, 16.0)); // stopped a little past it
+}
+
+TEST_CASE("Play from the middle carries on from there", "[engine][transport]")
+{
+    REQUIRE_FALSE(looper::engine::shouldRestartFromStart(0.0, 16.0));
+    REQUIRE_FALSE(looper::engine::shouldRestartFromStart(8.0, 16.0));
+    REQUIRE_FALSE(looper::engine::shouldRestartFromStart(15.0, 16.0));
+}
+
+TEST_CASE("Landing a hair short of the end still counts as the end", "[engine][transport]")
+{
+    // The playhead is reconstructed from a sample count, so it can land just
+    // either side. A hair short must not resume-and-immediately-stop.
+    REQUIRE(looper::engine::shouldRestartFromStart(16.0 - 1.0e-9, 16.0));
+    REQUIRE(looper::engine::shouldRestartFromStart(16.0 - 1.0e-4, 16.0));
+
+    // But the margin stays far below anything audible — half a millisecond at
+    // 120bpm — so a real position just before the end is still just before it.
+    REQUIRE_FALSE(looper::engine::shouldRestartFromStart(15.99, 16.0));
+}
+
+TEST_CASE("With nothing arranged there is no end to restart from", "[engine][transport]")
+{
+    REQUIRE_FALSE(looper::engine::shouldRestartFromStart(0.0, 0.0));
+    REQUIRE_FALSE(looper::engine::shouldRestartFromStart(50.0, 0.0));
+}

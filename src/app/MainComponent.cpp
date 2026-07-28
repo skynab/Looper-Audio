@@ -173,6 +173,15 @@ MainComponent::MainComponent()
         }
         else
         {
+            // At the end of the arrangement, play starts it again rather than
+            // resuming into silence and stopping immediately — which is what
+            // it would otherwise do, and would read as a dead button.
+            if (engine::shouldRestartFromStart(
+                    uiTempoMap_.ppqFromSamples(engine_.playheadSamples()), songEndBeats()))
+            {
+                seekToBeat(0.0);
+            }
+
             post(Cmd::SetPlaying, 1.0);
         }
     };

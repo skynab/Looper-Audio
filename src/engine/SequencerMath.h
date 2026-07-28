@@ -20,6 +20,28 @@ inline double loopEndForContent(double contentEndBeats, double beatsPerBar) noex
     return (bars < 1.0 ? 1.0 : bars) * bar;
 }
 
+/** True when pressing play from @p playheadBeats should rewind to the start
+    first, because the transport is sitting at the end of what was arranged.
+
+    A play button at the end of a song that resumes into silence and stops
+    again immediately reads as a button that does nothing — the same thing a
+    media player avoids by restarting.
+
+    The tolerance matters. Playback is stopped at the end by a check on the UI
+    timer, and the beat position is reconstructed from a sample count, so the
+    stored playhead can land a hair either side of the end. Without a margin,
+    landing a hair short means play resumes, hits the end within a millisecond
+    and stops again. A thousandth of a beat is half a millisecond at 120bpm —
+    far below anything audible, and far above the rounding.
+
+    @p contentEndBeats of zero means nothing is arranged, so there is no end
+    to be at and no reason to rewind. */
+inline bool shouldRestartFromStart(double playheadBeats, double contentEndBeats) noexcept
+{
+    constexpr double tolerance = 1.0e-3;
+    return contentEndBeats > 0.0 && playheadBeats >= contentEndBeats - tolerance;
+}
+
 /** Positive floating-point modulo: result is always in [0, length). */
 inline double wrapPositive(double x, double length) noexcept
 {
