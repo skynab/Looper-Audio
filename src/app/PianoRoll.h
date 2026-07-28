@@ -73,7 +73,50 @@ public:
     // things that can be silently wrong here — drawn off the grid, or not
     // following the time signature.
     float playheadXForTesting(float totalWidth) const { return playheadX(totalWidth); }
+    float rowHeightForTesting(float totalHeight) const { return geometry_.rowHeight(totalHeight); }
     double beatsPerBarForTesting() const { return beatsPerBar_; }
+
+    // The pitch window a fresh roll opens with, and what x1 zoom means.
+    static constexpr int kDefaultLowPitch = 48; // C3
+    static constexpr int kDefaultNumRows  = 24; // two octaves
+
+    /** Pitch zoom as a multiplier, so it reads the way the timeline's does:
+        x1 is the default two-octave window, x2 shows half as many rows twice
+        as tall, x0.5 twice as many.
+
+        Expressed as a multiplier rather than as a row count because a row
+        count is an implementation detail — "24 rows" says nothing, while
+        "x1" is the same thing the tracks view means by it. The row count is
+        what's actually stored, so a zoom lands on the nearest achievable
+        window and pitchZoom() reports where it landed rather than what was
+        asked for. */
+    static constexpr float kMinPitchZoom = (float) kDefaultNumRows / (float) PianoRollGeometry::kMaxRows;
+    static constexpr float kMaxPitchZoom = (float) kDefaultNumRows / (float) PianoRollGeometry::kMinRows;
+
+    void setPitchZoom(float zoom)
+    {
+        const float clamped = juce::jlimit(kMinPitchZoom, kMaxPitchZoom, zoom);
+        const int   rows    = juce::roundToInt((float) kDefaultNumRows / clamped);
+
+        if (rows == geometry_.numRows)
+            return;
+
+        geometry_.setPitchRange(geometry_.lowPitch, rows);
+        hoverRow_ = -1;
+        repaint();
+    }
+
+    float pitchZoom() const noexcept
+    {
+        return (float) kDefaultNumRows / (float) juce::jmax(1, geometry_.numRows);
+    }
+
+    bool canPitchZoomIn() const noexcept  { return geometry_.numRows > PianoRollGeometry::kMinRows; }
+    bool canPitchZoomOut() const noexcept { return geometry_.numRows < PianoRollGeometry::kMaxRows; }
+
+    /** Fired when the pitch window changes from inside — the wheel gesture —
+        so an owner showing the zoom elsewhere can follow it. */
+    std::function<void()> onPitchZoomChanged;
 
     /** How many beats make a bar, for the grid's heavy lines. */
     void setBeatsPerBar(double beats)
@@ -323,13 +366,20 @@ public:
             return;
 
         const bool up = wheel.deltaY > 0.0f;
-        if (e.mods.isCommandDown() || e.mods.isCtrlDown())
+        const bool zooming = e.mods.isCommandDown() || e.mods.isCtrlDown();
+        if (zooming)
             geometry_.zoomBy(up ? -2 : 2); // fewer rows = taller rows = zoomed in
         else
             geometry_.scrollPitchBy(up ? 1 : -1);
 
         hoverRow_ = -1;
         repaint();
+
+        // The wheel and the zoom control set the same thing, so whichever is
+        // used the other has to follow — otherwise the readout drifts from
+        // what's on screen.
+        if (zooming && onPitchZoomChanged)
+            onPitchZoomChanged();
     }
 
     void paint(juce::Graphics& g) override
@@ -463,8 +513,6 @@ private:
 
     enum class DragMode { None, ResizeNote, Velocity };
 
-    static constexpr int   kDefaultLowPitch    = 48; // C3
-    static constexpr int   kDefaultNumRows     = 24; // two octaves
     static constexpr int   kMaxSteps           = 64; // 4 bars of 16ths
     static constexpr float kVelocityLaneHeight = 46.0f;
     static constexpr float kResizeEdgePixels   = 6.0f;

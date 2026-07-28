@@ -678,48 +678,24 @@ MainComponent::MainComponent()
     arrangementViewport_.setViewedComponent(&arrangementView_, false);
     arrangeTab_.addAndMakeVisible(arrangementViewport_);
 
-    // A magnifying glass, a slider and an editable multiplier, in place of a
-    // pair of unlabelled +/- buttons. The icon says what the control is
-    // without spending width on the word; the slider makes the whole range
-    // reachable in one gesture instead of repeated clicks; the box shows the
-    // exact figure and takes one typed in.
-    // A DrawableButton in ImageFitted mode, as every other SVG in this app
-    // uses — it handles scaling the artwork into whatever bounds the layout
-    // gives it. Clicks are switched off: this labels the slider, it isn't a
-    // control.
-    {
-        auto magnifier = icons::fromSvg(icons::kMagnifier);
-        zoomIcon_.setImages(magnifier.get());
-        zoomIcon_.setInterceptsMouseClicks(false, false);
-        zoomIcon_.setColour(juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
-        arrangeTab_.addAndMakeVisible(zoomIcon_);
-    }
+    // A magnifying glass, a slider and an editable multiplier. The icon says
+    // what the control is without spending width on the word; the slider
+    // makes the whole range reachable in one gesture; the box shows the exact
+    // figure and takes one typed in. Both panes get the same control from one
+    // definition — two copies of this would be two things to keep in step.
+    setUpZoomControls(arrangeTab_, zoomIcon_, zoomSlider_, zoomBox_,
+                      ArrangementView::kMinZoom, ArrangementView::kMaxZoom,
+                      withShortcut("Timeline zoom", keys::zoomIn),
+                      [this](float zoom) { setTimelineZoom(zoom); });
 
-    zoomSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
-    zoomSlider_.setRange(ArrangementView::kMinZoom, ArrangementView::kMaxZoom, 0.0);
-    // Zoom is multiplicative, so a linear track would put 1x a fifth of the
-    // way along and give three quarters of the travel to zooming in. Skewing
-    // about the midpoint puts 1x in the middle, where it belongs.
-    zoomSlider_.setSkewFactorFromMidPoint(1.0);
-    zoomSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-    zoomSlider_.setTooltip(withShortcut("Timeline zoom", keys::zoomIn));
-    zoomSlider_.onValueChange = [this] { setTimelineZoom((float) zoomSlider_.getValue()); };
-    arrangeTab_.addAndMakeVisible(zoomSlider_);
+    setUpZoomControls(editTab_, keysZoomIcon_, keysZoomSlider_, keysZoomBox_,
+                      PianoRoll::kMinPitchZoom, PianoRoll::kMaxPitchZoom,
+                      "Pitch zoom - how many notes the grid shows",
+                      [this](float zoom) { setKeysZoom(zoom); });
 
-    zoomBox_.setSliderStyle(juce::Slider::LinearBar); // a text field with a drag, not a track
-    zoomBox_.setRange(ArrangementView::kMinZoom, ArrangementView::kMaxZoom, 0.0);
-    zoomBox_.setSkewFactorFromMidPoint(1.0);
-    zoomBox_.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 52, 20);
-    // "x1.00" rather than "1.00 x": JUCE's suffix appends, and a multiplier
-    // reads as a multiplier only with the x in front.
-    zoomBox_.textFromValueFunction = [](double value) { return "x" + juce::String(value, 2); };
-    zoomBox_.valueFromTextFunction = [](const juce::String& text)
-    {
-        return text.retainCharacters("0123456789.").getDoubleValue();
-    };
-    zoomBox_.setTooltip("Timeline zoom - type a multiplier, or drag");
-    zoomBox_.onValueChange = [this] { setTimelineZoom((float) zoomBox_.getValue()); };
-    arrangeTab_.addAndMakeVisible(zoomBox_);
+    // The wheel zooms the roll too, so the control follows it rather than
+    // drifting from what's on screen.
+    pianoRoll_.onPitchZoomChanged = [this] { updateKeysZoomControls(); };
     addClipButton_.onClick = [this] { addClipToSelectedTrack(); };
 
     arrangeTab_.addAndMakeVisible(addClipButton_);
@@ -912,7 +888,8 @@ MainComponent::MainComponent()
     logAudioDeviceStatus();
 
     addChildComponent(status_);
-    updateZoomControls(); // the readout must say something before the first click
+    updateZoomControls();     // the readouts must say something before the first click
+    updateKeysZoomControls();
 
     // The document the app opens with counts as saved, so an untouched session
     // doesn't prompt on quit. This has to come *after* all the control setup
@@ -4000,6 +3977,70 @@ void MainComponent::saveDockLayout()
     settings_.saveIfNeeded();
 }
 
+/** Builds one of the zoom controls: icon, slider and editable multiplier.
+
+    Shared by the tracks and keys panes. They zoom different axes — time in
+    one, pitch in the other — but the control is the same thing and reads the
+    same way, so it is built in one place. */
+void MainComponent::setUpZoomControls(juce::Component& parent, juce::DrawableButton& icon,
+                                      juce::Slider& slider, juce::Slider& box,
+                                      double minZoom, double maxZoom,
+                                      const juce::String& tooltip,
+                                      std::function<void(float)> onZoom)
+{
+    // A DrawableButton in ImageFitted mode, as every other SVG in this app
+    // uses. Clicks are switched off: this labels the slider, it isn't a
+    // control.
+    auto magnifier = icons::fromSvg(icons::kMagnifier);
+    icon.setImages(magnifier.get());
+    icon.setInterceptsMouseClicks(false, false);
+    icon.setColour(juce::DrawableButton::backgroundColourId, juce::Colours::transparentBlack);
+    parent.addAndMakeVisible(icon);
+
+    slider.setSliderStyle(juce::Slider::LinearHorizontal);
+    slider.setRange(minZoom, maxZoom, 0.0);
+    // Zoom is multiplicative, so a linear track would put x1 a fifth of the
+    // way along and give most of the travel to zooming in. Skewing about the
+    // midpoint puts x1 in the middle, where it belongs.
+    slider.setSkewFactorFromMidPoint(1.0);
+    slider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    slider.setTooltip(tooltip);
+    slider.onValueChange = [&slider, onZoom] { onZoom((float) slider.getValue()); };
+    parent.addAndMakeVisible(slider);
+
+    box.setSliderStyle(juce::Slider::LinearBar); // a text field with a drag, not a track
+    box.setRange(minZoom, maxZoom, 0.0);
+    box.setSkewFactorFromMidPoint(1.0);
+    box.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 52, 20);
+    // "x1.00" rather than "1.00 x": JUCE's suffix appends, and a multiplier
+    // reads as a multiplier only with the x in front.
+    box.textFromValueFunction = [](double value) { return "x" + juce::String(value, 2); };
+    box.valueFromTextFunction = [](const juce::String& text)
+    {
+        return text.retainCharacters("0123456789.").getDoubleValue();
+    };
+    box.setTooltip(tooltip + " - type a multiplier, or drag");
+    box.onValueChange = [&box, onZoom] { onZoom((float) box.getValue()); };
+    parent.addAndMakeVisible(box);
+}
+
+/** Applies a new pitch zoom to the keys pane and keeps its controls
+    describing it. The roll stores a row count, so the zoom lands on the
+    nearest achievable window and the controls are set from where it landed
+    rather than from what was asked for. */
+void MainComponent::setKeysZoom(float zoom)
+{
+    pianoRoll_.setPitchZoom(zoom);
+    updateKeysZoomControls();
+}
+
+void MainComponent::updateKeysZoomControls()
+{
+    const double zoom = pianoRoll_.pitchZoom();
+    keysZoomSlider_.setValue(zoom, juce::dontSendNotification);
+    keysZoomBox_.setValue(zoom, juce::dontSendNotification);
+}
+
 /** Applies a new timeline zoom and keeps the controls describing it. */
 void MainComponent::setTimelineZoom(float zoom)
 {
@@ -4037,9 +4078,17 @@ void MainComponent::layoutArrangeTab()
 void MainComponent::layoutEditTab()
 {
     auto area   = editTab_.getLocalBounds();
-    auto header = area.removeFromTop(22);
+    auto header = area.removeFromTop(24);
+
     barsBox_.setBounds(header.removeFromRight(56).reduced(2, 0));
     barsLabel_.setBounds(header.removeFromRight(34));
+
+    header.removeFromRight(10);
+    keysZoomBox_.setBounds(header.removeFromRight(56).reduced(0, 2));
+    header.removeFromRight(6);
+    keysZoomSlider_.setBounds(header.removeFromRight(110).reduced(0, 1));
+    keysZoomIcon_.setBounds(header.removeFromRight(24).reduced(0, 1));
+
     editingLabel_.setBounds(header.reduced(6, 0));
     pianoRoll_.setBounds(area);
 }

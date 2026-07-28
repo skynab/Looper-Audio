@@ -191,6 +191,13 @@ private:
     void                   saveDockLayout();
     void                   layoutMixerView();
     void                   layoutMasterPanel();
+    void                   setUpZoomControls(juce::Component& parent, juce::DrawableButton& icon,
+                                             juce::Slider& slider, juce::Slider& box,
+                                             double minZoom, double maxZoom,
+                                             const juce::String& tooltip,
+                                             std::function<void(float)> onZoom);
+    void                   setKeysZoom(float zoom);
+    void                   updateKeysZoomControls();
     void                   setTimelineZoom(float zoom);
     void                   updateZoomControls();
     void                   layoutArrangeTab();
@@ -303,6 +310,11 @@ private:
     juce::DrawableButton               zoomIcon_ { "Zoom", juce::DrawableButton::ImageFitted };
     juce::Slider                       zoomSlider_;
     juce::Slider                       zoomBox_;
+
+    // The same control for the keys pane, zooming the pitch axis.
+    juce::DrawableButton               keysZoomIcon_ { "Zoom", juce::DrawableButton::ImageFitted };
+    juce::Slider                       keysZoomSlider_;
+    juce::Slider                       keysZoomBox_;
     juce::TextButton                   addClipButton_  { "Add Clip" };
 
     CallbackComponent                  mixerView_;

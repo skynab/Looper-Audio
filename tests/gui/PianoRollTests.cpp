@@ -83,3 +83,70 @@ TEST_CASE("The grid's bar length follows the time signature", "[gui][pianoroll]"
     roll.setBeatsPerBar(0.0);
     REQUIRE(roll.beatsPerBarForTesting() == 4.0);
 }
+
+TEST_CASE("Pitch zoom reads as a multiplier, x1 being the default window", "[gui][pianoroll]")
+{
+    // Row counts are an implementation detail; "x1" is the same thing the
+    // tracks view means by it, which is the point of matching the control.
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    REQUIRE(roll.pitchZoom() == 1.0f);
+
+    roll.setPitchZoom(2.0f);
+    REQUIRE(roll.pitchZoom() == 2.0f); // half as many rows, twice as tall
+
+    roll.setPitchZoom(1.0f);
+    REQUIRE(roll.pitchZoom() == 1.0f);
+}
+
+TEST_CASE("Pitch zoom stays inside the range the grid supports", "[gui][pianoroll]")
+{
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    roll.setPitchZoom(1000.0f);
+    REQUIRE(roll.pitchZoom() <= PianoRoll::kMaxPitchZoom);
+    REQUIRE_FALSE(roll.canPitchZoomIn());
+
+    roll.setPitchZoom(0.0f);
+    REQUIRE(roll.pitchZoom() >= PianoRoll::kMinPitchZoom);
+    REQUIRE_FALSE(roll.canPitchZoomOut());
+
+    roll.setPitchZoom(1.0f);
+    REQUIRE(roll.canPitchZoomIn());
+    REQUIRE(roll.canPitchZoomOut());
+}
+
+TEST_CASE("Zooming in shows fewer notes, zooming out shows more", "[gui][pianoroll]")
+{
+    // The direction has to match the word: without this the control could be
+    // wired backwards and every other assertion here would still hold.
+    JuceFixture fixture;
+    PianoRoll roll;
+    roll.setSize(800, 400);
+
+    roll.setPitchZoom(1.0f);
+    const float rowAtOne = roll.rowHeightForTesting(400.0f);
+
+    roll.setPitchZoom(2.0f);
+    REQUIRE(roll.rowHeightForTesting(400.0f) > rowAtOne); // zoomed in: taller rows
+
+    roll.setPitchZoom(0.5f);
+    REQUIRE(roll.rowHeightForTesting(400.0f) < rowAtOne); // zoomed out: more of them
+}
+
+TEST_CASE("A zoom lands on a window the grid can actually show", "[gui][pianoroll]")
+{
+    // Rows are whole, so an arbitrary multiplier snaps. pitchZoom must report
+    // where it landed rather than what was asked for, or the readout would
+    // disagree with the grid.
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    roll.setPitchZoom(1.37f);
+    const float landed = roll.pitchZoom();
+
+    roll.setPitchZoom(landed);
+    REQUIRE(roll.pitchZoom() == landed); // setting what it reports is a no-op
+}
