@@ -22,6 +22,7 @@
 #include "PianoRoll.h"
 #include "PluginEditorWindow.h"
 #include "SessionView.h"
+#include "TrackColours.h"
 #include "StatusBanner.h"
 #include "SynthEditor.h"
 
@@ -172,6 +173,9 @@ private:
     void                   deleteSelectedClip();
     void                   deleteSelectedTrack();
     void                   renameSelectedTrack();
+    void                   renameTrackAt(int trackIndex);
+    void                   showTrackSettingsMenu(int trackIndex);
+    void                   setTrackColour(int trackIndex, unsigned int argb);
     void                   quantizeNotes(double swingAmount);
     void                   setPatternBars(int bars);
     void                   updateBarsControl();

@@ -60,6 +60,11 @@ struct Track
     bool              muted      = false;
     bool              solo       = false;
     float             sendLevel  = 0.0f; // 0..1, pre-fader send to the shared send bus
+
+    // ARGB, or 0 for the default lane colour. Stored as the value rather than
+    // as an index into the palette so extending or reordering that palette
+    // can't silently recolour existing projects.
+    unsigned int      colour     = 0;
     std::vector<Clip> clips;
 
     // The session grid's column for this track, indexed by scene. Kept the

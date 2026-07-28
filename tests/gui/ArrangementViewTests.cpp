@@ -3,6 +3,10 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <app/ArrangementView.h>
+#include <app/TrackColours.h>
+
+#include <algorithm>
+#include <string>
 
 using namespace looper;
 
@@ -161,4 +165,94 @@ TEST_CASE("A click in the gutter but off a button is not a mute", "[gui][arrange
     // Over the track name, well left of the button.
     const float laneY = view->muteButtonBoundsForTesting(0).getCentreY();
     REQUIRE(view->muteButtonAtForTesting({ 10.0f, laneY }) == -1);
+}
+
+TEST_CASE("The gear sits beside the mute without overlapping it", "[gui][arrangement]")
+{
+    // mouseDown checks mute first, so any overlap makes the gear unreachable
+    // in exactly that region — a button that works everywhere except where
+    // it's drawn.
+    JuceFixture fixture;
+    auto view = viewWith(4);
+
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto mute = view->muteButtonBoundsForTesting(i);
+        const auto gear = view->gearButtonBoundsForTesting(i);
+
+        INFO("track " << i << " mute " << mute.toString() << " gear " << gear.toString());
+        REQUIRE_FALSE(mute.intersects(gear));
+        REQUIRE(gear.getRight() <= view->gutterWidthForTesting());
+        REQUIRE(gear.getWidth() > 0.0f);
+    }
+}
+
+TEST_CASE("A click on the gear reports that track, and mute doesn't claim it", "[gui][arrangement]")
+{
+    JuceFixture fixture;
+    auto view = viewWith(4);
+
+    for (int i = 0; i < 4; ++i)
+    {
+        const auto centre = view->gearButtonBoundsForTesting(i).getCentre();
+        INFO("track " << i);
+        REQUIRE(view->gearButtonAtForTesting(centre) == i);
+        REQUIRE(view->muteButtonAtForTesting(centre) == -1); // checked first, must not win here
+    }
+}
+
+TEST_CASE("The gear claims nothing outside itself", "[gui][arrangement]")
+{
+    JuceFixture fixture;
+    auto view = viewWith(3);
+
+    const float laneY = view->gearButtonBoundsForTesting(1).getCentreY();
+    REQUIRE(view->gearButtonAtForTesting({ 10.0f, laneY }) == -1);                                  // the name
+    REQUIRE(view->gearButtonAtForTesting({ view->gutterWidthForTesting() + 40.0f, laneY }) == -1);   // the timeline
+    REQUIRE(view->gearButtonAtForTesting(view->muteButtonBoundsForTesting(1).getCentre()) == -1);
+}
+
+TEST_CASE("Every track type has a tag, and they are distinct", "[gui][arrangement]")
+{
+    // Renaming a track is only free if something else still says what kind it
+    // is. Two types sharing a tag would defeat that for one of them.
+    const model::TrackType types[] = { model::TrackType::Instrument, model::TrackType::Audio,
+                                       model::TrackType::Drum, model::TrackType::Guitar };
+
+    std::vector<std::string> tags;
+    for (auto type : types)
+    {
+        const juce::String tag = trackTypeTag(type);
+        INFO("type " << (int) type << " tag " << tag);
+        REQUIRE(tag.isNotEmpty());
+        REQUIRE(tag.length() <= 4); // it has to fit the badge
+        tags.push_back(tag.toStdString());
+    }
+
+    std::sort(tags.begin(), tags.end());
+    REQUIRE(std::adjacent_find(tags.begin(), tags.end()) == tags.end());
+}
+
+TEST_CASE("The default colour leaves a track looking as it always did", "[gui][arrangement]")
+{
+    // Colour 0 means "untouched", and an existing project must not change
+    // appearance because the feature was added.
+    REQUIRE(trackColour(0) == juce::Colour(kDefaultTrackColour));
+    REQUIRE(trackColour(0xff36618e) == juce::Colour(0xff36618e));
+}
+
+TEST_CASE("The palette offers distinguishable colours", "[gui][arrangement]")
+{
+    // The point of a fixed palette rather than a picker is telling parts
+    // apart; two entries that look alike would waste a slot.
+    for (int i = 1; i < kNumTrackColours; ++i)
+    {
+        for (int j = i + 1; j < kNumTrackColours; ++j)
+        {
+            const auto a = juce::Colour(kTrackColours[i].argb);
+            const auto b = juce::Colour(kTrackColours[j].argb);
+            INFO(kTrackColours[i].name << " vs " << kTrackColours[j].name);
+            REQUIRE(std::abs(a.getHue() - b.getHue()) > 0.03f);
+        }
+    }
 }

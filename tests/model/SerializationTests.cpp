@@ -66,6 +66,8 @@ static Song makeSampleSong()
 
     // Set solo/mute by index (not the returned reference — a later addTrack can
     // reallocate the vector and invalidate it).
+    s.tracks[0].colour    = 0xff36618e; // a track colour, so the round trip has to carry it
+    s.tracks[2].colour    = 0xffb0413e;
     s.tracks[0].gainDb    = -4.5f;
     s.tracks[0].solo      = true;
     s.tracks[0].sendLevel = 0.65f;

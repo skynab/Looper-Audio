@@ -20,6 +20,10 @@ namespace looper
     a pane can never collide with one. */
 static constexpr int kFirstPanelMenuId = 100;
 
+/** Colour entries in the per-track gear menu, clear of that menu's own
+    fixed items. */
+static constexpr int kFirstColourMenuId = 200;
+
 using Cmd = engine::EngineCommand::Type;
 
 /**
@@ -697,6 +701,11 @@ MainComponent::MainComponent()
         const auto name = juce::String(tracks[(size_t) trackIndex].name);
         showStatus((nowMuted ? "Muted " : "Unmuted ") + (name.isEmpty()
                        ? "track " + juce::String(trackIndex + 1) : "\"" + name + "\""));
+    };
+
+    arrangementView_.onTrackSettingsRequested = [this](int trackIndex)
+    {
+        showTrackSettingsMenu(trackIndex);
     };
 
     arrangementView_.onClipSelected = [this](int trackIndex, int clipIndex)
@@ -1887,11 +1896,80 @@ void MainComponent::deleteSelectedTrack()
     Add button happened to generate. */
 void MainComponent::renameSelectedTrack()
 {
+    renameTrackAt(selectedTrackIndex_);
+}
+
+/** The per-track settings menu, opened from the gear in the tracks pane. */
+void MainComponent::showTrackSettingsMenu(int trackIndex)
+{
     const auto& song = history_.current();
-    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+    if (trackIndex < 0 || trackIndex >= (int) song.tracks.size())
         return;
 
-    const auto& track   = song.tracks[(size_t) selectedTrackIndex_];
+    const auto& track = song.tracks[(size_t) trackIndex];
+
+    juce::PopupMenu colours;
+    for (int i = 0; i < kNumTrackColours; ++i)
+    {
+        const auto& option = kTrackColours[i];
+        const bool  chosen = (track.colour == option.argb);
+
+        // Ticked rather than swatched: PopupMenu has no colour-chip item, and
+        // a tick at least says which one is in force.
+        colours.addItem(kFirstColourMenuId + i, option.name, true, chosen);
+    }
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader(track.name.empty() ? ("Track " + juce::String(trackIndex + 1))
+                                             : juce::String(track.name));
+    menu.addSubMenu("Colour", colours);
+    menu.addItem(1, "Rename...");
+
+    juce::Component::SafePointer<MainComponent> self(this);
+    menu.showMenuAsync(juce::PopupMenu::Options(), [self, trackIndex](int result)
+    {
+        if (self == nullptr || result == 0)
+            return;
+
+        if (result == 1)
+        {
+            self->renameTrackAt(trackIndex);
+            return;
+        }
+
+        if (const int index = result - kFirstColourMenuId; index >= 0 && index < kNumTrackColours)
+            self->setTrackColour(trackIndex, kTrackColours[index].argb);
+    });
+}
+
+/** Colour is document state, so it's an undoable edit rather than a live
+    tweak — unlike mute, which is a performance control you flip while
+    listening and would not want filling the undo stack. */
+void MainComponent::setTrackColour(int trackIndex, unsigned int argb)
+{
+    const auto& song = history_.current();
+    if (trackIndex < 0 || trackIndex >= (int) song.tracks.size())
+        return;
+
+    const int trackId = song.tracks[(size_t) trackIndex].id;
+
+    history_.edit("Recolour track", [trackId, argb](model::Song& s)
+    {
+        if (auto* track = model::findTrack(s, trackId))
+            track->colour = argb;
+    });
+
+    arrangementView_.setSong(history_.current());
+    updateMixerStrips();
+}
+
+void MainComponent::renameTrackAt(int trackIndex)
+{
+    const auto& song = history_.current();
+    if (trackIndex < 0 || trackIndex >= (int) song.tracks.size())
+        return;
+
+    const auto& track   = song.tracks[(size_t) trackIndex];
     const int   trackId = track.id;
 
     auto* window = new juce::AlertWindow("Rename Track", {}, juce::MessageBoxIconType::NoIcon, this);

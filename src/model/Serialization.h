@@ -46,8 +46,10 @@ namespace looper::model
           before this simply stops short of them, and the reader keeps the
           defaults it started with.
       21  + seven more on the same line: compressor and tremolo pedals,
-          read the same tolerant way. */
-inline constexpr int kFormatVersion = 21;
+          read the same tolerant way.
+      22  TRACK carries its colour before the rest-of-line name, the same
+          way pan joined in v15. */
+inline constexpr int kFormatVersion = 22;
 namespace detail
 {
     inline std::string num(double v)
@@ -121,6 +123,7 @@ inline std::string serialize(const Song& song)
             << detail::num((double) track.gainDb) << " " << (track.muted ? 1 : 0)
             << " " << (track.solo ? 1 : 0) << " " << detail::num((double) track.sendLevel)
             << " " << detail::num((double) track.pan)
+            << " " << track.colour
             << " " << track.name << "\n";
         // Only non-empty lanes are written, so an unautomated track costs one
         // "TAUTOS 0" line rather than one empty record per automatable
@@ -439,6 +442,16 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 double pan = 0.0;
                 ts >> pan;
                 track.pan = (float) pan;
+            }
+
+            // Colour joined in v22, also ahead of the name. As with pan, the
+            // field count can't tell — a name beginning with digits would be
+            // read as one — so the version decides.
+            if (version >= 22)
+            {
+                unsigned int colour = 0;
+                ts >> colour;
+                track.colour = colour;
             }
 
             std::string name;

@@ -10,6 +10,7 @@
 
 #include "ClipPreview.h"
 #include "Icons.h"
+#include "TrackColours.h"
 #include "TimelineGeometry.h"
 
 namespace looper
@@ -42,8 +43,12 @@ class ArrangementView final : public juce::Component,
 public:
     ArrangementView()
         : unmutedIcon_(icons::fromSvg(icons::kAudioOn)),
-          mutedIcon_(icons::fromSvg(icons::kAudioDisabled))
+          mutedIcon_(icons::fromSvg(icons::kAudioDisabled)),
+          gearIcon_(icons::fromSvg(icons::kGear))
     {
+        // The gutter carries a colour stripe, a type tag, the name, and two
+        // buttons. 110px fitted a name alone.
+        geometry_.gutterWidth = 168.0f;
     }
 
     std::function<void(double)> onSeek; // beat position clicked
@@ -55,6 +60,10 @@ public:
         doesn't change the document itself — the owner does, and the change
         comes back through setSong. */
     std::function<void(int trackIndex)> onTrackMuteToggled;
+
+    /** Fired when a track's gear button is clicked. The owner shows the menu:
+        it knows what the options do, and the view doesn't. */
+    std::function<void(int trackIndex)> onTrackSettingsRequested;
     std::function<void(const juce::File& file, double dropBeat, int trackIndex)> onFileDropped;
 
     void setSong(const model::Song& song)
@@ -144,12 +153,34 @@ public:
                 g.fillRect(0.0f, y, width, geometry_.laneHeight);
             }
 
+            const auto colour = trackColour(track.colour);
+
+            // A stripe down the left of the gutter, so the colour is legible
+            // even on a track whose clips are all scrolled out of view.
+            g.setColour(colour.withAlpha(track.muted ? 0.35f : 1.0f));
+            g.fillRect(0.0f, y, 4.0f, geometry_.laneHeight);
+
+            // The type tag. Track names double as the type indicator until
+            // someone renames one — call a guitar track "Verse" and nothing
+            // would say it was a guitar any more. This is what makes renaming
+            // free.
+            const auto tagArea = juce::Rectangle<float>(10.0f, y + geometry_.laneHeight * 0.5f - 8.0f,
+                                                        32.0f, 16.0f);
+            g.setColour(juce::Colours::white.withAlpha(0.12f));
+            g.fillRoundedRectangle(tagArea, 3.0f);
+            g.setColour(juce::Colours::white.withAlpha(track.muted ? 0.35f : 0.7f));
+            g.setFont(juce::FontOptions(10.0f));
+            g.drawText(trackTypeTag(track.type), tagArea, juce::Justification::centred);
+
             // A muted track's name dims with it, so the state reads from the
             // whole row rather than only from the icon.
+            const float nameX     = tagArea.getRight() + 6.0f;
+            const float nameWidth = muteButtonBounds(i).getX() - nameX - 4.0f;
+
             g.setColour(juce::Colours::white.withAlpha(track.muted ? 0.35f : 0.85f));
             g.setFont(juce::FontOptions(13.0f));
             g.drawText(track.name.empty() ? ("Track " + juce::String(i + 1)) : juce::String(track.name),
-                       8, (int) y, (int) (geometry_.gutterWidth - kMuteSize - 18.0f),
+                       (int) nameX, (int) y, (int) juce::jmax(10.0f, nameWidth),
                        (int) geometry_.laneHeight, juce::Justification::centredLeft);
 
             if (auto* icon = track.muted ? mutedIcon_.get() : unmutedIcon_.get())
@@ -165,6 +196,19 @@ public:
                 icon->drawWithin(g, bounds, juce::RectanglePlacement::centred, 1.0f);
             }
 
+            if (gearIcon_ != nullptr)
+            {
+                const auto bounds = gearButtonBounds(i);
+
+                if (i == hoveredGearTrack_)
+                {
+                    g.setColour(juce::Colours::white.withAlpha(0.10f));
+                    g.fillRoundedRectangle(bounds.expanded(2.0f), 3.0f);
+                }
+
+                gearIcon_->drawWithin(g, bounds, juce::RectanglePlacement::centred, 1.0f);
+            }
+
             for (int c = 0; c < (int) track.clips.size(); ++c)
             {
                 const auto&  clip          = track.clips[(size_t) c];
@@ -176,7 +220,16 @@ public:
                 const float cx = geometry_.xForBeat(startBeats);
                 const float cw = juce::jmax(2.0f, (float) lengthBeats * ppb);
                 const juce::Rectangle<float> r(cx, y + 3.0f, cw, geometry_.laneHeight - 6.0f);
-                g.setColour(isBeingDragged ? juce::Colour(0xff5aad64) : juce::Colour(0xff3a7d44));
+                // The track's own colour, which is most of the point of
+                // having one: parts are told apart by the clips, not by the
+                // gutter you have to look away to read.
+                auto clipColour = trackColour(track.colour);
+                if (isBeingDragged)
+                    clipColour = clipColour.brighter(0.3f);
+                if (track.muted)
+                    clipColour = clipColour.withMultipliedSaturation(0.3f).withMultipliedBrightness(0.7f);
+
+                g.setColour(clipColour);
                 g.fillRoundedRectangle(r, 3.0f);
 
                 paintClipContents(g, clip, r);
@@ -221,6 +274,8 @@ public:
         outside if both are reachable. */
     juce::Rectangle<float> muteButtonBoundsForTesting(int trackIndex) const { return muteButtonBounds(trackIndex); }
     int   muteButtonAtForTesting(juce::Point<float> point) const { return muteButtonAt(point); }
+    juce::Rectangle<float> gearButtonBoundsForTesting(int trackIndex) const { return gearButtonBounds(trackIndex); }
+    int   gearButtonAtForTesting(juce::Point<float> point) const { return gearButtonAt(point); }
     float gutterWidthForTesting() const { return geometry_.gutterWidth; }
 
 private:
@@ -233,7 +288,7 @@ private:
     juce::Rectangle<float> muteButtonBounds(int trackIndex) const
     {
         const float top = geometry_.rulerHeight + geometry_.laneHeight * (float) trackIndex;
-        return juce::Rectangle<float>(geometry_.gutterWidth - kMuteSize - 6.0f,
+        return juce::Rectangle<float>(geometry_.gutterWidth - 2.0f * kMuteSize - 10.0f,
                                       top + (geometry_.laneHeight - kMuteSize) * 0.5f,
                                       kMuteSize, kMuteSize);
     }
@@ -243,6 +298,20 @@ private:
     {
         for (int i = 0; i < (int) song_.tracks.size(); ++i)
             if (muteButtonBounds(i).contains(point))
+                return i;
+        return -1;
+    }
+
+    /** The gear sits just right of the mute, sharing its vertical placement. */
+    juce::Rectangle<float> gearButtonBounds(int trackIndex) const
+    {
+        return muteButtonBounds(trackIndex).translated(kMuteSize + 4.0f, 0.0f);
+    }
+
+    int gearButtonAt(juce::Point<float> point) const
+    {
+        for (int i = 0; i < (int) song_.tracks.size(); ++i)
+            if (gearButtonBounds(i).contains(point))
                 return i;
         return -1;
     }
@@ -297,6 +366,13 @@ private:
         {
             if (onTrackMuteToggled)
                 onTrackMuteToggled(muteTrack);
+            return;
+        }
+
+        if (const int gearTrack = gearButtonAt(e.position); gearTrack >= 0)
+        {
+            if (onTrackSettingsRequested)
+                onTrackSettingsRequested(gearTrack);
             return;
         }
 
@@ -373,6 +449,7 @@ private:
     void mouseMove(const juce::MouseEvent& e) override
     {
         updateMuteHover(muteButtonAt(e.position));
+        updateGearHover(gearButtonAt(e.position));
 
         // The resize cursor is the only hint the clip's edge is grabbable.
         int trackIndex = -1, clipIndex = -1;
@@ -382,7 +459,11 @@ private:
         setMouseCursor(onEdge ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
 
-    void mouseExit(const juce::MouseEvent&) override { updateMuteHover(-1); }
+    void mouseExit(const juce::MouseEvent&) override
+    {
+        updateMuteHover(-1);
+        updateGearHover(-1);
+    }
 
     // juce::DragAndDropTarget
     bool isInterestedInDragSource(const SourceDetails& details) override
@@ -499,8 +580,18 @@ private:
         repaint();
     }
 
-    std::unique_ptr<juce::Drawable> unmutedIcon_, mutedIcon_;
+    void updateGearHover(int trackIndex)
+    {
+        if (hoveredGearTrack_ == trackIndex)
+            return;
+
+        hoveredGearTrack_ = trackIndex;
+        repaint();
+    }
+
+    std::unique_ptr<juce::Drawable> unmutedIcon_, mutedIcon_, gearIcon_;
     int hoveredMuteTrack_ = -1;
+    int hoveredGearTrack_ = -1;
 
     TimelineGeometry geometry_;
     model::Song      song_;
