@@ -45,3 +45,33 @@ TEST_CASE("edgeInBlock handles pattern wrap-around", "[engine][seq]")
     REQUIRE(edgeInBlock(30.0, 950.0, 1000.0, 100, offset));
     REQUIRE(offset == 80);
 }
+
+TEST_CASE("A loop runs over what has been arranged", "[engine][loop]")
+{
+    // The loop used to be a hardcoded four bars whatever the song held, so
+    // arranging anything longer silently looped only its opening.
+    REQUIRE(looper::engine::loopEndForContent(16.0, 4.0) == 16.0); // exactly four bars
+    REQUIRE(looper::engine::loopEndForContent(13.0, 4.0) == 16.0); // rounded up to the bar
+    REQUIRE(looper::engine::loopEndForContent(0.5, 4.0)  == 4.0);
+}
+
+TEST_CASE("An empty song still gets a loop of one bar", "[engine][loop]")
+{
+    // A zero-length loop region would stall the transport or divide by zero
+    // downstream, and an empty song is exactly when that would happen.
+    REQUIRE(looper::engine::loopEndForContent(0.0, 4.0) == 4.0);
+    REQUIRE(looper::engine::loopEndForContent(-5.0, 4.0) == 4.0);
+    REQUIRE(looper::engine::loopEndForContent(0.0, 3.0) == 3.0); // and in 3/4
+}
+
+TEST_CASE("The loop end follows the time signature", "[engine][loop]")
+{
+    REQUIRE(looper::engine::loopEndForContent(10.0, 3.0) == 12.0); // 3/4: four bars
+    REQUIRE(looper::engine::loopEndForContent(10.0, 5.0) == 10.0); // 5/4: two bars exactly
+}
+
+TEST_CASE("A nonsense bar length falls back rather than dividing by zero", "[engine][loop]")
+{
+    REQUIRE(looper::engine::loopEndForContent(10.0, 0.0) == 12.0); // treated as 4/4
+    REQUIRE(std::isfinite(looper::engine::loopEndForContent(10.0, -1.0)));
+}

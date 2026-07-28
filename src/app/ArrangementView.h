@@ -8,6 +8,7 @@
 
 #include "model/Song.h"
 
+#include "ClipPreview.h"
 #include "TimelineGeometry.h"
 
 namespace looper
@@ -137,6 +138,8 @@ public:
                 g.setColour(isBeingDragged ? juce::Colour(0xff5aad64) : juce::Colour(0xff3a7d44));
                 g.fillRoundedRectangle(r, 3.0f);
 
+                paintClipContents(g, clip, r);
+
                 // A grip along the right edge, so the resize handle is
                 // visible rather than only discoverable by hovering.
                 if (r.getWidth() > 3.0f * kResizeEdgePixels)
@@ -169,6 +172,46 @@ public:
             const float dx = geometry_.xForBeat(dropPreviewBeat_);
             g.setColour(juce::Colours::cyan.withAlpha(0.5f));
             g.fillRect(dx, 0.0f, 2.0f, height);
+        }
+    }
+
+    /** Draws what's inside a clip as small blocks, so two clips holding
+        different music don't look identical. Audio clips are left plain:
+        there is no waveform cached here, and reading the file at paint time
+        is not something a paint routine should do. */
+    void paintClipContents(juce::Graphics& g, const model::Clip& clip,
+                           juce::Rectangle<float> bounds)
+    {
+        if (clip.type != model::ClipType::Instrument)
+            return;
+
+        // Below this the blocks are smaller than the corner rounding and read
+        // as noise rather than as content.
+        if (bounds.getWidth() < 16.0f || bounds.getHeight() < 10.0f)
+            return;
+
+        const auto area = bounds.reduced(2.0f, 3.0f);
+        if (area.getWidth() <= 0.0f || area.getHeight() <= 0.0f)
+            return;
+
+        const auto blocks = clipPreviewBlocks(clip.pattern.notes, clip.pattern.lengthBeats,
+                                              clip.lengthBeats);
+        if (blocks.empty())
+            return;
+
+        g.setColour(juce::Colours::white.withAlpha(0.55f));
+
+        for (const auto& block : blocks)
+        {
+            // At least a pixel each way: a sixteenth in a long clip rounds to
+            // nothing otherwise, and a clip that looks empty is worse than
+            // one that looks approximate.
+            const float w = juce::jmax(1.0f, (float) block.width * area.getWidth());
+            const float h = juce::jmax(1.0f, (float) block.height * area.getHeight());
+
+            g.fillRect(area.getX() + (float) block.x * area.getWidth(),
+                       area.getY() + (float) block.y * area.getHeight(),
+                       w, h);
         }
     }
 

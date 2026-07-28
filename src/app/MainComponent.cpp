@@ -2225,6 +2225,11 @@ void MainComponent::syncEngineTracks()
             engine_.setTrackEffectSlotParams(i, (int) s, toSlotParams(track.effectChain[s]));
     }
     engine_.setActiveTrackCount(n);
+
+    // The arrangement just changed, so the loop it runs over has too. This is
+    // the one place every clip edit passes through, which is why it lives
+    // here rather than in each of them.
+    updateLoopRegion();
 }
 
 void MainComponent::refreshPianoRollForSelected()
@@ -3359,6 +3364,33 @@ void MainComponent::stepByBars(int bars)
 
 /** The end of the song's content — the furthest point any clip reaches. Zero
     for an empty project, so "go to end" is simply "go to start" there. */
+/** Stops the transport once it has played everything that was arranged.
+
+    Without this the playhead runs on for ever past the last clip, playing
+    silence — the arrangement has an end, so the transport should have one
+    too. Looping is left alone: that is the case where running past the last
+    clip is the whole point, and the engine wraps it in the audio thread.
+
+    Checked on the UI timer rather than in the engine: 30Hz is a thirtieth of
+    a second of overshoot on a transport that is playing silence by then, and
+    it costs the audio thread nothing. */
+void MainComponent::stopAtEndOfArrangement()
+{
+    if (! engine_.isPlaying() || loopButton.getToggleState() || awaitingRecordedTake_)
+        return;
+
+    const double end = songEndBeats();
+    if (end <= 0.0)
+        return; // nothing arranged: there is no end to stop at
+
+    const double playhead = uiTempoMap_.ppqFromSamples(engine_.playheadSamples());
+    if (playhead < end)
+        return;
+
+    post(Cmd::SetPlaying, 0.0);
+    showStatus("Reached the end of the arrangement");
+}
+
 double MainComponent::songEndBeats() const
 {
     double end = 0.0;
@@ -3368,6 +3400,11 @@ double MainComponent::songEndBeats() const
     return end;
 }
 
+/** The loop runs over what has actually been arranged, rounded up to a bar.
+
+    It used to be a hardcoded four bars whatever the song contained, so
+    arranging anything longer than that silently looped only its opening —
+    and arranging less looped several bars of nothing. */
 void MainComponent::updateLoopRegion()
 {
     const double sampleRate = engine_.sampleRate();
@@ -3375,8 +3412,16 @@ void MainComponent::updateLoopRegion()
         return;
 
     uiTempoMap_.setSampleRate(sampleRate);
-    const auto barSamples = (int64_t) std::llround(uiTempoMap_.quartersPerBar() * uiTempoMap_.samplesPerBeat());
-    post(Cmd::SetLoopRegion, 0.0, (double) (barSamples * 4)); // 4-bar loop
+
+    const auto endSamples = (int64_t) std::llround(loopEndBeats() * uiTempoMap_.samplesPerBeat());
+    post(Cmd::SetLoopRegion, 0.0, (double) endSamples);
+}
+
+/** Where the arrangement ends, rounded up to a whole bar — an empty song
+    still gets one bar, so the loop is never zero-length. */
+double MainComponent::loopEndBeats() const
+{
+    return engine::loopEndForContent(songEndBeats(), juce::jmax(1.0, uiTempoMap_.quartersPerBar()));
 }
 
 void MainComponent::timerCallback()
@@ -3384,6 +3429,7 @@ void MainComponent::timerCallback()
     engine_.pump();
     finishRecordingIfReady();
     updateWindowTitle();
+    stopAtEndOfArrangement();
 
     addTrackButton.setEnabled(trackCount() < engine_.maxTracks());
     addDrumTrackButton_.setEnabled(trackCount() < engine_.maxTracks());

@@ -80,6 +80,8 @@ private:
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
     void logAudioDeviceStatus();
     void updateLoopRegion();
+    double loopEndBeats() const;
+    void stopAtEndOfArrangement();
     void seekToBeat(double beat);
     void stepByBars(int bars);
     double songEndBeats() const;

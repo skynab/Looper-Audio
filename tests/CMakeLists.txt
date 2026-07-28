@@ -26,7 +26,8 @@ add_executable(looper_tests
   model/AutomationLaneTests.cpp
   app/TimelineGeometryTests.cpp
   app/PianoRollGeometryTests.cpp
-  app/DockLayoutTreeTests.cpp)
+  app/DockLayoutTreeTests.cpp
+  app/ClipPreviewTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE
