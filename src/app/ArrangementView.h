@@ -9,6 +9,7 @@
 #include "model/Song.h"
 
 #include "ClipPreview.h"
+#include "Icons.h"
 #include "TimelineGeometry.h"
 
 namespace looper
@@ -39,10 +40,21 @@ class ArrangementView final : public juce::Component,
                               public juce::DragAndDropTarget
 {
 public:
+    ArrangementView()
+        : unmutedIcon_(icons::fromSvg(icons::kAudioOn)),
+          mutedIcon_(icons::fromSvg(icons::kAudioDisabled))
+    {
+    }
+
     std::function<void(double)> onSeek; // beat position clicked
     std::function<void(int trackIndex, int clipIndex, double newStartBeats)> onClipMoved;
     std::function<void(int trackIndex, int clipIndex, double newLengthBeats)> onClipResized;
     std::function<void(int trackIndex, int clipIndex)> onClipSelected; // fired on press, before any drag
+
+    /** Fired when a track's mute button in the gutter is clicked. The view
+        doesn't change the document itself — the owner does, and the change
+        comes back through setSong. */
+    std::function<void(int trackIndex)> onTrackMuteToggled;
     std::function<void(const juce::File& file, double dropBeat, int trackIndex)> onFileDropped;
 
     void setSong(const model::Song& song)
@@ -132,11 +144,26 @@ public:
                 g.fillRect(0.0f, y, width, geometry_.laneHeight);
             }
 
-            g.setColour(juce::Colours::white.withAlpha(0.85f));
+            // A muted track's name dims with it, so the state reads from the
+            // whole row rather than only from the icon.
+            g.setColour(juce::Colours::white.withAlpha(track.muted ? 0.35f : 0.85f));
             g.setFont(juce::FontOptions(13.0f));
             g.drawText(track.name.empty() ? ("Track " + juce::String(i + 1)) : juce::String(track.name),
-                       8, (int) y, (int) geometry_.gutterWidth - 12, (int) geometry_.laneHeight,
-                       juce::Justification::centredLeft);
+                       8, (int) y, (int) (geometry_.gutterWidth - kMuteSize - 18.0f),
+                       (int) geometry_.laneHeight, juce::Justification::centredLeft);
+
+            if (auto* icon = track.muted ? mutedIcon_.get() : unmutedIcon_.get())
+            {
+                const auto bounds = muteButtonBounds(i);
+
+                if (i == hoveredMuteTrack_)
+                {
+                    g.setColour(juce::Colours::white.withAlpha(0.10f));
+                    g.fillRoundedRectangle(bounds.expanded(2.0f), 3.0f);
+                }
+
+                icon->drawWithin(g, bounds, juce::RectanglePlacement::centred, 1.0f);
+            }
 
             for (int c = 0; c < (int) track.clips.size(); ++c)
             {
@@ -189,6 +216,37 @@ public:
         }
     }
 
+    /** Test access to the mute geometry. The GUI tests assert that the
+        painting and the hit-testing agree, which is only checkable from
+        outside if both are reachable. */
+    juce::Rectangle<float> muteButtonBoundsForTesting(int trackIndex) const { return muteButtonBounds(trackIndex); }
+    int   muteButtonAtForTesting(juce::Point<float> point) const { return muteButtonAt(point); }
+    float gutterWidthForTesting() const { return geometry_.gutterWidth; }
+
+private:
+    /** Where a track's mute button sits, in this component's coordinates.
+
+        One definition used by both the painting and the click handling. Worked
+        out separately they drift, and the result is a control drawn in one
+        place that responds in another — which looks exactly like a button
+        that doesn't work. */
+    juce::Rectangle<float> muteButtonBounds(int trackIndex) const
+    {
+        const float top = geometry_.rulerHeight + geometry_.laneHeight * (float) trackIndex;
+        return juce::Rectangle<float>(geometry_.gutterWidth - kMuteSize - 6.0f,
+                                      top + (geometry_.laneHeight - kMuteSize) * 0.5f,
+                                      kMuteSize, kMuteSize);
+    }
+
+    /** The track whose mute button contains @p point, or -1. */
+    int muteButtonAt(juce::Point<float> point) const
+    {
+        for (int i = 0; i < (int) song_.tracks.size(); ++i)
+            if (muteButtonBounds(i).contains(point))
+                return i;
+        return -1;
+    }
+
     /** Draws what's inside a clip as small blocks, so two clips holding
         different music don't look identical. Audio clips are left plain:
         there is no waveform cached here, and reading the file at paint time
@@ -231,6 +289,17 @@ public:
 
     void mouseDown(const juce::MouseEvent& e) override
     {
+        // Checked before the clip hit-test: the button sits in the gutter,
+        // where no clip can be, but a click there would otherwise fall
+        // through to the seek at the bottom of this function and move the
+        // playhead every time someone muted a track.
+        if (const int muteTrack = muteButtonAt(e.position); muteTrack >= 0)
+        {
+            if (onTrackMuteToggled)
+                onTrackMuteToggled(muteTrack);
+            return;
+        }
+
         int trackIndex = -1, clipIndex = -1;
         if (findClipAt(e.position, trackIndex, clipIndex))
         {
@@ -303,6 +372,8 @@ public:
 
     void mouseMove(const juce::MouseEvent& e) override
     {
+        updateMuteHover(muteButtonAt(e.position));
+
         // The resize cursor is the only hint the clip's edge is grabbable.
         int trackIndex = -1, clipIndex = -1;
         const bool onEdge = findClipAt(e.position, trackIndex, clipIndex)
@@ -310,6 +381,8 @@ public:
                                               e.position.x);
         setMouseCursor(onEdge ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
     }
+
+    void mouseExit(const juce::MouseEvent&) override { updateMuteHover(-1); }
 
     // juce::DragAndDropTarget
     bool isInterestedInDragSource(const SourceDetails& details) override
@@ -417,12 +490,25 @@ private:
 
     static constexpr int kMinimumBars = 16;
 
+    void updateMuteHover(int trackIndex)
+    {
+        if (hoveredMuteTrack_ == trackIndex)
+            return;
+
+        hoveredMuteTrack_ = trackIndex;
+        repaint();
+    }
+
+    std::unique_ptr<juce::Drawable> unmutedIcon_, mutedIcon_;
+    int hoveredMuteTrack_ = -1;
+
     TimelineGeometry geometry_;
     model::Song      song_;
     double           playheadBeats_ = 0.0;
 
     static constexpr double kMinClipBeats     = 1.0;  // a clip shorter than a beat isn't useful
     static constexpr float  kResizeEdgePixels = 6.0f;
+    static constexpr float  kMuteSize         = 22.0f;
 
     /** Rounds to whole beats when snapping is on, with a floor so a snapped
         value can't collapse below its minimum. */

@@ -18,6 +18,8 @@ namespace
         control it belongs to. */
     const NamedIcon kAllIcons[] = {
         { "Magnifier",       looper::icons::kMagnifier },
+        { "AudioOn",         looper::icons::kAudioOn },
+        { "AudioDisabled",   looper::icons::kAudioDisabled },
         { "StarOn",          looper::icons::kStarOn },
         { "StarOutlineOff",  looper::icons::kStarOutlineOff },
         { "SidebarOn",       looper::icons::kSidebarOn },

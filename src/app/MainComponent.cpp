@@ -683,6 +683,22 @@ MainComponent::MainComponent()
         post(Cmd::Seek, (double) uiTempoMap_.samplesFromPpq(juce::jmax(0.0, beat)));
     };
 
+    // Muting from the tracks pane goes through the same setTrackMuted the
+    // mixer strip uses, so the two views can't disagree about a track's state.
+    arrangementView_.onTrackMuteToggled = [this](int trackIndex)
+    {
+        const auto& tracks = history_.current().tracks;
+        if (trackIndex < 0 || trackIndex >= (int) tracks.size())
+            return;
+
+        const bool nowMuted = ! tracks[(size_t) trackIndex].muted;
+        setTrackMuted(trackIndex, nowMuted);
+
+        const auto name = juce::String(tracks[(size_t) trackIndex].name);
+        showStatus((nowMuted ? "Muted " : "Unmuted ") + (name.isEmpty()
+                       ? "track " + juce::String(trackIndex + 1) : "\"" + name + "\""));
+    };
+
     arrangementView_.onClipSelected = [this](int trackIndex, int clipIndex)
     {
         selectTrackAndClip(trackIndex, clipIndex);
@@ -2616,6 +2632,14 @@ void MainComponent::setTrackMuted(int index, bool muted)
     if (index >= 0 && index < (int) song.tracks.size())
         song.tracks[(size_t) index].muted = muted;
     engine_.setTrackMuted(index, muted);
+
+    // Both views show mute, and either can set it, so both are refreshed from
+    // the document here rather than by whichever one happened to be clicked.
+    // Without this the tracks pane muted the audio and left its own icon
+    // unchanged — indistinguishable from a button that does nothing.
+    // MixerStrip::setMuted uses dontSendNotification, so this can't echo back.
+    arrangementView_.setSong(history_.current());
+    updateMixerStrips();
 }
 
 void MainComponent::setTrackSolo(int index, bool solo)
