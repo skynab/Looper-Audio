@@ -686,6 +686,11 @@ MainComponent::MainComponent()
     {
         stampChord(shape, fretOffset, strum);
     };
+    fretboard_.onChordAtFret = [this](engine::MovableShape shape, int rootString, int fret,
+                                      const engine::StrumSettings& strum, bool writeToClip)
+    {
+        playChordAtFret(shape, rootString, fret, strum, writeToClip);
+    };
 
     effectChain_.onBuiltInAdded = [this](model::EffectKind kind) { addEffectSlot(kind, {}); };
     effectChain_.onPluginAdded  = [this](const engine::PluginEntry& entry)
@@ -1089,61 +1094,76 @@ void MainComponent::addDrumTrack()
     is most of what makes a chord sound like a hand rather than an organ, and
     putting it in the pattern keeps it visible and editable afterwards — the
     same choice §18's swing made, for the same reason. */
-/** Stamps a strummed chord into the selected guitar clip.
-
-    Every reason this can decline is reported rather than returned silently.
-    A chord button that does nothing and says nothing is indistinguishable
-    from one that's broken — the user has no way to tell "you have a drum
-    track selected" from "this feature doesn't work". */
-void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
-                               const engine::StrumSettings& strum)
+/** The selected track, if chords can go on it. Reports why not otherwise:
+    every one of these used to be a silent return, which is indistinguishable
+    from a broken button. */
+const model::Track* MainComponent::guitarTrackForChords()
 {
-    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
     {
         showError("Select a guitar track first");
-        return;
+        return nullptr;
     }
 
-    const auto& song  = history_.current();
     const auto& track = song.tracks[(size_t) selectedTrackIndex_];
     if (track.type != model::TrackType::Guitar)
     {
         showError("\"" + juce::String(track.name) + "\" isn't a guitar track — chords need one");
-        return;
+        return nullptr;
     }
 
-    const int trackIdx = selectedTrackIndex_;
-    const int clipIdx  = selectedClipIndex_;
+    return &track;
+}
+
+/** Bar length in beats, as the chord features measure it. */
+double MainComponent::beatsPerBar() const
+{
+    return juce::jmax(1.0, uiTempoMap_.quartersPerBar());
+}
+
+/** Writes already-built notes into the selected guitar clip, at the bar the
+    playhead is in. @p notes are positioned relative to the start of that bar,
+    so callers don't need to know where it lands.
+
+    Shared by the open-shape palette and by clicking the neck: those differ in
+    which notes they produce, not in where the notes go or how that's
+    reported. */
+bool MainComponent::stampNotes(const std::vector<engine::Note>& notes, const juce::String& what)
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+        return false;
+
+    const auto& track    = song.tracks[(size_t) selectedTrackIndex_];
+    const int   trackIdx = selectedTrackIndex_;
+    const int   clipIdx  = selectedClipIndex_;
+
     if (clipIdx < 0 || clipIdx >= (int) track.clips.size())
     {
         showError("\"" + juce::String(track.name) + "\" has no clip selected to put the chord in");
-        return;
+        return false;
     }
 
     // Land it on the bar the playhead is in, so stamping while stopped puts
     // the chord where the transport is rather than always at the start.
-    const auto&  clip        = track.clips[(size_t) clipIdx];
-    const double beatsPerBar = juce::jmax(1.0, uiTempoMap_.quartersPerBar());
-    const double playhead    = uiTempoMap_.ppqFromSamples(engine_.playheadSamples()) - clip.startBeats;
-    const double wrapped     = clip.pattern.lengthBeats > 0.0
-                                 ? engine::wrapPositive(playhead, clip.pattern.lengthBeats) : 0.0;
-    const double at          = std::floor(wrapped / beatsPerBar) * beatsPerBar;
-
-    const auto notes = engine::GuitarChords::strumChord(shape, track.guitarSettings.tuning.data(),
-                                                        fretOffset, at, beatsPerBar,
-                                                        song.bpm, strum,
-                                                        (uint32_t) (chordStampSeed_++ | 1u));
+    const auto&  clip     = track.clips[(size_t) clipIdx];
+    const double playhead = uiTempoMap_.ppqFromSamples(engine_.playheadSamples()) - clip.startBeats;
+    const double wrapped  = clip.pattern.lengthBeats > 0.0
+                              ? engine::wrapPositive(playhead, clip.pattern.lengthBeats) : 0.0;
+    const double at       = std::floor(wrapped / beatsPerBar()) * beatsPerBar();
 
     int added = 0;
-    history_.edit("Add chord", [trackIdx, clipIdx, &notes, &added](model::Song& s)
+    history_.edit("Add chord", [trackIdx, clipIdx, &notes, &added, at](model::Song& s)
     {
         auto& clips = s.tracks[(size_t) trackIdx].clips;
         if (clipIdx < 0 || clipIdx >= (int) clips.size())
             return;
 
         auto& pattern = clips[(size_t) clipIdx].pattern;
-        for (const auto& note : notes)
+        for (auto note : notes)
         {
+            note.startBeats += at;
             if (note.startBeats < pattern.lengthBeats)
             {
                 pattern.notes.push_back(note);
@@ -1160,10 +1180,71 @@ void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
     // rolling over that bar, nothing moves and nothing sounds. Say what landed
     // and where, or a chord that worked looks exactly like one that didn't.
     if (added > 0)
-        showStatus(juce::String(shape.name) + " chord added at beat "
-                   + juce::String(at + 1.0, 2) + " of \"" + juce::String(track.name) + "\"");
+        showStatus(what + " written at beat " + juce::String(at + 1.0, 2));
     else
-        showError("No room for a " + juce::String(shape.name) + " chord in this clip");
+        showError("No room for " + what + " in this clip");
+
+    return added > 0;
+}
+
+/** Stamps one of the open shapes from the chord palette. */
+void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
+                               const engine::StrumSettings& strum)
+{
+    const auto* track = guitarTrackForChords();
+    if (track == nullptr)
+        return;
+
+    stampNotes(engine::GuitarChords::strumChord(shape, track->guitarSettings.tuning.data(),
+                                                fretOffset, 0.0, beatsPerBar(),
+                                                history_.current().bpm, strum,
+                                                (uint32_t) (chordStampSeed_++ | 1u)),
+               juce::String(shape.name) + " chord");
+}
+
+/** A click on the neck with a chord mode selected: the shape rooted there is
+    played, and written into the clip as well if the Write toggle is on.
+
+    Playing is the default because the ask was to *play* chords by clicking the
+    neck — a click that silently edited the document instead would be a
+    surprising thing for a fretboard to do. Writing is one explicit toggle
+    rather than a modifier key, so nothing about it is hidden. */
+void MainComponent::playChordAtFret(engine::MovableShape shape, int rootString, int fret,
+                                    const engine::StrumSettings& strum, bool writeToClip)
+{
+    const auto* track = guitarTrackForChords();
+    if (track == nullptr)
+        return;
+
+    const auto notes = engine::GuitarChords::notesForRoot(shape, track->guitarSettings.tuning.data(),
+                                                          rootString, fret);
+    if (notes.empty())
+    {
+        showError(juce::String(engine::movableShapeName(shape)) + " doesn't fit there on the neck");
+        return;
+    }
+
+    // Sounded through the same preview path a single fret click uses, so the
+    // chord is played by the track's own GuitarNode — including its
+    // one-note-per-string cut, which is what stops a chord from sounding like
+    // six unrelated strings.
+    for (int note : notes)
+        previewNote(note);
+
+    const juce::String what = juce::String(engine::movableShapeName(shape)) + " on "
+                            + juce::String(engine::midiNoteName(notes.front()));
+
+    if (! writeToClip)
+    {
+        showStatus(what);
+        return;
+    }
+
+    stampNotes(engine::GuitarChords::strumRootedChord(
+                   shape, track->guitarSettings.tuning.data(), rootString, fret,
+                   0.0, beatsPerBar(), history_.current().bpm, strum,
+                   (uint32_t) (chordStampSeed_++ | 1u)),
+               what);
 }
 
 /** Same as addTrack(), but a Guitar-type track — six plucked strings in

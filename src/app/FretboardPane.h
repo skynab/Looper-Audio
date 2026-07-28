@@ -5,6 +5,8 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <optional>
+
 #include "engine/GuitarChords.h"
 #include "engine/MidiNote.h"
 #include "model/GuitarSettings.h"
@@ -39,6 +41,13 @@ public:
     std::function<void(const engine::ChordShape&, int fretOffset,
                        const engine::StrumSettings&)>    onChordStamped;
 
+    /** Fired when a fret is clicked while a chord mode is selected: the shape
+        rooted on that string at that fret. @p writeToClip says whether the
+        user asked for it to be recorded as well as heard — see the Write
+        toggle, which is deliberately explicit rather than a modifier key. */
+    std::function<void(engine::MovableShape shape, int rootString, int fret,
+                       const engine::StrumSettings&, bool writeToClip)> onChordAtFret;
+
     FretboardPane()
     {
         placeholder_.setText("Select a Guitar track to play it", juce::dontSendNotification);
@@ -67,6 +76,19 @@ public:
             button->onClick = [this, i] { stampChord(i); };
             addChildComponent(button);
         }
+
+        // Chord mode: what a click on the neck means. "Single note" keeps the
+        // original behaviour, so the board is still a board.
+        chordMode_.addItem("Single note", 1);
+        for (int i = 0; i < engine::kNumMovableShapes; ++i)
+            chordMode_.addItem(engine::movableShapeName((engine::MovableShape) i), i + 2);
+        chordMode_.setSelectedId(1, juce::dontSendNotification);
+        chordMode_.setTooltip("What clicking a fret plays: one note, or a chord rooted there");
+        addChildComponent(chordMode_);
+
+        writeToClip_.setButtonText("Write");
+        writeToClip_.setTooltip("Also write the chord into the open clip, not just play it");
+        addChildComponent(writeToClip_);
 
         strumDirection_.addItem("Down", 1);
         strumDirection_.addItem("Up", 2);
@@ -134,9 +156,34 @@ public:
         if (! fretAt(e.position, stringIndex, fret))
             return;
 
+        if (const auto shape = selectedShape())
+        {
+            if (onChordAtFret)
+                onChordAtFret(*shape, stringIndex, fret, currentStrum(), writeToClip_.getToggleState());
+            return;
+        }
+
         const int note = settings_.tuning[(size_t) stringIndex] + fret;
         if (note >= 0 && note <= 127 && onFretPlayed)
             onFretPlayed(note);
+    }
+
+    /** The chord mode, or nothing when the board is in single-note mode. */
+    std::optional<engine::MovableShape> selectedShape() const
+    {
+        const int id = chordMode_.getSelectedId();
+        if (id <= 1)
+            return {};
+        return (engine::MovableShape) (id - 2);
+    }
+
+    engine::StrumSettings currentStrum() const
+    {
+        engine::StrumSettings strum;
+        strum.downstroke = strumDirection_.getSelectedId() != 2;
+        strum.spreadMs   = strumSpread_.getValue();
+        strum.humanise   = strumHumanise_.getValue() / 100.0;
+        return strum;
     }
 
     void paint(juce::Graphics& g) override
@@ -248,6 +295,10 @@ public:
 
         auto chordRow = area.removeFromBottom(kChordHeight);
         {
+            auto modeRow = chordRow.removeFromBottom(22);
+            chordMode_.setBounds(modeRow.removeFromLeft(110).reduced(1));
+            writeToClip_.setBounds(modeRow.removeFromLeft(70).reduced(1));
+
             auto strumRow = chordRow.removeFromBottom(22);
             strumDirection_.setBounds(strumRow.removeFromLeft(70).reduced(1));
             strumSpreadLabel_.setBounds(strumRow.removeFromLeft(46));
@@ -287,7 +338,8 @@ private:
     static constexpr int kNumFrets      = 22; // 0 (open) through 22
     static constexpr int kTuningHeight  = 26;
     static constexpr int kToneHeight    = 5 * 22;
-    static constexpr int kChordHeight   = 26 + 22; // a row of shapes over the strum controls
+    // A row of open-shape buttons, the strum controls, and the chord-mode row.
+    static constexpr int kChordHeight   = 26 + 22 + 22;
     static constexpr int kLowestTuning  = 28; // E1, low enough for any drop tuning
     static constexpr int kHighestTuning = 67;
 
@@ -329,12 +381,7 @@ private:
         if (! onChordStamped || shapeIndex < 0 || shapeIndex >= engine::kNumChordShapes)
             return;
 
-        engine::StrumSettings strum;
-        strum.downstroke = strumDirection_.getSelectedId() != 2;
-        strum.spreadMs   = strumSpread_.getValue();
-        strum.humanise   = strumHumanise_.getValue() / 100.0;
-
-        onChordStamped(engine::kChordShapes[shapeIndex], 0, strum);
+        onChordStamped(engine::kChordShapes[shapeIndex], 0, currentStrum());
     }
 
     void setupSlider(juce::Slider& slider, double lo, double hi, double step,
@@ -393,7 +440,8 @@ private:
                                     &pickPositionLabel_, &pickPosition_, &pickHardnessLabel_,
                                     &pickHardness_, &muteOnReleaseLabel_, &muteOnRelease_,
                                     &strumDirection_, &strumSpread_, &strumHumanise_,
-                                    &strumSpreadLabel_, &strumHumaniseLabel_ };
+                                    &strumSpreadLabel_, &strumHumaniseLabel_,
+                                    &chordMode_, &writeToClip_ };
         for (auto* c : tone)
             c->setVisible(visible);
 
@@ -417,6 +465,8 @@ private:
     juce::Slider    decay_, brightness_, pickPosition_, pickHardness_, muteOnRelease_;
 
     juce::OwnedArray<juce::TextButton> chordButtons_;
+    juce::ComboBox     chordMode_;
+    juce::ToggleButton writeToClip_;
     juce::ComboBox  strumDirection_;
     juce::Label     strumSpreadLabel_, strumHumaniseLabel_;
     juce::Slider    strumSpread_, strumHumanise_;

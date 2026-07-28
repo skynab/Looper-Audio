@@ -118,6 +118,11 @@ private:
     void                   setTrackGuitarSettings(const model::GuitarSettings& settings);
     void                   stampChord(const engine::ChordShape& shape, int fretOffset,
                                       const engine::StrumSettings& strum);
+    void                   playChordAtFret(engine::MovableShape shape, int rootString, int fret,
+                                           const engine::StrumSettings& strum, bool writeToClip);
+    const model::Track*    guitarTrackForChords();
+    double                 beatsPerBar() const;
+    bool                   stampNotes(const std::vector<engine::Note>& notes, const juce::String& what);
     void                   assignDrumSample(int padIndex, const juce::File& file);
     void                   setDrumPadMix(int padIndex, const model::DrumPad& pad);
     void                   addDrumPad();
