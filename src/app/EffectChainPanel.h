@@ -197,6 +197,10 @@ public:
         if (kind == model::EffectKind::Filter) { row(filterMode_); row(cutoff_); row(resonance_); }
         else if (kind == model::EffectKind::Delay) { row(timeMs_); row(feedback_); row(mix_); }
         else if (kind == model::EffectKind::Reverb) { row(roomSize_); row(damping_); row(mix_); }
+        else if (kind == model::EffectKind::Drive)
+        {
+            row(driveAmount_); row(driveTone_); row(driveLevel_); row(driveHardClip_); row(driveCabinet_);
+        }
     }
 
 private:
@@ -233,6 +237,7 @@ private:
             case model::EffectKind::Filter: return "Filter";
             case model::EffectKind::Delay:  return "Delay";
             case model::EffectKind::Reverb: return "Reverb";
+            case model::EffectKind::Drive:  return "Drive";
             case model::EffectKind::Plugin:
                 // A plugin the machine no longer has still names itself, which
                 // is the whole reason the document stores the name.
@@ -272,6 +277,7 @@ private:
             if (result == 1 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Filter);
             else if (result == 2 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Delay);
             else if (result == 3 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Reverb);
+            else if (result == 5 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Drive);
             else if (result == 4 && onScanRequested) onScanRequested();
             else if (result >= 100)
             {
@@ -298,7 +304,9 @@ private:
     void refreshParamControls()
     {
         juce::Component* all[] = { &filterMode_, &cutoff_, &resonance_, &timeMs_,
-                                   &feedback_, &mix_, &roomSize_, &damping_, &editorButton_ };
+                                   &feedback_, &mix_, &roomSize_, &damping_, &editorButton_,
+                                   &driveAmount_, &driveTone_, &driveLevel_,
+                                   &driveHardClip_, &driveCabinet_ };
         for (auto* c : all)
             c->setVisible(false);
 
@@ -329,6 +337,17 @@ private:
                 damping_.setValue(slot.reverb.damping * 100.0, juce::dontSendNotification);
                 mix_.setValue(slot.reverb.mix * 100.0, juce::dontSendNotification);
                 roomSize_.setVisible(true); damping_.setVisible(true); mix_.setVisible(true);
+                break;
+
+            case model::EffectKind::Drive:
+                driveAmount_.setValue(slot.drive.drive, juce::dontSendNotification);
+                driveTone_.setValue(slot.drive.tone * 100.0, juce::dontSendNotification);
+                driveLevel_.setValue(slot.drive.level * 100.0, juce::dontSendNotification);
+                driveHardClip_.setToggleState(slot.drive.hardClip, juce::dontSendNotification);
+                driveCabinet_.setToggleState(slot.drive.cabinet, juce::dontSendNotification);
+                driveAmount_.setVisible(true); driveTone_.setVisible(true);
+                driveLevel_.setVisible(true); driveHardClip_.setVisible(true);
+                driveCabinet_.setVisible(true);
                 break;
 
             case model::EffectKind::Plugin:
@@ -366,6 +385,13 @@ private:
                 slot.reverb.damping  = (float) (damping_.getValue() / 100.0);
                 slot.reverb.mix      = (float) (mix_.getValue() / 100.0);
                 break;
+            case model::EffectKind::Drive:
+                slot.drive.drive    = (float) driveAmount_.getValue();
+                slot.drive.tone     = (float) (driveTone_.getValue() / 100.0);
+                slot.drive.level    = (float) (driveLevel_.getValue() / 100.0);
+                slot.drive.hardClip = driveHardClip_.getToggleState();
+                slot.drive.cabinet  = driveCabinet_.getToggleState();
+                break;
             case model::EffectKind::Plugin:
                 return; // a plugin's parameters live in its own editor
         }
@@ -386,7 +412,9 @@ private:
         if (! visible)
         {
             juce::Component* params[] = { &filterMode_, &cutoff_, &resonance_, &timeMs_,
-                                          &feedback_, &mix_, &roomSize_, &damping_, &editorButton_ };
+                                          &feedback_, &mix_, &roomSize_, &damping_, &editorButton_,
+                                          &driveAmount_, &driveTone_, &driveLevel_,
+                                          &driveHardClip_, &driveCabinet_ };
             for (auto* c : params)
                 c->setVisible(false);
         }
@@ -404,6 +432,8 @@ private:
     juce::TextButton addButton_, removeButton_, upButton_, downButton_, editorButton_;
     juce::ComboBox   filterMode_;
     juce::Slider     cutoff_, resonance_, timeMs_, feedback_, mix_, roomSize_, damping_;
+    juce::Slider       driveAmount_, driveTone_, driveLevel_;
+    juce::ToggleButton driveHardClip_, driveCabinet_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EffectChainPanel)
 };

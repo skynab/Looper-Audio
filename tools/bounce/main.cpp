@@ -754,6 +754,88 @@ int main(int argc, char** argv)
     // So the mechanism is tested with two deliberately non-commuting nodes —
     // a gain and a hard clip, where halving before clipping differs from
     // clipping before halving. This tests EffectChain, not the DSP.
+    // A drive pedal in a real chain: it must audibly change the sound, and the
+    // cabinet must audibly change it again. Both are claims about what comes
+    // out of the speakers, so both are measured here rather than only in the
+    // headless DSP tests, which exercise the shaper in isolation.
+    bool driveChangesSound  = false;
+    bool driveCabinetWorks  = false;
+    {
+        auto renderDrive = [&](int layout) // 0 = none, 1 = drive+cab, 2 = drive, no cab
+        {
+            const int totalSamples = (int) (sampleRate * 1.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+
+            if (layout != 0)
+            {
+                auto chain = std::make_unique<EffectChain>();
+                auto node  = std::make_unique<DriveNode>();
+                node->effect.setEnabled(true);
+                node->effect.setDrive(12.0f);
+                node->effect.setTone(0.5f);
+                node->effect.setLevel(0.8f);
+                node->effect.setCabinet(layout == 1);
+                chain->add(std::move(node));
+                chain->prepare(sampleRate, 512);
+                track.setEffectChain(chain.release());
+            }
+
+            ClipSlot slot;
+            slot.pattern     = arp;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+            return mix;
+        };
+
+        auto worstDifference = [](const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+        {
+            const int n = std::min(a.getNumSamples(), b.getNumSamples());
+            float worst = 0.0f;
+            for (int i = 0; i < n; ++i)
+                worst = std::max(worst, std::abs(a.getSample(0, i) - b.getSample(0, i)));
+            return worst;
+        };
+
+        const auto clean     = renderDrive(0);
+        const auto withCab   = renderDrive(1);
+        const auto noCab     = renderDrive(2);
+
+        driveChangesSound = clean.getRMSLevel(0, 0, clean.getNumSamples()) > 1.0e-4f
+                         && worstDifference(clean, withCab) > 1.0e-3f;
+
+        // The cabinet is the difference between distortion and fizz, so it
+        // has to actually be in the path rather than merely stored.
+        driveCabinetWorks = worstDifference(withCab, noCab) > 1.0e-3f;
+    }
+
     bool effectChainOrderMatters = false;
     bool effectChainRunsAllNodes = false;
     {
@@ -1279,6 +1361,8 @@ int main(int argc, char** argv)
               << "  guitarPlaysSixAtOnce=" << (guitarPlaysSixAtOnce ? 1 : 0)
               << "  guitarPicksLowestFret=" << (guitarPicksLowestFret ? 1 : 0)
               << "  guitarHammerOn=" << (guitarHammerOn ? 1 : 0)
+              << "  driveChangesSound=" << (driveChangesSound ? 1 : 0)
+              << "  driveCabinetWorks=" << (driveCabinetWorks ? 1 : 0)
               << "  effectChainOrderMatters=" << (effectChainOrderMatters ? 1 : 0)
               << "  effectChainRunsAllNodes=" << (effectChainRunsAllNodes ? 1 : 0)
               << "  sessionLaunchQuantizes=" << (sessionLaunchQuantizes ? 1 : 0)

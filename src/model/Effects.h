@@ -111,7 +111,8 @@ enum class EffectKind
     Filter = 0,
     Delay  = 1,
     Reverb = 2,
-    Plugin = 3
+    Plugin = 3,
+    Drive  = 4  // the guitar pedal — see engine::DriveEffect
 };
 
 /**
@@ -127,6 +128,21 @@ enum class EffectKind
     per-settings `enabled` flags stay for the master bus and send bus, which
     are single fixed effects rather than chain slots.
 */
+/** An overdrive/distortion pedal. `hardClip` picks a fuzz's flat ceiling over
+    an overdrive's gradual compression; `cabinet` is on by default because
+    drive without a speaker sim is heard as fizz rather than distortion. */
+struct DriveSettings
+{
+    bool  enabled  = false;
+    float drive    = 4.0f;  // how hard the signal is pushed into the shaper
+    float tone     = 0.5f;  // 0..1, dark to bright, after the clipping
+    float level    = 0.7f;  // make-up gain
+    bool  hardClip = false;
+    bool  cabinet  = true;
+
+    bool operator==(const DriveSettings&) const = default;
+};
+
 struct EffectSlot
 {
     EffectKind kind    = EffectKind::Filter;
@@ -135,6 +151,7 @@ struct EffectSlot
     FilterSettings filter;
     DelaySettings  delay;
     ReverbSettings reverb;
+    DriveSettings  drive;
     PluginRef      plugin; // meaningful when kind == Plugin
 
     bool operator==(const EffectSlot&) const = default;

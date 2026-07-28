@@ -123,7 +123,19 @@ static Song makeSampleSong()
         delaySlot.delay.feedback = 0.55f;
         delaySlot.delay.mix      = 0.4f;
 
-        s.tracks[0].effectChain = { filterSlot, pluginSlot, delaySlot };
+        // A drive pedal too, with every field off its default so a version
+        // that failed to write one would show up as an inequality.
+        EffectSlot driveSlot;
+        driveSlot.kind           = EffectKind::Drive;
+        driveSlot.enabled        = true;
+        driveSlot.drive.enabled  = true;
+        driveSlot.drive.drive    = 17.5f;
+        driveSlot.drive.tone     = 0.72f;
+        driveSlot.drive.level    = 0.44f;
+        driveSlot.drive.hardClip = true;
+        driveSlot.drive.cabinet  = false;
+
+        s.tracks[0].effectChain = { filterSlot, pluginSlot, delaySlot, driveSlot };
     }
 
     {
@@ -249,10 +261,19 @@ TEST_CASE("An effect chain round-trips with its order and mixed kinds", "[model]
     REQUIRE(deserialize(serialize(original), restored));
 
     const auto& chain = restored.tracks[0].effectChain;
-    REQUIRE(chain.size() == 3);
+    REQUIRE(chain.size() == 4);
     REQUIRE(chain[0].kind == EffectKind::Filter);
     REQUIRE(chain[1].kind == EffectKind::Plugin);
     REQUIRE(chain[2].kind == EffectKind::Delay);
+    REQUIRE(chain[3].kind == EffectKind::Drive);
+
+    // Every drive field, including the two booleans — a pedal that came back
+    // with its cabinet switched on when it was saved off is a different sound.
+    REQUIRE(chain[3].drive.drive == 17.5f);
+    REQUIRE(chain[3].drive.tone == 0.72f);
+    REQUIRE(chain[3].drive.level == 0.44f);
+    REQUIRE(chain[3].drive.hardClip);
+    REQUIRE_FALSE(chain[3].drive.cabinet);
 
     // The plugin's free-form fields survive intact, spaces and all — the
     // document has to be able to say which plugin it wanted even on a machine

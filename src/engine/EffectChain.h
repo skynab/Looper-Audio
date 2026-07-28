@@ -7,6 +7,7 @@
 #include <juce_audio_basics/juce_audio_basics.h>
 
 #include "engine/DelayEffect.h"
+#include "engine/DriveEffect.h"
 #include "engine/FilterEffect.h"
 #include "engine/ReverbEffect.h"
 
@@ -21,7 +22,8 @@ enum class EffectNodeKind
     Filter = 0,
     Delay  = 1,
     Reverb = 2,
-    Plugin = 3
+    Plugin = 3,
+    Drive  = 4
 };
 
 /** What a chain slot should be. Carries plugin identity as plain strings —
@@ -63,6 +65,12 @@ struct EffectSlotParams
     float reverbRoomSize = 0.5f;
     float reverbDamping  = 0.5f;
     float reverbMix      = 0.3f;
+
+    float driveAmount   = 4.0f;
+    float driveTone     = 0.5f;
+    float driveLevel    = 0.7f;
+    bool  driveHardClip = false;
+    bool  driveCabinet  = true;
 };
 
 /** One effect in a track's chain. Virtual dispatch costs one indirect call
@@ -97,6 +105,16 @@ struct DelayNode final : EffectProcessor
     DelayEffect effect;
 
     EffectNodeKind kind() const noexcept override { return EffectNodeKind::Delay; }
+    void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
+    void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
+};
+
+struct DriveNode final : EffectProcessor
+{
+    DriveEffect effect;
+
+    EffectNodeKind kind() const noexcept override { return EffectNodeKind::Drive; }
     void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
     void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
     void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
@@ -177,6 +195,14 @@ public:
             reverb->effect.setRoomSize(params.reverbRoomSize);
             reverb->effect.setDamping(params.reverbDamping);
             reverb->effect.setMix(params.reverbMix);
+        }
+        else if (auto* drive = dynamic_cast<DriveNode*>(&node))
+        {
+            drive->effect.setDrive(params.driveAmount);
+            drive->effect.setTone(params.driveTone);
+            drive->effect.setLevel(params.driveLevel);
+            drive->effect.setHardClip(params.driveHardClip);
+            drive->effect.setCabinet(params.driveCabinet);
         }
     }
 

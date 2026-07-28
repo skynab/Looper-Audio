@@ -41,8 +41,11 @@ namespace looper::model
       17  + SCENES/SCENE and per-track SESSION/SSLOT (the session grid)
       18  TFX (a fixed filter/delay/reverb trio) -> FXCHAIN/FXSLOT (an
           ordered chain whose slots may be built-ins or hosted plugins)
-      19  + GUITAR (per-track model::GuitarSettings) */
-inline constexpr int kFormatVersion = 19;
+      19  + GUITAR (per-track model::GuitarSettings)
+      20  FXSLOT gains five drive fields (the guitar pedal). A file written
+          before this simply stops short of them, and the reader keeps the
+          defaults it started with. */
+inline constexpr int kFormatVersion = 20;
 namespace detail
 {
     inline std::string num(double v)
@@ -179,7 +182,12 @@ inline std::string serialize(const Song& song)
                 << detail::num((double) slot.delay.mix) << " "
                 << detail::num((double) slot.reverb.roomSize) << " "
                 << detail::num((double) slot.reverb.damping) << " "
-                << detail::num((double) slot.reverb.mix) << "\n";
+                << detail::num((double) slot.reverb.mix) << " "
+                << detail::num((double) slot.drive.drive) << " "
+                << detail::num((double) slot.drive.tone) << " "
+                << detail::num((double) slot.drive.level) << " "
+                << (slot.drive.hardClip ? 1 : 0) << " "
+                << (slot.drive.cabinet ? 1 : 0) << "\n";
 
             if (slot.kind == EffectKind::Plugin)
             {
@@ -590,8 +598,16 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 double cutoff = 0.0, resonance = 0.0;
                 double delayTime = 0.0, delayFeedback = 0.0, delayMix = 0.0;
                 double room = 0.0, damping = 0.0, reverbMix = 0.0;
+
+                // Defaults matter: a file written before version 20 has no
+                // drive fields, the extractions below simply fail, and these
+                // values are what the slot keeps.
+                double driveAmount = 4.0, driveTone = 0.5, driveLevel = 0.7;
+                int    driveHard = 0, driveCab = 1;
+
                 ss >> kind >> enabled >> filterMode >> cutoff >> resonance
-                   >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix;
+                   >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix
+                   >> driveAmount >> driveTone >> driveLevel >> driveHard >> driveCab;
 
                 EffectSlot slot;
                 slot.kind              = (EffectKind) kind;
@@ -608,6 +624,12 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 slot.reverb.roomSize   = (float) room;
                 slot.reverb.damping    = (float) damping;
                 slot.reverb.mix        = (float) reverbMix;
+                slot.drive.enabled     = slot.enabled && slot.kind == EffectKind::Drive;
+                slot.drive.drive       = (float) driveAmount;
+                slot.drive.tone        = (float) driveTone;
+                slot.drive.level       = (float) driveLevel;
+                slot.drive.hardClip    = driveHard != 0;
+                slot.drive.cabinet     = driveCab != 0;
 
                 if (slot.kind == EffectKind::Plugin)
                 {

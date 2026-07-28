@@ -1484,6 +1484,11 @@ static engine::EffectSlotParams toSlotParams(const model::EffectSlot& slot)
     params.reverbRoomSize  = slot.reverb.roomSize;
     params.reverbDamping   = slot.reverb.damping;
     params.reverbMix       = slot.reverb.mix;
+    params.driveAmount     = slot.drive.drive;
+    params.driveTone       = slot.drive.tone;
+    params.driveLevel      = slot.drive.level;
+    params.driveHardClip   = slot.drive.hardClip;
+    params.driveCabinet    = slot.drive.cabinet;
     return params;
 }
 
@@ -2189,6 +2194,7 @@ void MainComponent::syncEngineTracks()
                 case model::EffectKind::Filter: spec.kind = engine::EffectNodeKind::Filter; break;
                 case model::EffectKind::Delay:  spec.kind = engine::EffectNodeKind::Delay;  break;
                 case model::EffectKind::Reverb: spec.kind = engine::EffectNodeKind::Reverb; break;
+                case model::EffectKind::Drive:  spec.kind = engine::EffectNodeKind::Drive;  break;
                 case model::EffectKind::Plugin:
                     spec.kind             = engine::EffectNodeKind::Plugin;
                     spec.pluginFormat     = pluginFormatName(slot.plugin.format);
