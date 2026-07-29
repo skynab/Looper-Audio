@@ -607,7 +607,9 @@ MainComponent::MainComponent()
     barsBox_.onChange = [this] { setPatternBars(barsBox_.getSelectedId()); };
     editTab_.addAndMakeVisible(barsBox_);
 
-    editTab_.addAndMakeVisible(pianoRoll_);
+    // Not added to editTab_ directly: keysViewport_ takes it as its viewed
+    // component below, and adding it here as well would reparent it straight
+    // back out of the viewport.
     editTab_.onResized = [this] { layoutEditTab(); };
 
     // ---- drums pane: the kit's sounds on the left, its rhythm on the right ----
@@ -635,8 +637,21 @@ MainComponent::MainComponent()
 
     setUpZoomControls(editTab_, keysZoomIcon_, keysZoomSlider_, keysZoomBox_,
                       PianoRoll::kMinPitchZoom, PianoRoll::kMaxPitchZoom,
-                      "Pitch zoom - how many notes the grid shows",
+                      "Pitch zoom - how many notes the grid shows (cmd-scroll)",
                       [this](float zoom) { setKeysZoom(zoom); });
+
+    setUpZoomControls(editTab_, keysTimeZoomIcon_, keysTimeZoomSlider_, keysTimeZoomBox_,
+                      PianoRoll::kMinTimeZoom, PianoRoll::kMaxTimeZoom,
+                      "Time zoom - how wide each step is (shift-scroll)",
+                      [this](float zoom) { setKeysTimeZoom(zoom); });
+
+    // The roll scrolls horizontally once it's wider than its pane, exactly as
+    // the arrangement does.
+    keysViewport_.setViewedComponent(&pianoRoll_, false);
+    keysViewport_.setScrollBarsShown(false, true); // horizontal only: rows fill the height
+    editTab_.addAndMakeVisible(keysViewport_);
+
+    pianoRoll_.onTimeZoomChanged = [this] { updateKeysTimeZoomControls(); layoutEditTab(); };
 
     // The wheel zooms the roll too, so the control follows it rather than
     // drifting from what's on screen.
@@ -840,6 +855,7 @@ MainComponent::MainComponent()
     addChildComponent(status_);
     updateZoomControls();     // the readouts must say something before the first click
     updateKeysZoomControls();
+    updateKeysTimeZoomControls();
 
     // The document the app opens with counts as saved, so an untouched session
     // doesn't prompt on quit. This has to come *after* all the control setup
@@ -4082,6 +4098,23 @@ void MainComponent::updateKeysZoomControls()
     keysZoomBox_.setValue(zoom, juce::dontSendNotification);
 }
 
+/** Widens the grid and lets the viewport scroll it. Unlike pitch zoom, which
+    the roll stores as a row count and snaps, this is continuous — the roll
+    simply draws to whatever width it's given. */
+void MainComponent::setKeysTimeZoom(float zoom)
+{
+    pianoRoll_.setTimeZoom(zoom);
+    updateKeysTimeZoomControls();
+    layoutEditTab();
+}
+
+void MainComponent::updateKeysTimeZoomControls()
+{
+    const double zoom = pianoRoll_.timeZoom();
+    keysTimeZoomSlider_.setValue(zoom, juce::dontSendNotification);
+    keysTimeZoomBox_.setValue(zoom, juce::dontSendNotification);
+}
+
 /** Applies a new timeline zoom and keeps the controls describing it. */
 void MainComponent::setTimelineZoom(float zoom)
 {
@@ -4125,13 +4158,25 @@ void MainComponent::layoutEditTab()
     barsLabel_.setBounds(header.removeFromRight(34));
 
     header.removeFromRight(10);
-    keysZoomBox_.setBounds(header.removeFromRight(56).reduced(0, 2));
-    header.removeFromRight(6);
-    keysZoomSlider_.setBounds(header.removeFromRight(110).reduced(0, 1));
-    keysZoomIcon_.setBounds(header.removeFromRight(24).reduced(0, 1));
+    keysZoomBox_.setBounds(header.removeFromRight(52).reduced(0, 2));
+    keysZoomSlider_.setBounds(header.removeFromRight(80).reduced(2, 1));
+    keysZoomIcon_.setBounds(header.removeFromRight(22).reduced(0, 1));
+
+    header.removeFromRight(10);
+    keysTimeZoomBox_.setBounds(header.removeFromRight(52).reduced(0, 2));
+    keysTimeZoomSlider_.setBounds(header.removeFromRight(80).reduced(2, 1));
+    keysTimeZoomIcon_.setBounds(header.removeFromRight(22).reduced(0, 1));
 
     editingLabel_.setBounds(header.reduced(6, 0));
-    pianoRoll_.setBounds(area);
+
+    keysViewport_.setBounds(area);
+
+    // The roll is as tall as the pane — rows fill it, and pitch zoom decides
+    // how many — and as wide as the time zoom asks for, which is what the
+    // viewport then scrolls.
+    const int visibleWidth = juce::jmax(1, keysViewport_.getMaximumVisibleWidth());
+    pianoRoll_.setSize(juce::jmax(visibleWidth, pianoRoll_.preferredWidth(visibleWidth)),
+                       juce::jmax(1, keysViewport_.getMaximumVisibleHeight()));
 }
 
 void MainComponent::layoutMixerView()

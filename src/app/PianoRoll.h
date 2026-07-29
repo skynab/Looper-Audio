@@ -80,10 +80,50 @@ public:
     // following the time signature.
     float playheadXForTesting(float totalWidth) const { return playheadX(totalWidth); }
     int   numStepsForTesting() const { return geometry_.numSteps; }
+    float gutterWidthForTesting() const { return geometry_.gutterWidth; }
     double stepBeatsForTesting() const { return geometry_.stepBeats; }
     static constexpr int maxStepsForTesting() { return kMaxSteps; }
     float rowHeightForTesting(float totalHeight) const { return geometry_.rowHeight(totalHeight); }
     double beatsPerBarForTesting() const { return beatsPerBar_; }
+
+    /** Horizontal zoom: how much wider than its viewport the grid draws.
+
+        x1 fits the whole pattern across the pane, which is what it has always
+        done. Above that the grid is drawn wider and the viewport scrolls, so
+        a long pattern can be worked on at a usable step size — at 256 steps
+        in an 800-pixel pane a sixteenth is three pixels across, which is not
+        something a note can be placed on.
+
+        The roll draws to whatever width it is given, so this is only ever the
+        owner's sum: it decides the bounds, and this says by how much. Kept
+        here so the two zooms read the same way and share a control. */
+    static constexpr float kMinTimeZoom = 1.0f;  // never narrower than the pane
+    static constexpr float kMaxTimeZoom = 16.0f;
+
+    void setTimeZoom(float zoom)
+    {
+        const float clamped = juce::jlimit(kMinTimeZoom, kMaxTimeZoom, zoom);
+        if (std::abs(clamped - timeZoom_) < 1.0e-6f)
+            return;
+
+        timeZoom_ = clamped;
+        if (onTimeZoomChanged)
+            onTimeZoomChanged();
+    }
+
+    float timeZoom() const noexcept { return timeZoom_; }
+
+    /** The width this roll wants, given the width available to view it in.
+        Below x1 there is nothing to scroll, so it simply fills the pane. */
+    int preferredWidth(int viewportWidth) const
+    {
+        const float gutter = geometry_.gutterWidth;
+        const float grid   = juce::jmax(0.0f, (float) viewportWidth - gutter);
+        return juce::roundToInt(gutter + grid * timeZoom_);
+    }
+
+    /** Fired when the zoom changes from inside, so the owner can resize. */
+    std::function<void()> onTimeZoomChanged;
 
     // The pitch window a fresh roll opens with, and what x1 zoom means.
     static constexpr int kDefaultLowPitch = 48; // C3
@@ -441,12 +481,26 @@ public:
 
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
     {
-        // Drum mode's rows are the kit's pads, not a pitch range, so there's
-        // nothing to scroll or zoom.
-        if (drumMode_ || std::abs(wheel.deltaY) < 1.0e-4f)
+        if (std::abs(wheel.deltaY) < 1.0e-4f)
             return;
 
         const bool up = wheel.deltaY > 0.0f;
+
+        // Shift-scroll zooms time, matching cmd-scroll for pitch. Checked
+        // before the drum-mode guard below, because time zoom means the same
+        // thing for a kit pattern as for a melodic one — it's only the
+        // *pitch* axis that a kit doesn't have.
+        if (e.mods.isShiftDown())
+        {
+            setTimeZoom(timeZoom_ * (up ? 1.25f : 0.8f));
+            return;
+        }
+
+        // Drum mode's rows are the kit's pads, not a pitch range, so there is
+        // nothing to scroll or zoom vertically.
+        if (drumMode_)
+            return;
+
         const bool zooming = e.mods.isCommandDown() || e.mods.isCtrlDown();
         if (zooming)
             geometry_.zoomBy(up ? -2 : 2); // fewer rows = taller rows = zoomed in
@@ -819,6 +873,7 @@ private:
     double playheadBeats_   = 0.0;
     bool   playheadVisible_ = false;
     double beatsPerBar_     = 4.0;
+    float  timeZoom_        = 1.0f;
     engine::Pattern             pattern_;
     int                         hoverRow_ = -1;
     bool                        drumMode_ = false;

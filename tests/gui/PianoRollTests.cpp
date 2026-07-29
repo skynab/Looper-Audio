@@ -366,3 +366,84 @@ TEST_CASE("A capped grid doesn't misplace the playhead", "[gui][pianoroll]")
     REQUIRE(std::abs(atHalf - halfway) < 2.0f);
     REQUIRE(atHalf < atEnd - 10.0f); // and nowhere near pinned to the end
 }
+
+TEST_CASE("At x1 the grid fits its pane, with nothing to scroll", "[gui][pianoroll]")
+{
+    // The behaviour the roll has always had, preserved as the zoom's floor:
+    // below x1 there would be empty space to the right of the last step.
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    REQUIRE(roll.timeZoom() == 1.0f);
+    REQUIRE(roll.preferredWidth(800) == 800);
+
+    roll.setTimeZoom(0.1f);
+    REQUIRE(roll.timeZoom() == PianoRoll::kMinTimeZoom);
+    REQUIRE(roll.preferredWidth(800) == 800);
+}
+
+TEST_CASE("Zooming time widens the grid past its pane", "[gui][pianoroll]")
+{
+    // What makes a long pattern workable: at 256 steps in an 800-pixel pane a
+    // sixteenth is three pixels across, which is not something a note can be
+    // placed on.
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    roll.setTimeZoom(4.0f);
+    REQUIRE(roll.preferredWidth(800) > 800 * 3);
+
+    roll.setTimeZoom(2.0f);
+    const int atTwo = roll.preferredWidth(800);
+    roll.setTimeZoom(4.0f);
+    REQUIRE(roll.preferredWidth(800) > atTwo);
+}
+
+TEST_CASE("The pitch gutter isn't stretched by the time zoom", "[gui][pianoroll]")
+{
+    // Only the grid widens. Scaling the whole component would make the pitch
+    // names grow with the zoom and eat the pane.
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    const int viewport = 800;
+    roll.setTimeZoom(1.0f);
+    const int gridAtOne = roll.preferredWidth(viewport) - (int) roll.gutterWidthForTesting();
+
+    roll.setTimeZoom(3.0f);
+    const int gridAtThree = roll.preferredWidth(viewport) - (int) roll.gutterWidthForTesting();
+
+    REQUIRE(std::abs(gridAtThree - gridAtOne * 3) <= 1);
+}
+
+TEST_CASE("Time zoom stays inside its range", "[gui][pianoroll]")
+{
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    roll.setTimeZoom(1000.0f);
+    REQUIRE(roll.timeZoom() == PianoRoll::kMaxTimeZoom);
+
+    roll.setTimeZoom(-5.0f);
+    REQUIRE(roll.timeZoom() == PianoRoll::kMinTimeZoom);
+}
+
+TEST_CASE("A time zoom change tells the owner to resize", "[gui][pianoroll]")
+{
+    // The roll can't resize itself — it's inside a viewport the owner lays
+    // out. Without this the wheel gesture would change nothing on screen.
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    int notifications = 0;
+    roll.onTimeZoomChanged = [&notifications] { ++notifications; };
+
+    roll.setTimeZoom(2.0f);
+    REQUIRE(notifications == 1);
+
+    roll.setTimeZoom(2.0f); // no change, no notification
+    REQUIRE(notifications == 1);
+
+    roll.setTimeZoom(3.0f);
+    REQUIRE(notifications == 2);
+}

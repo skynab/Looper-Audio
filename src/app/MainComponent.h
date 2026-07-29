@@ -202,6 +202,8 @@ private:
                                              std::function<void(float)> onZoom);
     void                   setKeysZoom(float zoom);
     void                   updateKeysZoomControls();
+    void                   setKeysTimeZoom(float zoom);
+    void                   updateKeysTimeZoomControls();
     void                   setTimelineZoom(float zoom);
     void                   updateZoomControls();
     void                   layoutArrangeTab();
@@ -319,6 +321,13 @@ private:
     juce::DrawableButton               keysZoomIcon_ { "Zoom", juce::DrawableButton::ImageFitted };
     juce::Slider                       keysZoomSlider_;
     juce::Slider                       keysZoomBox_;
+
+    // ...and again for the time axis, which scrolls in this viewport once the
+    // grid is wider than the pane.
+    juce::DrawableButton               keysTimeZoomIcon_ { "Zoom", juce::DrawableButton::ImageFitted };
+    juce::Slider                       keysTimeZoomSlider_;
+    juce::Slider                       keysTimeZoomBox_;
+    juce::Viewport                     keysViewport_;
     juce::TextButton                   addClipButton_  { "Add Clip" };
 
     CallbackComponent                  mixerView_;
