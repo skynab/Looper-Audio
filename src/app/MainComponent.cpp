@@ -1258,6 +1258,46 @@ bool MainComponent::stampNotes(const std::vector<engine::Note>& notes, const juc
 }
 
 /** Stamps one of the open shapes from the chord palette. */
+/** Sounds a chord through the selected track's own instrument, struck the way
+    it will be written.
+
+    Takes the strummed notes rather than a set of pitches so the preview is
+    the same thing that lands in the clip, stagger included. Six notes at one
+    instant read as an organ, and the stagger is most of what makes a strum
+    sound like a hand — a preview without it would undersell the very control
+    the user is reaching for.
+
+    Shared by the palette and by clicking the neck. They had drifted: the neck
+    played what it wrote and the palette wrote silently, so with the transport
+    stopped the palette buttons looked like they did nothing at all. */
+void MainComponent::previewChord(const std::vector<engine::Note>& notes)
+{
+    const double msPerBeat = 60000.0 / juce::jmax(1.0, history_.current().bpm);
+
+    for (const auto& note : notes)
+    {
+        const int delayMs = (int) std::lround(juce::jmax(0.0, note.startBeats) * msPerBeat);
+
+        if (delayMs <= 0)
+        {
+            previewNote(note.noteNumber);
+            continue;
+        }
+
+        // SafePointer for the same reason previewNote uses one: this fires
+        // after the click, and closing the window in between would otherwise
+        // run it against a destroyed engine.
+        juce::Component::SafePointer<MainComponent> safeThis(this);
+        const int noteNumber = note.noteNumber;
+
+        juce::Timer::callAfterDelay(delayMs, [safeThis, noteNumber]
+        {
+            if (auto* self = safeThis.getComponent())
+                self->previewNote(noteNumber);
+        });
+    }
+}
+
 void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
                                const engine::StrumSettings& strum)
 {
@@ -1265,11 +1305,18 @@ void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
     if (track == nullptr)
         return;
 
-    stampNotes(engine::GuitarChords::strumChord(shape, track->guitarSettings.tuning.data(),
-                                                fretOffset, 0.0, beatsPerBar(),
-                                                history_.current().bpm, strum,
-                                                (uint32_t) (chordStampSeed_++ | 1u)),
-               juce::String(shape.name) + " chord");
+    // Built once and used for both, so what is heard is exactly what lands.
+    const auto notes = engine::GuitarChords::strumChord(shape, track->guitarSettings.tuning.data(),
+                                                        fretOffset, 0.0, beatsPerBar(),
+                                                        history_.current().bpm, strum,
+                                                        (uint32_t) (chordStampSeed_++ | 1u));
+
+    // Played as well as written. Stamping puts notes in the clip, which makes
+    // no sound unless the transport happens to be rolling over that bar — so
+    // without this a button that worked was indistinguishable from one that
+    // didn't.
+    previewChord(notes);
+    stampNotes(notes, juce::String(shape.name) + " chord");
 }
 
 /** A click on the neck with a chord mode selected: the shape rooted there is
@@ -1294,12 +1341,16 @@ void MainComponent::playChordAtFret(engine::MovableShape shape, int rootString, 
         return;
     }
 
+    const auto struck = engine::GuitarChords::strumRootedChord(
+                            shape, track->guitarSettings.tuning.data(), rootString, fret,
+                            0.0, beatsPerBar(), history_.current().bpm, strum,
+                            (uint32_t) (chordStampSeed_++ | 1u));
+
     // Sounded through the same preview path a single fret click uses, so the
     // chord is played by the track's own GuitarNode — including its
     // one-note-per-string cut, which is what stops a chord from sounding like
     // six unrelated strings.
-    for (int note : notes)
-        previewNote(note);
+    previewChord(struck);
 
     const juce::String what = juce::String(engine::movableShapeName(shape)) + " on "
                             + juce::String(engine::midiNoteName(notes.front()));
@@ -1310,11 +1361,7 @@ void MainComponent::playChordAtFret(engine::MovableShape shape, int rootString, 
         return;
     }
 
-    stampNotes(engine::GuitarChords::strumRootedChord(
-                   shape, track->guitarSettings.tuning.data(), rootString, fret,
-                   0.0, beatsPerBar(), history_.current().bpm, strum,
-                   (uint32_t) (chordStampSeed_++ | 1u)),
-               what);
+    stampNotes(struck, what);
 }
 
 /** Same as addTrack(), but a Guitar-type track — six plucked strings in

@@ -151,6 +151,7 @@ private:
     void                   captureClipIntoSession(int trackIndex, int sceneIndex);
     void                   setTrackSynthSettings(const model::SynthSettings& settings);
     void                   previewNote(int noteNumber);
+    void                   previewChord(const std::vector<engine::Note>& notes);
     void                   updateDelayControls();
     void                   updateFilterControls();
     void                   updateReverbControls();
