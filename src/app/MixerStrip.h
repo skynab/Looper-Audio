@@ -4,6 +4,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "LayoutHelpers.h"
 #include "LevelMeter.h"
 
 namespace looper
@@ -119,20 +120,19 @@ public:
         soloButton_.setBounds(btnRow.reduced(2));
         area.removeFromTop(4);
 
-        auto sendRow = area.removeFromTop(16);
-        sendLabel_.setBounds(sendRow.removeFromLeft(30));
-        sendSlider_.setBounds(sendRow);
+        // Strips pack side by side, so a narrow one is the normal case once
+        // there are several tracks. A fixed 30px caption used to take the
+        // whole row and leave the slider zero wide — the label survived and
+        // the control it labels didn't.
+        layoutLabelledRow(area.removeFromTop(16), sendLabel_, sendSlider_, 30);
         area.removeFromTop(2);
-
-        auto panRow = area.removeFromTop(16);
-        panLabel_.setBounds(panRow.removeFromLeft(30));
-        panSlider_.setBounds(panRow);
+        layoutLabelledRow(area.removeFromTop(16), panLabel_, panSlider_, 30);
         area.removeFromTop(6);
 
         auto meterArea = area.removeFromRight(20);
-        meter_.setBounds(meterArea);
+        setBoundsOrHide(meter_, meterArea);
         area.removeFromRight(4);
-        gainSlider_.setBounds(area);
+        setBoundsOrHide(gainSlider_, area);
     }
 
 private:

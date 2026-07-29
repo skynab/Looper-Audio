@@ -5,6 +5,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "LayoutHelpers.h"
 #include "engine/PluginHost.h"
 #include "model/Effects.h"
 
@@ -143,6 +144,14 @@ public:
 
     void setNoTrackSelected() { setContentVisible(false); }
 
+    /** Selects a slot, so a test can walk every effect kind's controls. The
+        app selects by clicking the list, which a headless test can't do. */
+    void selectSlotForTesting(int index)
+    {
+        selected_ = index;
+        refreshParamControls();
+    }
+
     void mouseDown(const juce::MouseEvent& e) override
     {
         const int slot = slotAtY(e.position.y);
@@ -214,11 +223,16 @@ public:
 
         auto area = getLocalBounds().reduced(6);
 
+        // Four fixed-width buttons in a row: in a narrow pane the later ones
+        // run past the right edge and used to end up zero wide. Dropping the
+        // ones that don't fit keeps the rest usable, and they return when the
+        // pane is widened. Add is first because it's the one that has to work
+        // for the panel to be worth anything.
         auto toolbar = area.removeFromTop(kToolbarHeight);
-        addButton_.setBounds(toolbar.removeFromLeft(64).reduced(2));
-        removeButton_.setBounds(toolbar.removeFromLeft(70).reduced(2));
-        upButton_.setBounds(toolbar.removeFromLeft(44).reduced(2));
-        downButton_.setBounds(toolbar.removeFromLeft(56).reduced(2));
+        setBoundsOrHide(addButton_, toolbar.removeFromLeft(64).reduced(2));
+        setBoundsOrHide(removeButton_, toolbar.removeFromLeft(70).reduced(2));
+        setBoundsOrHide(upButton_, toolbar.removeFromLeft(44).reduced(2));
+        setBoundsOrHide(downButton_, toolbar.removeFromLeft(56).reduced(2));
 
         area.removeFromTop((int) chain_.size() * kRowHeight + 6);
 
@@ -230,11 +244,18 @@ public:
         const auto kind = chain_[(size_t) selected_].kind;
         if (kind == model::EffectKind::Plugin)
         {
-            editorButton_.setBounds(area.removeFromTop(kRowHeight).reduced(2));
+            setBoundsOrHide(editorButton_, area.removeFromTop(kRowHeight).reduced(2));
             return;
         }
 
-        auto row = [&area](juce::Component& c) { c.setBounds(area.removeFromTop(kRowHeight).reduced(2)); };
+        // A kind with five rows in a short pane ran the last of them off the
+        // bottom, leaving them zero-high rather than absent. Only the controls
+        // this kind uses reach here — the rest were hidden by
+        // refreshParamControls — so setting visibility both ways is safe.
+        auto row = [&area](juce::Component& c)
+        {
+            setBoundsOrHide(c, area.removeFromTop(kRowHeight).reduced(2));
+        };
         if (kind == model::EffectKind::Filter) { row(filterMode_); row(cutoff_); row(resonance_); }
         else if (kind == model::EffectKind::Delay) { row(timeMs_); row(feedback_); row(mix_); }
         else if (kind == model::EffectKind::Reverb) { row(roomSize_); row(damping_); row(mix_); }

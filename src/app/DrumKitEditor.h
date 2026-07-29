@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 
+#include "LayoutHelpers.h"
 #include "model/DrumKit.h"
 
 namespace looper
@@ -195,8 +196,8 @@ public:
         auto area = getLocalBounds();
 
         auto toolbar = area.removeFromTop(kToolbarHeight);
-        addButton_.setBounds(toolbar.removeFromLeft(70).reduced(3));
-        removeButton_.setBounds(toolbar.removeFromLeft(80).reduced(3));
+        setBoundsOrHide(addButton_, toolbar.removeFromLeft(70).reduced(3));
+        setBoundsOrHide(removeButton_, toolbar.removeFromLeft(80).reduced(3));
 
         auto mixStrip = area.removeFromBottom(kMixStripHeight);
         mixStrip.removeFromTop(22); // the "<pad> settings" caption painted above
@@ -378,9 +379,11 @@ private:
 
     void layoutMixRow(juce::Rectangle<int>& area, juce::Label& label, juce::Slider& slider)
     {
+        // removeFromTop returns an empty rect once the area is used up, which
+        // left the slider zero-high in a short pane. Hidden is the honest
+        // version of unusable, and it returns when there's room.
         auto row = area.removeFromTop(24);
-        label.setBounds(row.removeFromLeft(42).reduced(4, 0));
-        slider.setBounds(row.reduced(2, 1));
+        layoutLabelledRow(row.reduced(2, 1), label, slider, 40);
     }
 
     /** Mirrors the selected pad's values into the mix strip, and shows/hides
