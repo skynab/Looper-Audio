@@ -53,7 +53,8 @@ if (LOOPER_BUILD_APP)
     gui/ArrangementViewTests.cpp
     gui/IconsTests.cpp
     gui/PianoRollTests.cpp
-    gui/ShortcutsTests.cpp)
+    gui/ShortcutsTests.cpp
+    gui/WaveformCacheTests.cpp)
 
   target_include_directories(looper_gui_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 

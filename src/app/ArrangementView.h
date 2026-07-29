@@ -10,6 +10,7 @@
 
 #include "ClipPreview.h"
 #include "Icons.h"
+#include "WaveformCache.h"
 #include "TrackColours.h"
 #include "TimelineGeometry.h"
 
@@ -46,6 +47,11 @@ public:
           mutedIcon_(icons::fromSvg(icons::kAudioDisabled)),
           gearIcon_(icons::fromSvg(icons::kGear))
     {
+        // Scanning a file is asynchronous, so a clip is blank for the first
+        // frames after it's added. Without this it would stay blank until
+        // something else happened to invalidate the view.
+        waveforms_.onUpdated = [this] { repaint(); };
+
         // The gutter carries a colour stripe, a type tag, the name, and two
         // buttons. 110px fitted a name alone.
         geometry_.gutterWidth = 168.0f;
@@ -72,6 +78,15 @@ public:
     void setSong(const model::Song& song)
     {
         song_ = song;
+
+        // Thumbnails are made here rather than in paint: creating one starts a
+        // file scan and allocates, neither of which belongs on a path that
+        // runs for every scroll and playhead tick.
+        for (const auto& track : song_.tracks)
+            for (const auto& clip : track.clips)
+                if (clip.type == model::ClipType::Audio && ! clip.audioFile.empty())
+                    waveforms_.ensure(juce::File(clip.audioFile));
+
         updateContentSize();
         repaint();
     }
@@ -330,6 +345,42 @@ public:
     float gutterWidthForTesting() const { return geometry_.gutterWidth; }
 
 private:
+    /** Draws an audio clip's waveform.
+
+        Only the part that is heard: an audio clip plays its file once from
+        the clip's start and goes silent when the file runs out, so a waveform
+        stretched to fill the clip would show something it doesn't do. See
+        audioClipDrawnFraction, which is where that rule lives and is tested.
+
+        A thumbnail still scanning draws nothing rather than a partial
+        waveform that would redraw a moment later looking different. */
+    void paintAudioClipContents(juce::Graphics& g, const model::Clip& clip,
+                                juce::Rectangle<float> bounds)
+    {
+        if (clip.audioFile.empty() || bounds.getWidth() < 8.0f || bounds.getHeight() < 8.0f)
+            return;
+
+        auto* thumbnail = waveforms_.find(juce::File(clip.audioFile));
+        if (thumbnail == nullptr || thumbnail->getTotalLength() <= 0.0)
+            return;
+
+        const double secondsPerBeat = 60.0 / juce::jmax(1.0, song_.bpm);
+        const double fraction       = audioClipDrawnFraction(thumbnail->getTotalLength(),
+                                                             clip.lengthBeats, secondsPerBeat);
+        const double seconds        = audioClipAudibleSeconds(thumbnail->getTotalLength(),
+                                                              clip.lengthBeats, secondsPerBeat);
+        if (fraction <= 0.0 || seconds <= 0.0)
+            return;
+
+        auto area = bounds.reduced(2.0f, 3.0f);
+        area.setWidth((float) (area.getWidth() * fraction));
+        if (area.getWidth() < 1.0f || area.getHeight() < 1.0f)
+            return;
+
+        g.setColour(juce::Colours::white.withAlpha(0.55f));
+        thumbnail->drawChannels(g, area.toNearestInt(), 0.0, seconds, 1.0f);
+    }
+
     /** Where a track's mute button sits, in this component's coordinates.
 
         One definition used by both the painting and the click handling. Worked
@@ -398,6 +449,12 @@ private:
     void paintClipContents(juce::Graphics& g, const model::Clip& clip,
                            juce::Rectangle<float> bounds)
     {
+        if (clip.type == model::ClipType::Audio)
+        {
+            paintAudioClipContents(g, clip, bounds);
+            return;
+        }
+
         if (clip.type != model::ClipType::Instrument)
             return;
 
@@ -736,6 +793,8 @@ private:
         hoveredGearTrack_ = trackIndex;
         repaint();
     }
+
+    WaveformCache waveforms_;
 
     std::unique_ptr<juce::Drawable> unmutedIcon_, mutedIcon_, gearIcon_;
     int  hoveredMuteTrack_    = -1;
