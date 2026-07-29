@@ -216,7 +216,13 @@ public:
                     g.fillRoundedRectangle(bounds.expanded(2.0f), 3.0f);
                 }
 
-                icon->drawWithin(g, bounds, juce::RectanglePlacement::centred, 1.0f);
+                // Drawn inside its hit area for the same reason the gear is:
+                // the speaker fills its box on the width axis and was the
+                // other heavy glyph in the gutter. Still the larger of the
+                // two, since mute is the control you reach for and the gear
+                // is settings.
+                icon->drawWithin(g, bounds.withSizeKeepingCentre(kMuteGlyphSize, kMuteGlyphSize),
+                                 juce::RectanglePlacement::centred, 1.0f);
             }
 
             // While an alt-drag is live, mark the track it would copy.
@@ -314,6 +320,7 @@ public:
     int   muteButtonAtForTesting(juce::Point<float> point) const { return muteButtonAt(point); }
     juce::Rectangle<float> gearButtonBoundsForTesting(int trackIndex) const { return gearButtonBounds(trackIndex); }
     static constexpr float gearGlyphSizeForTesting() { return kGearGlyphSize; }
+    static constexpr float muteGlyphSizeForTesting() { return kMuteGlyphSize; }
     bool  isOnRulerForTesting(juce::Point<float> point) const { return isOnRuler(point); }
     int   trackAtYForTesting(float y) const { return trackAtY(y); }
     float laneHeightForTesting() const { return geometry_.laneHeight; }
@@ -748,7 +755,9 @@ private:
     static constexpr float  kResizeEdgePixels = 6.0f;
     static constexpr float  kMuteSize         = 22.0f;
 
-    // How large the gear is *drawn*; its clickable area stays kMuteSize.
+    // How large each glyph is *drawn*; both clickable areas stay kMuteSize.
+    // Mute is the bigger of the two: it is the control, the gear is settings.
+    static constexpr float  kMuteGlyphSize    = 17.0f;
     static constexpr float  kGearGlyphSize    = 12.0f;
 
     // Below this, beat lines are closer together than they can be told apart

@@ -273,6 +273,12 @@ TEST_CASE("The gear is drawn smaller than the area it responds to", "[gui][arran
     REQUIRE(glyph < hit);
     REQUIRE(glyph >= 8.0f); // still legible as a gear rather than a dot
 
+    // Mute is drawn inside its hit area too, and larger than the gear: it is
+    // the control, the gear is settings.
+    const float mute = ArrangementView::muteGlyphSizeForTesting();
+    REQUIRE(mute < hit);
+    REQUIRE(mute > glyph);
+
     for (int i = 0; i < 2; ++i)
     {
         const auto bounds = view->gearButtonBoundsForTesting(i);

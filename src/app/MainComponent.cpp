@@ -575,6 +575,16 @@ MainComponent::MainComponent()
 
     pianoRoll_.onChange = [this](const engine::Pattern& p) { editPattern(p); };
     pianoRoll_.onNotePreview = [this](int noteNumber) { previewNote(noteNumber); };
+    pianoRoll_.onNotesDeleted = [this](int count)
+    {
+        // Delete in the keys pane always means notes, so it reports even when
+        // nothing was selected — otherwise a user who expected the track to
+        // go, or who forgot to select, gets silence and no idea which.
+        if (count > 0)
+            showStatus("Deleted " + juce::String(count) + (count == 1 ? " note" : " notes"));
+        else
+            showStatus("Select notes first - shift-click, or shift-drag a box");
+    };
 
     // ---- edit tab: a header showing which track/clip is open, and the piano
     // roll (which switches to pad-per-row drum mode for a Drum track — see

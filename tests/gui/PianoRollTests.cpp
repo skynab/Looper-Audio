@@ -150,3 +150,85 @@ TEST_CASE("A zoom lands on a window the grid can actually show", "[gui][pianorol
     roll.setPitchZoom(landed);
     REQUIRE(roll.pitchZoom() == landed); // setting what it reports is a no-op
 }
+
+TEST_CASE("Delete removes the selected notes", "[gui][pianoroll]")
+{
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    engine::Pattern pattern;
+    pattern.lengthBeats = 4.0;
+    for (int i = 0; i < 5; ++i)
+        pattern.notes.push_back({ (double) i * 0.5, 0.25, 60 + i, 0.8f });
+
+    roll.setPattern(pattern);
+    roll.selectAllForTesting();
+
+    REQUIRE(roll.deleteSelectedNotes() == 5);
+    REQUIRE(roll.pattern().notes.empty());
+}
+
+TEST_CASE("Deleting several notes removes the right ones", "[gui][pianoroll]")
+{
+    // Indices shift as notes are erased. Erasing front-first would make the
+    // rest of the selection point at the wrong notes, or past the end — so
+    // this deletes a scattered selection and checks the survivors by pitch.
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    engine::Pattern pattern;
+    pattern.lengthBeats = 4.0;
+    for (int i = 0; i < 6; ++i)
+        pattern.notes.push_back({ (double) i * 0.5, 0.25, 60 + i, 0.8f });
+
+    roll.setPattern(pattern);
+    roll.selectForTesting({ 0, 2, 4 });
+
+    REQUIRE(roll.deleteSelectedNotes() == 3);
+    REQUIRE(roll.pattern().notes.size() == 3);
+    REQUIRE(roll.pattern().notes[0].noteNumber == 61);
+    REQUIRE(roll.pattern().notes[1].noteNumber == 63);
+    REQUIRE(roll.pattern().notes[2].noteNumber == 65);
+}
+
+TEST_CASE("Deleting with nothing selected changes nothing", "[gui][pianoroll]")
+{
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    engine::Pattern pattern;
+    pattern.lengthBeats = 4.0;
+    pattern.notes.push_back({ 0.0, 1.0, 60, 0.8f });
+    roll.setPattern(pattern);
+
+    REQUIRE(roll.deleteSelectedNotes() == 0);
+    REQUIRE(roll.pattern().notes.size() == 1);
+}
+
+TEST_CASE("Delete is consumed by the keys pane, not passed to the track", "[gui][pianoroll]")
+{
+    // The trap this closes: unhandled here, Delete reaches the app and
+    // removes the whole selected track — so editing notes and reaching for
+    // Delete would destroy the part being edited. Consumed even with nothing
+    // selected, since "sometimes deletes everything" is the failure.
+    JuceFixture fixture;
+    PianoRoll roll;
+
+    const juce::KeyPress del(juce::KeyPress::deleteKey);
+    const juce::KeyPress backspace(juce::KeyPress::backspaceKey);
+
+    REQUIRE(roll.keyPressed(del));
+    REQUIRE(roll.keyPressed(backspace));
+
+    // cmd+backspace is Delete Clip and belongs to the owner, so it passes on.
+    const juce::KeyPress cmdBackspace(juce::KeyPress::backspaceKey,
+                                      juce::ModifierKeys(juce::ModifierKeys::commandModifier), 0);
+    REQUIRE_FALSE(roll.keyPressed(cmdBackspace));
+}
+
+TEST_CASE("The keys pane takes keyboard focus, or it never sees Delete", "[gui][pianoroll]")
+{
+    JuceFixture fixture;
+    PianoRoll roll;
+    REQUIRE(roll.getWantsKeyboardFocus());
+}

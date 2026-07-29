@@ -39,7 +39,13 @@ namespace looper
 class PianoRoll final : public juce::Component
 {
 public:
-    PianoRoll() { seedDemo(); }
+    PianoRoll()
+    {
+        // Needed for keyPressed to ever run: without focus the Delete key
+        // goes straight past this pane to the app's, which deletes a track.
+        setWantsKeyboardFocus(true);
+        seedDemo();
+    }
 
     std::function<void(const engine::Pattern&)> onChange;
     std::function<void(int noteNumber)>         onNotePreview; // fired when a note is *added* by clicking
@@ -144,6 +150,49 @@ public:
         gesture can still quantize. */
     const std::vector<int>& selectedNoteIndices() const noexcept { return selection_; }
 
+    // Test access to the selection, which is otherwise only reachable through
+    // shift-clicks and rubber bands.
+    void selectAllForTesting()
+    {
+        selection_.clear();
+        for (int i = 0; i < (int) pattern_.notes.size(); ++i)
+            selection_.push_back(i);
+    }
+
+    void selectForTesting(std::vector<int> indices) { selection_ = std::move(indices); }
+
+    /** Removes the selected notes and reports the new pattern. Returns how
+        many went, so a caller can say so. */
+    int deleteSelectedNotes()
+    {
+        if (selection_.empty())
+            return 0;
+
+        // Highest index first: erasing from the front would shift every
+        // index after it and the rest of the selection would point at the
+        // wrong notes — or past the end.
+        auto indices = selection_;
+        std::sort(indices.begin(), indices.end(), std::greater<int>());
+
+        int removed = 0;
+        for (int index : indices)
+        {
+            if (index >= 0 && index < (int) pattern_.notes.size())
+            {
+                pattern_.notes.erase(pattern_.notes.begin() + index);
+                ++removed;
+            }
+        }
+
+        selection_.clear();
+        repaint();
+
+        if (removed > 0 && onChange)
+            onChange(pattern_);
+
+        return removed;
+    }
+
     void clearSelection()
     {
         if (selection_.empty())
@@ -207,6 +256,8 @@ public:
             beginVelocityDrag(e);
             return;
         }
+
+        grabKeyboardFocus(); // so Delete goes to the notes, not to the track
 
         int row = 0, step = 0;
         const bool onGrid = geometry_.cellAt(e.position.x, e.position.y,
@@ -357,6 +408,33 @@ public:
         }
         setMouseCursor(juce::MouseCursor::NormalCursor);
     }
+
+    /** Delete removes the selected notes.
+
+        Consumed whenever this pane has focus, even with nothing selected. It
+        would otherwise fall through to the app's Delete, which removes the
+        whole selected *track* — so editing notes and reaching for Delete
+        would destroy the part being edited. A key that means "delete a note"
+        in a note editor must not sometimes mean "delete everything". */
+    bool keyPressed(const juce::KeyPress& key) override
+    {
+        if (! key.isKeyCode(juce::KeyPress::deleteKey)
+            && ! key.isKeyCode(juce::KeyPress::backspaceKey))
+            return false;
+
+        if (key.getModifiers().getRawFlags() != 0)
+            return false; // cmd+backspace is Delete Clip; leave it to the owner
+
+        const int removed = deleteSelectedNotes();
+        if (onNotesDeleted)
+            onNotesDeleted(removed);
+
+        return true;
+    }
+
+    /** Fired after a Delete keystroke, with how many notes went — zero
+        included, so the owner can say why nothing happened. */
+    std::function<void(int numNotesDeleted)> onNotesDeleted;
 
     void mouseWheelMove(const juce::MouseEvent& e, const juce::MouseWheelDetails& wheel) override
     {
