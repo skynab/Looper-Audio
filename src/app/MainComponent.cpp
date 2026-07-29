@@ -1,5 +1,7 @@
 #include "MainComponent.h"
 
+#include "Shortcuts.h"
+
 #include "Icons.h"
 
 #include "engine/ClipSlot.h"
@@ -37,81 +39,7 @@ static constexpr int kNumTimeSignatures = (int) (sizeof(kTimeSignatures) / sizeo
 
 using Cmd = engine::EngineCommand::Type;
 
-/**
-    The keyboard shortcuts, defined once.
 
-    Each is the single source for both the key the app listens for and the
-    text its menu item advertises, so the two can't drift — a menu promising
-    a shortcut that does nothing is worse than no shortcut. Written as
-    descriptions rather than raw key codes because "command" already means
-    Ctrl away from macOS, and because they read as what the user sees.
-*/
-namespace keys
-{
-    inline const juce::KeyPress newProject = juce::KeyPress::createFromDescription("command + N");
-    inline const juce::KeyPress open       = juce::KeyPress::createFromDescription("command + O");
-    inline const juce::KeyPress save       = juce::KeyPress::createFromDescription("command + S");
-    inline const juce::KeyPress saveAs     = juce::KeyPress::createFromDescription("command + shift + S");
-    inline const juce::KeyPress bounce     = juce::KeyPress::createFromDescription("command + shift + B");
-
-    inline const juce::KeyPress undo       = juce::KeyPress::createFromDescription("command + Z");
-    inline const juce::KeyPress redo       = juce::KeyPress::createFromDescription("command + shift + Z");
-    inline const juce::KeyPress redoAlt    = juce::KeyPress::createFromDescription("command + Y");
-
-    // Notes and clips get separate shortcuts for the same reason they get
-    // separate menu commands: one pair whose meaning depends on which pane
-    // has focus is a coin toss at the moment you press it.
-    inline const juce::KeyPress copyNotes  = juce::KeyPress::createFromDescription("command + C");
-    inline const juce::KeyPress pasteNotes = juce::KeyPress::createFromDescription("command + V");
-    inline const juce::KeyPress copyClip   = juce::KeyPress::createFromDescription("command + shift + C");
-    inline const juce::KeyPress pasteClip  = juce::KeyPress::createFromDescription("command + shift + V");
-    inline const juce::KeyPress duplicate  = juce::KeyPress::createFromDescription("command + D");
-    inline const juce::KeyPress quantize   = juce::KeyPress::createFromDescription("command + U");
-    inline const juce::KeyPress deleteClip = juce::KeyPress::createFromDescription("command + backspace");
-
-    // Both spellings of "delete": on macOS the key labelled Delete is
-    // backspace, while forward-delete is a separate key that PC keyboards
-    // label Delete. Accepting both means the same keycap works everywhere.
-    // Track-level copy/paste sits on the alt variants: cmd+C/V are notes,
-    // cmd+shift+C/V are clips, so tracks take the remaining pair rather than
-    // overloading one of those with a third meaning.
-    inline const juce::KeyPress copyTrack      = juce::KeyPress::createFromDescription("command + alt + C");
-    inline const juce::KeyPress pasteTrack     = juce::KeyPress::createFromDescription("command + alt + V");
-    inline const juce::KeyPress duplicateTrack = juce::KeyPress::createFromDescription("command + shift + D");
-
-    inline const juce::KeyPress deleteTrack    = juce::KeyPress(juce::KeyPress::backspaceKey);
-    inline const juce::KeyPress deleteTrackAlt = juce::KeyPress(juce::KeyPress::deleteKey);
-
-    // Transport. Space is unmodified because it's the control reached for
-    // most, and every DAW spells it this way; a focused text field consumes
-    // its own keys first, so it can't interrupt typing.
-    inline const juce::KeyPress playPause  = juce::KeyPress(juce::KeyPress::spaceKey);
-    inline const juce::KeyPress toStart    = juce::KeyPress(juce::KeyPress::homeKey);
-    inline const juce::KeyPress toEnd      = juce::KeyPress(juce::KeyPress::endKey);
-    inline const juce::KeyPress backOneBar = juce::KeyPress::createFromDescription("command + cursor left");
-    inline const juce::KeyPress onOneBar   = juce::KeyPress::createFromDescription("command + cursor right");
-    inline const juce::KeyPress record     = juce::KeyPress::createFromDescription("command + R");
-    inline const juce::KeyPress loop       = juce::KeyPress::createFromDescription("command + L");
-
-    // Built from key codes rather than descriptions: the description parser
-    // splits on '+', so "command + -" and "command + +" are ambiguous to it
-    // and would silently produce a shortcut that matches nothing.
-    inline const juce::KeyPress zoomIn  { '=', juce::ModifierKeys::commandModifier, 0 };
-    inline const juce::KeyPress zoomOut { '-', juce::ModifierKeys::commandModifier, 0 };
-
-    /** Every shortcut above, for the startup check. A description with a typo
-        in it parses to an invalid KeyPress that matches nothing and prints no
-        shortcut text — a failure that otherwise surfaces only when someone
-        presses the key and nothing happens. */
-    inline const juce::KeyPress all[] = {
-        newProject, open, save, saveAs, bounce,
-        undo, redo, redoAlt,
-        copyNotes, pasteNotes, copyClip, pasteClip, duplicate, quantize, deleteClip,
-        deleteTrack, deleteTrackAlt, copyTrack, pasteTrack, duplicateTrack,
-        playPause, toStart, toEnd, backOneBar, onOneBar, record, loop,
-        zoomIn, zoomOut
-    };
-}
 
 namespace
 {
@@ -910,8 +838,11 @@ MainComponent::MainComponent()
     // taken any earlier is stale by the time construction finishes.
     savedStateId_ = history_.stateId();
 
-    for ([[maybe_unused]] const auto& shortcut : keys::all)
-        jassert(shortcut.isValid());
+    // Still worth having in a debug build: it fires at launch rather than
+    // when someone presses the key. The tests are what cover the release
+    // build — see tests/gui/ShortcutsTests.cpp.
+    for ([[maybe_unused]] const auto& shortcut : keys::all())
+        jassert(shortcut.key.isValid());
 
     setWantsKeyboardFocus(true);
     setSize(900, 800);
