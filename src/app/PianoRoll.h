@@ -78,6 +78,10 @@ public:
     // Test access: the playhead's x and the grid's bar spacing are the two
     // things that can be silently wrong here — drawn off the grid, or not
     // following the time signature.
+    /** Where the playhead line is, in this component's coordinates. The owner
+        needs it to keep the viewport following playback. */
+    float playheadX() const { return playheadX((float) getWidth()); }
+
     float playheadXForTesting(float totalWidth) const { return playheadX(totalWidth); }
     int   numStepsForTesting() const { return geometry_.numSteps; }
     float gutterWidthForTesting() const { return geometry_.gutterWidth; }

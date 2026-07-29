@@ -204,6 +204,7 @@ private:
     void                   setKeysZoom(float zoom);
     void                   updateKeysZoomControls();
     void                   setKeysTimeZoom(float zoom);
+    void                   followKeysPlayhead();
     void                   updateKeysTimeZoomControls();
     void                   setTimelineZoom(float zoom);
     void                   updateZoomControls();
@@ -329,6 +330,7 @@ private:
     juce::Slider                       keysTimeZoomSlider_;
     juce::Slider                       keysTimeZoomBox_;
     juce::Viewport                     keysViewport_;
+    juce::ToggleButton                 keysFollowButton_;
     juce::TextButton                   addClipButton_  { "Add Clip" };
 
     CallbackComponent                  mixerView_;

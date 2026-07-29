@@ -1,5 +1,6 @@
 #include "MainComponent.h"
 
+#include "ScrollFollow.h"
 #include "Shortcuts.h"
 
 #include "Icons.h"
@@ -25,6 +26,10 @@ static constexpr int kFirstPanelMenuId = 100;
 /** Colour entries in the per-track gear menu, clear of that menu's own
     fixed items. */
 static constexpr int kFirstColourMenuId = 200;
+
+/** How close to the edge the playhead gets before the keys grid pages. Small,
+    so almost the whole width is travelled before each jump. */
+static constexpr int kKeysFollowMargin = 24;
 
 /** The time signatures offered. A fixed list because these are the ones
     people write in; a free numerator and denominator invites 4/7, which the
@@ -652,6 +657,14 @@ MainComponent::MainComponent()
     editTab_.addAndMakeVisible(keysViewport_);
 
     pianoRoll_.onTimeZoomChanged = [this] { updateKeysTimeZoomControls(); layoutEditTab(); };
+
+    // On by default: a scrolled grid that doesn't follow playback means the
+    // playhead simply leaves the screen. Off is for editing one bar while the
+    // rest of the pattern plays, where the view jumping is the annoyance.
+    keysFollowButton_.setButtonText("Follow");
+    keysFollowButton_.setTooltip("Scroll the grid to keep the playhead in view");
+    keysFollowButton_.setToggleState(true, juce::dontSendNotification);
+    editTab_.addAndMakeVisible(keysFollowButton_);
 
     // The wheel zooms the roll too, so the control follows it rather than
     // drifting from what's on screen.
@@ -3867,6 +3880,7 @@ void MainComponent::timerCallback()
         pianoRoll_.setPlayheadBeats(patternBeats > 0.0 ? engine::wrapPositive(intoClip, patternBeats)
                                                        : 0.0,
                                     inClip);
+        followKeysPlayhead();
     }
 
     // Gain automation playback (coarse, message-thread; sample-accurate on
@@ -4145,6 +4159,31 @@ void MainComponent::updateKeysZoomControls()
     keysZoomBox_.setValue(zoom, juce::dontSendNotification);
 }
 
+/** Keeps the playhead in view while the keys pane is scrolled.
+
+    Only while playing: scrolling the view out from under someone who is
+    editing a stopped pattern would be worse than the problem it solves. The
+    paging rule itself is scrollToFollow, which is JUCE-free and tested — it
+    pages rather than centring, so the grid stays still while the playhead
+    crosses it instead of sliding continuously under a fixed line. */
+void MainComponent::followKeysPlayhead()
+{
+    if (! keysFollowButton_.getToggleState() || ! engine_.isPlaying())
+        return;
+
+    const int viewportWidth = keysViewport_.getMaximumVisibleWidth();
+    const int contentWidth  = pianoRoll_.getWidth();
+    if (viewportWidth <= 0 || contentWidth <= viewportWidth)
+        return; // nothing to scroll
+
+    const int current = keysViewport_.getViewPositionX();
+    const int wanted  = scrollToFollow((int) pianoRoll_.playheadX(), current,
+                                       viewportWidth, contentWidth, kKeysFollowMargin);
+
+    if (wanted != current)
+        keysViewport_.setViewPosition(wanted, keysViewport_.getViewPositionY());
+}
+
 /** Widens the grid and lets the viewport scroll it. Unlike pitch zoom, which
     the roll stores as a row count and snaps, this is continuous — the roll
     simply draws to whatever width it's given. */
@@ -4213,6 +4252,9 @@ void MainComponent::layoutEditTab()
     keysTimeZoomBox_.setBounds(header.removeFromRight(52).reduced(0, 2));
     keysTimeZoomSlider_.setBounds(header.removeFromRight(80).reduced(2, 1));
     keysTimeZoomIcon_.setBounds(header.removeFromRight(22).reduced(0, 1));
+
+    header.removeFromRight(8);
+    keysFollowButton_.setBounds(header.removeFromRight(72).reduced(0, 2));
 
     editingLabel_.setBounds(header.reduced(6, 0));
 
