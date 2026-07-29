@@ -232,3 +232,137 @@ TEST_CASE("The keys pane takes keyboard focus, or it never sees Delete", "[gui][
     PianoRoll roll;
     REQUIRE(roll.getWantsKeyboardFocus());
 }
+
+namespace
+{
+    /** The meters the transport control offers, as quarter-notes per bar. */
+    struct Meter { int numerator, denominator; double quartersPerBar; };
+
+    const Meter kOfferedMeters[] = {
+        { 4, 4, 4.0 }, { 3, 4, 3.0 }, { 2, 4, 2.0 }, { 5, 4, 5.0 },
+        { 6, 8, 3.0 }, { 7, 8, 3.5 }, { 12, 8, 6.0 },
+    };
+}
+
+TEST_CASE("The grid shows the whole pattern in every meter the app offers", "[gui][pianoroll]")
+{
+    // The cap used to be 64 steps, described as "4 bars of 16ths" — true only
+    // in 4/4. Four bars of 5/4 is 80 sixteenths and of 12/8 is 96, so those
+    // patterns were silently truncated: the tail invisible and unreachable in
+    // the editor while still playing.
+    JuceFixture fixture;
+
+    for (const auto& meter : kOfferedMeters)
+    {
+        for (int bars : { 1, 2, 4 })
+        {
+            engine::Pattern pattern;
+            pattern.lengthBeats = meter.quartersPerBar * bars;
+
+            PianoRoll roll;
+            roll.setPattern(pattern);
+
+            const double covered = roll.numStepsForTesting() * roll.stepBeatsForTesting();
+            INFO(meter.numerator << "/" << meter.denominator << ", " << bars << " bars: "
+                 << pattern.lengthBeats << " beats, grid covers " << covered);
+
+            REQUIRE(std::abs(covered - pattern.lengthBeats) < 1.0e-9);
+        }
+    }
+}
+
+TEST_CASE("Every offered meter divides into whole steps", "[gui][pianoroll]")
+{
+    // A bar that isn't a whole number of steps would put bar lines between
+    // columns, and no note could be placed on the downbeat.
+    JuceFixture fixture;
+    PianoRoll roll;
+    const double stepBeats = roll.stepBeatsForTesting();
+
+    for (const auto& meter : kOfferedMeters)
+    {
+        const double steps = meter.quartersPerBar / stepBeats;
+        INFO(meter.numerator << "/" << meter.denominator << " -> " << steps << " steps per bar");
+        REQUIRE(std::abs(steps - std::round(steps)) < 1.0e-9);
+    }
+}
+
+TEST_CASE("The playhead measures against the pattern, not the grid", "[gui][pianoroll]")
+{
+    // If the grid is ever capped, the pattern is the truth. Scaling against a
+    // truncated grid would misplace the line for the whole clip rather than
+    // only past the cap.
+    JuceFixture fixture;
+
+    engine::Pattern pattern;
+    pattern.lengthBeats = 16.0;
+
+    PianoRoll roll;
+    roll.setSize(800, 400);
+    roll.setPattern(pattern);
+
+    // Halfway through the pattern is halfway across the grid.
+    roll.setPlayheadBeats(8.0, true);
+    const float atHalf = roll.playheadXForTesting(800.0f);
+
+    roll.setPlayheadBeats(16.0, true);
+    const float atEnd = roll.playheadXForTesting(800.0f);
+
+    roll.setPlayheadBeats(0.0, true);
+    const float atStart = roll.playheadXForTesting(800.0f);
+
+    REQUIRE(atHalf > atStart);
+    REQUIRE(atEnd > atHalf);
+    REQUIRE(std::abs((atHalf - atStart) - (atEnd - atHalf)) < 1.0f); // evenly spaced
+}
+
+TEST_CASE("An absurd pattern length is capped rather than asking for a million columns",
+          "[gui][pianoroll]")
+{
+    JuceFixture fixture;
+
+    engine::Pattern pattern;
+    pattern.lengthBeats = 100000.0;
+
+    PianoRoll roll;
+    roll.setPattern(pattern);
+
+    REQUIRE(roll.numStepsForTesting() <= PianoRoll::maxStepsForTesting());
+    REQUIRE(roll.numStepsForTesting() > 0);
+}
+
+TEST_CASE("A capped grid doesn't misplace the playhead", "[gui][pianoroll]")
+{
+    // The only case where the grid's extent and the pattern's length differ:
+    // a pattern past the column cap. Every other test has them equal, so this
+    // is the one that can tell "measured against the pattern" from "measured
+    // against the grid" — without it that change is unverified.
+    JuceFixture fixture;
+
+    PianoRoll roll;
+    roll.setSize(800, 400);
+
+    engine::Pattern pattern;
+    pattern.lengthBeats = 100.0; // 400 sixteenths, past the 256-column cap
+    roll.setPattern(pattern);
+
+    const double gridBeats = roll.numStepsForTesting() * roll.stepBeatsForTesting();
+    REQUIRE(gridBeats < pattern.lengthBeats); // the case actually arose
+
+    roll.setPlayheadBeats(0.0, true);
+    const float atStart = roll.playheadXForTesting(800.0f);
+
+    roll.setPlayheadBeats(50.0, true); // halfway through the pattern
+    const float atHalf = roll.playheadXForTesting(800.0f);
+
+    roll.setPlayheadBeats(100.0, true); // the very end
+    const float atEnd = roll.playheadXForTesting(800.0f);
+
+    // Halfway through the pattern is halfway across the drawn grid. Measured
+    // against the capped grid instead, beat 50 would already be past its end
+    // and pin to the right edge alongside beat 100.
+    const float halfway = atStart + (atEnd - atStart) * 0.5f;
+    INFO("start " << atStart << " half " << atHalf << " end " << atEnd);
+    REQUIRE(std::abs(atHalf - halfway) < 2.0f);
+    REQUIRE(atHalf < atEnd - 10.0f); // and nowhere near pinned to the end
+}

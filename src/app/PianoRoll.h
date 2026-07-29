@@ -79,6 +79,9 @@ public:
     // things that can be silently wrong here — drawn off the grid, or not
     // following the time signature.
     float playheadXForTesting(float totalWidth) const { return playheadX(totalWidth); }
+    int   numStepsForTesting() const { return geometry_.numSteps; }
+    double stepBeatsForTesting() const { return geometry_.stepBeats; }
+    static constexpr int maxStepsForTesting() { return kMaxSteps; }
     float rowHeightForTesting(float totalHeight) const { return geometry_.rowHeight(totalHeight); }
     double beatsPerBarForTesting() const { return beatsPerBar_; }
 
@@ -562,13 +565,25 @@ private:
     /** The vertical line showing where playback is inside the pattern. Drawn
         last so it sits over the notes: it is a readout, and a readout behind
         the data it refers to is worse than none. */
+    /** The pattern's length in beats, falling back to the grid's extent for a
+        pattern that never had one set. */
+    double patternLengthBeats() const
+    {
+        return pattern_.lengthBeats > 0.0 ? pattern_.lengthBeats
+                                          : geometry_.numSteps * geometry_.stepBeats;
+    }
+
     /** Where the playhead line sits for a given component width. Clamped to
         the grid: a position past the pattern's end would otherwise draw
         outside it, and a line floating beyond the last step reads as a
         rendering fault rather than as a position. */
     float playheadX(float totalWidth) const
     {
-        const double patternBeats = geometry_.numSteps * geometry_.stepBeats;
+        // The pattern's own length, not the grid's. They agree unless the
+        // grid has been capped, and in that case the pattern is the truth —
+        // scaling against a truncated grid would put the line at the wrong
+        // position for the whole clip rather than only past the cap.
+        const double patternBeats = patternLengthBeats();
         if (patternBeats <= 0.0)
             return geometry_.gutterWidth;
 
@@ -579,10 +594,7 @@ private:
 
     void paintPlayhead(juce::Graphics& g, float w, float h) const
     {
-        if (! playheadVisible_)
-            return;
-
-        if (geometry_.numSteps * geometry_.stepBeats <= 0.0)
+        if (! playheadVisible_ || patternLengthBeats() <= 0.0)
             return;
 
         g.setColour(juce::Colours::orange.withAlpha(0.9f));
@@ -591,7 +603,14 @@ private:
 
     enum class DragMode { None, ResizeNote, Velocity };
 
-    static constexpr int   kMaxSteps           = 64; // 4 bars of 16ths
+    // A ceiling on the grid, not a statement about bars. It used to be 64,
+    // commented "4 bars of 16ths", which is only 4 bars in 4/4: four bars of
+    // 5/4 is 80 sixteenths and of 12/8 is 96, so a pattern that long was
+    // silently truncated — the tail invisible in the editor and unreachable,
+    // while still playing. 256 is sixteen bars of 4/4 and covers every meter
+    // and length the app offers, with room to spare; it exists only so an
+    // absurd pattern length can't ask for a million columns.
+    static constexpr int   kMaxSteps           = 256;
     static constexpr float kVelocityLaneHeight = 46.0f;
     static constexpr float kResizeEdgePixels   = 6.0f;
 
