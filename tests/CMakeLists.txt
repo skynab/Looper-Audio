@@ -28,7 +28,8 @@ add_executable(looper_tests
   app/PianoRollGeometryTests.cpp
   app/DockLayoutTreeTests.cpp
   app/ClipPreviewTests.cpp
-  app/ScrollFollowTests.cpp)
+  app/ScrollFollowTests.cpp
+  app/ChordStampTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE

@@ -1217,46 +1217,32 @@ double MainComponent::beatsPerBar() const
     Shared by the open-shape palette and by clicking the neck: those differ in
     which notes they produce, not in where the notes go or how that's
     reported. */
-bool MainComponent::stampNotes(const std::vector<engine::Note>& notes, const juce::String& what)
+/** Adds already-placed notes to the selected clip and reports it.
+
+    The notes arrive carrying their final positions — planChordStamp works out
+    where the bar is, and this only commits. Splitting it that way is what
+    makes the placement testable. */
+bool MainComponent::commitStampedNotes(const std::vector<engine::Note>& notes,
+                                       const juce::String& what, double atBeats)
 {
-    const auto& song = history_.current();
-    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
-        return false;
-
-    const auto& track    = song.tracks[(size_t) selectedTrackIndex_];
-    const int   trackIdx = selectedTrackIndex_;
-    const int   clipIdx  = selectedClipIndex_;
-
-    if (clipIdx < 0 || clipIdx >= (int) track.clips.size())
-    {
-        showError("\"" + juce::String(track.name) + "\" has no clip selected to put the chord in");
-        return false;
-    }
-
-    // Land it on the bar the playhead is in, so stamping while stopped puts
-    // the chord where the transport is rather than always at the start.
-    const auto&  clip     = track.clips[(size_t) clipIdx];
-    const double playhead = uiTempoMap_.ppqFromSamples(engine_.playheadSamples()) - clip.startBeats;
-    const double wrapped  = clip.pattern.lengthBeats > 0.0
-                              ? engine::wrapPositive(playhead, clip.pattern.lengthBeats) : 0.0;
-    const double at       = std::floor(wrapped / beatsPerBar()) * beatsPerBar();
+    const int trackIdx = selectedTrackIndex_;
+    const int clipIdx  = selectedClipIndex_;
 
     int added = 0;
-    history_.edit("Add chord", [trackIdx, clipIdx, &notes, &added, at](model::Song& s)
+    history_.edit("Add chord", [trackIdx, clipIdx, &notes, &added](model::Song& s)
     {
+        if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+            return;
+
         auto& clips = s.tracks[(size_t) trackIdx].clips;
         if (clipIdx < 0 || clipIdx >= (int) clips.size())
             return;
 
         auto& pattern = clips[(size_t) clipIdx].pattern;
-        for (auto note : notes)
+        for (const auto& note : notes)
         {
-            note.startBeats += at;
-            if (note.startBeats < pattern.lengthBeats)
-            {
-                pattern.notes.push_back(note);
-                ++added;
-            }
+            pattern.notes.push_back(note);
+            ++added;
         }
     });
 
@@ -1268,9 +1254,9 @@ bool MainComponent::stampNotes(const std::vector<engine::Note>& notes, const juc
     // rolling over that bar, nothing moves and nothing sounds. Say what landed
     // and where, or a chord that worked looks exactly like one that didn't.
     if (added > 0)
-        showStatus(what + " written at beat " + juce::String(at + 1.0, 2));
+        showStatus(what + " written at beat " + juce::String(atBeats + 1.0, 2));
     else
-        showError("No room for " + what + " in this clip");
+        showError("Couldn't write " + what + " — the clip went away");
 
     return added > 0;
 }
@@ -1319,22 +1305,28 @@ void MainComponent::previewChord(const std::vector<engine::Note>& notes)
 void MainComponent::stampChord(const engine::ChordShape& shape, int fretOffset,
                                const engine::StrumSettings& strum)
 {
-    const auto* track = guitarTrackForChords();
-    if (track == nullptr)
-        return;
+    // Every guard and the placement arithmetic live in planChordStamp, which
+    // is JUCE-free and tested. They were inside this function, where nothing
+    // could reach them — which is most of why the reported "the chord buttons
+    // don't do anything" took so long to place.
+    const auto plan = planChordStamp(history_.current(), selectedTrackIndex_, selectedClipIndex_,
+                                     shape, fretOffset, strum,
+                                     uiTempoMap_.ppqFromSamples(engine_.playheadSamples()),
+                                     beatsPerBar(), chordStampSeed_++ | 1u);
 
-    // Built once and used for both, so what is heard is exactly what lands.
-    const auto notes = engine::GuitarChords::strumChord(shape, track->guitarSettings.tuning.data(),
-                                                        fretOffset, 0.0, beatsPerBar(),
-                                                        history_.current().bpm, strum,
-                                                        (uint32_t) (chordStampSeed_++ | 1u));
+    if (! plan.ok)
+    {
+        showError(juce::String(plan.problem));
+        return;
+    }
 
     // Played as well as written. Stamping puts notes in the clip, which makes
     // no sound unless the transport happens to be rolling over that bar — so
     // without this a button that worked was indistinguishable from one that
     // didn't.
-    previewChord(notes);
-    stampNotes(notes, juce::String(shape.name) + " chord");
+    previewChord(plan.notes);
+    commitStampedNotes(plan.notes, juce::String(shape.name) + " chord",
+                       plan.atBeats);
 }
 
 /** A click on the neck with a chord mode selected: the shape rooted there is
@@ -1379,7 +1371,7 @@ void MainComponent::playChordAtFret(engine::MovableShape shape, int rootString, 
         return;
     }
 
-    stampNotes(struck, what);
+    commitStampedNotes(struck, what, 0.0);
 }
 
 /** Same as addTrack(), but a Guitar-type track — six plucked strings in

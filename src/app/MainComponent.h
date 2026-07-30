@@ -22,6 +22,7 @@
 #include "MixerStrip.h"
 #include "PianoRoll.h"
 #include "PluginEditorWindow.h"
+#include "ChordStamp.h"
 #include "SessionView.h"
 #include "TrackColours.h"
 #include "StatusBanner.h"
@@ -126,7 +127,8 @@ private:
                                            const engine::StrumSettings& strum, bool writeToClip);
     const model::Track*    guitarTrackForChords();
     double                 beatsPerBar() const;
-    bool                   stampNotes(const std::vector<engine::Note>& notes, const juce::String& what);
+    bool                   commitStampedNotes(const std::vector<engine::Note>& notes,
+                                              const juce::String& what, double atBeats);
     void                   assignDrumSample(int padIndex, const juce::File& file);
     void                   setDrumPadMix(int padIndex, const model::DrumPad& pad);
     void                   addDrumPad();
