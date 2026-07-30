@@ -114,7 +114,8 @@ enum class EffectKind
     Plugin = 3,
     Drive      = 4, // the guitar pedals — see engine::DriveEffect and PedalEffects.h
     Compressor = 5,
-    Tremolo    = 6
+    Tremolo    = 6,
+    Chorus     = 7
 };
 
 /**
@@ -169,6 +170,19 @@ struct TremoloSettings
     bool operator==(const TremoloSettings&) const = default;
 };
 
+/** A chorus pedal. `depth` is how far the delay sweeps, `mix` how much of the
+    swept copies is heard — at zero depth it's a fixed comb rather than a
+    chorus, which is a usable tone and not a broken one. */
+struct ChorusSettings
+{
+    bool  enabled = false;
+    float rateHz  = 0.6f;
+    float depth   = 0.5f;
+    float mix     = 0.5f;
+
+    bool operator==(const ChorusSettings&) const = default;
+};
+
 struct EffectSlot
 {
     EffectKind kind    = EffectKind::Filter;
@@ -180,6 +194,7 @@ struct EffectSlot
     DriveSettings      drive;
     CompressorSettings compressor;
     TremoloSettings    tremolo;
+    ChorusSettings     chorus;
     PluginRef          plugin; // meaningful when kind == Plugin
 
     bool operator==(const EffectSlot&) const = default;

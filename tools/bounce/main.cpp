@@ -944,6 +944,86 @@ int main(int argc, char** argv)
         tremoloModulates = loudWindows > 4 && deepestDip < 0.3f;
     }
 
+    // The chorus in a real chain: it must audibly change the sound, and its
+    // depth must audibly change it again — a chorus whose sweep did nothing
+    // would be a fixed comb filter wearing the name.
+    bool chorusChangesSound = false;
+    bool chorusDepthMatters = false;
+    {
+        auto renderChorus = [&](int layout) // 0 = clean, 1 = swept, 2 = depth zero
+        {
+            const int totalSamples = (int) (sampleRate * 1.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+
+            if (layout != 0)
+            {
+                auto chain = std::make_unique<EffectChain>();
+                auto node  = std::make_unique<ChorusNode>();
+                node->effect.setEnabled(true);
+                node->effect.setRateHz(3.0f);
+                node->effect.setMix(1.0f);
+                node->effect.setDepth(layout == 1 ? 1.0f : 0.0f);
+                chain->add(std::move(node));
+                chain->prepare(sampleRate, 512);
+                track.setEffectChain(chain.release());
+            }
+
+            ClipSlot slot;
+            slot.pattern     = arp;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+            return mix;
+        };
+
+        auto worstDifference = [](const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+        {
+            const int n = std::min(a.getNumSamples(), b.getNumSamples());
+            float worst = 0.0f;
+            for (int i = 0; i < n; ++i)
+                worst = std::max(worst, std::abs(a.getSample(0, i) - b.getSample(0, i)));
+            return worst;
+        };
+
+        const auto clean  = renderChorus(0);
+        const auto swept  = renderChorus(1);
+        const auto static_ = renderChorus(2);
+
+        chorusChangesSound = clean.getRMSLevel(0, 0, clean.getNumSamples()) > 1.0e-4f
+                          && worstDifference(clean, swept) > 1.0e-3f;
+
+        // Depth zero is a fixed comb; depth one sweeps. If they matched, the
+        // modulation — the whole effect — would not be in the signal path.
+        chorusDepthMatters = worstDifference(swept, static_) > 1.0e-3f;
+    }
+
     bool effectChainOrderMatters = false;
     bool effectChainRunsAllNodes = false;
     {
@@ -1469,6 +1549,8 @@ int main(int argc, char** argv)
               << "  guitarPlaysSixAtOnce=" << (guitarPlaysSixAtOnce ? 1 : 0)
               << "  guitarPicksLowestFret=" << (guitarPicksLowestFret ? 1 : 0)
               << "  guitarHammerOn=" << (guitarHammerOn ? 1 : 0)
+              << "  chorusChangesSound=" << (chorusChangesSound ? 1 : 0)
+              << "  chorusDepthMatters=" << (chorusDepthMatters ? 1 : 0)
               << "  compressorSquashes=" << (compressorSquashes ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  driveChangesSound=" << (driveChangesSound ? 1 : 0)

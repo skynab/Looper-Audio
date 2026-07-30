@@ -154,7 +154,16 @@ static Song makeSampleSong()
         tremSlot.tremolo.rateHz  = 6.25f;
         tremSlot.tremolo.depth   = 0.85f;
 
-        s.tracks[0].effectChain = { filterSlot, pluginSlot, delaySlot, driveSlot, compSlot, tremSlot };
+        EffectSlot chorusSlot;
+        chorusSlot.kind           = EffectKind::Chorus;
+        chorusSlot.enabled        = true;
+        chorusSlot.chorus.enabled = true;
+        chorusSlot.chorus.rateHz  = 1.75f;
+        chorusSlot.chorus.depth   = 0.68f;
+        chorusSlot.chorus.mix     = 0.42f;
+
+        s.tracks[0].effectChain = { filterSlot, pluginSlot, delaySlot, driveSlot, compSlot,
+                                    tremSlot, chorusSlot };
     }
 
     {
@@ -280,7 +289,7 @@ TEST_CASE("An effect chain round-trips with its order and mixed kinds", "[model]
     REQUIRE(deserialize(serialize(original), restored));
 
     const auto& chain = restored.tracks[0].effectChain;
-    REQUIRE(chain.size() == 6);
+    REQUIRE(chain.size() == 7);
     REQUIRE(chain[0].kind == EffectKind::Filter);
     REQUIRE(chain[1].kind == EffectKind::Plugin);
     REQUIRE(chain[2].kind == EffectKind::Delay);
@@ -304,6 +313,11 @@ TEST_CASE("An effect chain round-trips with its order and mixed kinds", "[model]
     REQUIRE(chain[5].kind == EffectKind::Tremolo);
     REQUIRE(chain[5].tremolo.rateHz == 6.25f);
     REQUIRE(chain[5].tremolo.depth == 0.85f);
+
+    REQUIRE(chain[6].kind == EffectKind::Chorus);
+    REQUIRE(chain[6].chorus.rateHz == 1.75f);
+    REQUIRE(chain[6].chorus.depth == 0.68f);
+    REQUIRE(chain[6].chorus.mix == 0.42f);
 
     // The plugin's free-form fields survive intact, spaces and all — the
     // document has to be able to say which plugin it wanted even on a machine

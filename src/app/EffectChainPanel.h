@@ -102,6 +102,10 @@ public:
         setupSlider(tremRate_, 0.1, 20.0, 0.1, " Hz", [this] { pushParams(); });
         setupSlider(tremDepth_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
 
+        setupSlider(chorusRate_, 0.05, 8.0, 0.05, " Hz", [this] { pushParams(); });
+        setupSlider(chorusDepth_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
+        setupSlider(chorusMix_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
+
         filterMode_.addItem("Low-pass", 1);
         filterMode_.addItem("High-pass", 2);
         filterMode_.addItem("Band-pass", 3);
@@ -268,6 +272,10 @@ public:
             row(compThreshold_); row(compRatio_); row(compAttack_); row(compRelease_); row(compMakeUp_);
         }
         else if (kind == model::EffectKind::Tremolo) { row(tremRate_); row(tremDepth_); }
+        else if (kind == model::EffectKind::Chorus)
+        {
+            row(chorusRate_); row(chorusDepth_); row(chorusMix_);
+        }
     }
 
 private:
@@ -307,6 +315,7 @@ private:
             case model::EffectKind::Drive:      return "Drive";
             case model::EffectKind::Compressor: return "Compressor";
             case model::EffectKind::Tremolo:    return "Tremolo";
+            case model::EffectKind::Chorus:     return "Chorus";
             case model::EffectKind::Plugin:
                 // A plugin the machine no longer has still names itself, which
                 // is the whole reason the document stores the name.
@@ -330,6 +339,7 @@ private:
         pedals.addItem(5, "Drive");
         pedals.addItem(6, "Compressor");
         pedals.addItem(7, "Tremolo");
+        pedals.addItem(8, "Chorus");
         menu.addSubMenu("Guitar pedals", pedals);
         menu.addSeparator();
 
@@ -358,6 +368,7 @@ private:
             else if (result == 5 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Drive);
             else if (result == 6 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Compressor);
             else if (result == 7 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Tremolo);
+            else if (result == 8 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Chorus);
             else if (result == 5 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Drive);
             else if (result == 4 && onScanRequested) onScanRequested();
             else if (result >= 100)
@@ -387,7 +398,8 @@ private:
                  &driveAmount_, &driveTone_, &driveLevel_,
                  &driveHardClip_, &driveCabinet_,
                  &compThreshold_, &compRatio_, &compAttack_,
-                 &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_ };
+                 &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_,
+                 &chorusRate_, &chorusDepth_, &chorusMix_ };
     }
 
     void setupSlider(juce::Slider& slider, double lo, double hi, double step,
@@ -465,6 +477,14 @@ private:
                 tremRate_.setVisible(true); tremDepth_.setVisible(true);
                 break;
 
+            case model::EffectKind::Chorus:
+                chorusRate_.setValue(slot.chorus.rateHz, juce::dontSendNotification);
+                chorusDepth_.setValue(slot.chorus.depth * 100.0, juce::dontSendNotification);
+                chorusMix_.setValue(slot.chorus.mix * 100.0, juce::dontSendNotification);
+                chorusRate_.setVisible(true); chorusDepth_.setVisible(true);
+                chorusMix_.setVisible(true);
+                break;
+
             case model::EffectKind::Plugin:
                 editorButton_.setVisible(true);
                 break;
@@ -518,6 +538,11 @@ private:
                 slot.tremolo.rateHz = (float) tremRate_.getValue();
                 slot.tremolo.depth  = (float) (tremDepth_.getValue() / 100.0);
                 break;
+            case model::EffectKind::Chorus:
+                slot.chorus.rateHz = (float) chorusRate_.getValue();
+                slot.chorus.depth  = (float) (chorusDepth_.getValue() / 100.0);
+                slot.chorus.mix    = (float) (chorusMix_.getValue() / 100.0);
+                break;
             case model::EffectKind::Plugin:
                 return; // a plugin's parameters live in its own editor
         }
@@ -557,6 +582,7 @@ private:
     juce::Slider       driveAmount_, driveTone_, driveLevel_;
     juce::Slider       compThreshold_, compRatio_, compAttack_, compRelease_, compMakeUp_;
     juce::Slider       tremRate_, tremDepth_;
+    juce::Slider       chorusRate_, chorusDepth_, chorusMix_;
     juce::ToggleButton driveHardClip_, driveCabinet_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EffectChainPanel)

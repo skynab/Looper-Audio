@@ -26,7 +26,8 @@ enum class EffectNodeKind
     Plugin = 3,
     Drive      = 4,
     Compressor = 5,
-    Tremolo    = 6
+    Tremolo    = 6,
+    Chorus     = 7
 };
 
 /** What a chain slot should be. Carries plugin identity as plain strings —
@@ -83,6 +84,10 @@ struct EffectSlotParams
 
     float tremoloRateHz = 5.0f;
     float tremoloDepth  = 0.5f;
+
+    float chorusRateHz = 0.6f;
+    float chorusDepth  = 0.5f;
+    float chorusMix    = 0.5f;
 };
 
 /** One effect in a track's chain. Virtual dispatch costs one indirect call
@@ -147,6 +152,16 @@ struct TremoloNode final : EffectProcessor
     TremoloEffect effect;
 
     EffectNodeKind kind() const noexcept override { return EffectNodeKind::Tremolo; }
+    void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
+    void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
+};
+
+struct ChorusNode final : EffectProcessor
+{
+    ChorusEffect effect;
+
+    EffectNodeKind kind() const noexcept override { return EffectNodeKind::Chorus; }
     void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
     void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
     void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
@@ -235,6 +250,12 @@ public:
             comp->effect.setAttackMs(params.compAttackMs);
             comp->effect.setReleaseMs(params.compReleaseMs);
             comp->effect.setMakeUpDb(params.compMakeUpDb);
+        }
+        else if (auto* chorus = dynamic_cast<ChorusNode*>(&node))
+        {
+            chorus->effect.setRateHz(params.chorusRateHz);
+            chorus->effect.setDepth(params.chorusDepth);
+            chorus->effect.setMix(params.chorusMix);
         }
         else if (auto* trem = dynamic_cast<TremoloNode*>(&node))
         {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -112,6 +113,67 @@ private:
     std::atomic<bool>  enabled_ { false };
     std::atomic<float> rateHz_  { 5.0f };
     std::atomic<float> depth_   { 0.5f };
+};
+
+/** The chorus pedal as a chain node. One LFO phase per channel, offset so the
+    two sides drift apart — a chorus with both channels identical is a mono
+    effect played twice, and the width is most of why one is used. */
+class ChorusEffect
+{
+public:
+    void prepare(double sampleRate, int /*blockSize*/)
+    {
+        for (auto& channel : channels_)
+            channel.prepare(sampleRate);
+
+        // Half a cycle apart, so the left drifts sharp as the right drifts
+        // flat. Applied once here rather than per block: nudging it every
+        // block would make the offset depend on block size.
+        if (channels_.size() > 1)
+            for (int n = 0; n < kStereoOffsetSamples; ++n)
+                channels_[1].processSample(0.0f);
+    }
+
+    void setEnabled(bool enabled) { enabled_.store(enabled, std::memory_order_relaxed); }
+    void setRateHz(float hz)      { rateHz_.store(hz, std::memory_order_relaxed); }
+    void setDepth(float depth)    { depth_.store(depth, std::memory_order_relaxed); }
+    void setMix(float mix)        { mix_.store(mix, std::memory_order_relaxed); }
+
+    void process(juce::AudioBuffer<float>& buffer)
+    {
+        if (! enabled_.load(std::memory_order_relaxed))
+            return;
+
+        const float rate  = rateHz_.load(std::memory_order_relaxed);
+        const float depth = depth_.load(std::memory_order_relaxed);
+        const float mix   = mix_.load(std::memory_order_relaxed);
+
+        const int numChannels = juce::jmin(buffer.getNumChannels(), (int) channels_.size());
+
+        for (int channel = 0; channel < numChannels; ++channel)
+        {
+            auto& chorus = channels_[(size_t) channel];
+            chorus.setRateHz(rate);
+            chorus.setDepth(depth);
+            chorus.setMix(mix);
+
+            auto* samples = buffer.getWritePointer(channel);
+            for (int n = 0; n < buffer.getNumSamples(); ++n)
+                samples[n] = chorus.processSample(samples[n]);
+        }
+    }
+
+private:
+    // A quarter of a second at 48kHz — enough that the two channels' LFOs are
+    // audibly apart whatever the rate.
+    static constexpr int kStereoOffsetSamples = 12000;
+
+    std::array<Chorus, 2> channels_;
+
+    std::atomic<bool>  enabled_ { false };
+    std::atomic<float> rateHz_  { 0.6f };
+    std::atomic<float> depth_   { 0.5f };
+    std::atomic<float> mix_     { 0.5f };
 };
 
 } // namespace looper::engine
