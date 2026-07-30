@@ -207,3 +207,148 @@ TEST_CASE("Tremolo modulates at the rate it is given", "[engine][pedal]")
     REQUIRE(minima >= 13);
     REQUIRE(minima <= 15);
 }
+
+namespace
+{
+    /** Magnitude at one frequency, by direct correlation — every claim here is
+        about a single known bin, so a whole FFT would be more than it needs. */
+    double magnitudeAtHz(const std::vector<float>& signal, double hz, double sampleRate)
+    {
+        double re = 0.0, im = 0.0;
+        for (size_t n = 0; n < signal.size(); ++n)
+        {
+            const double phase = 2.0 * 3.14159265358979 * hz * (double) n / sampleRate;
+            re += signal[n] * std::cos(phase);
+            im -= signal[n] * std::sin(phase);
+        }
+        return std::sqrt(re * re + im * im) / (double) signal.size();
+    }
+
+    /** Runs a steady tone through a chorus and returns the output. */
+    std::vector<float> throughChorus(Chorus& chorus, double toneHz, int samples)
+    {
+        std::vector<float> out;
+        out.reserve((size_t) samples);
+        for (int n = 0; n < samples; ++n)
+            out.push_back(chorus.processSample(
+                (float) std::sin(2.0 * 3.14159265358979 * toneHz * n / kSampleRate)));
+        return out;
+    }
+
+}
+
+TEST_CASE("A chorus at zero mix is the dry signal", "[engine][pedal]")
+{
+    // The only reading of a mix control under which turning it down leaves the
+    // signal alone.
+    Chorus chorus;
+    chorus.prepare(kSampleRate);
+    chorus.setMix(0.0f);
+    chorus.setDepth(1.0f);
+
+    for (int n = 0; n < 4000; ++n)
+    {
+        const float in  = (float) std::sin(0.01 * n);
+        const float out = chorus.processSample(in);
+        REQUIRE(std::abs(out - in) < 1.0e-6f);
+    }
+}
+
+TEST_CASE("Modulation is what makes it a chorus", "[engine][pedal]")
+{
+    // A fixed short delay mixed with the dry signal is a comb filter — a tone
+    // colour, not a chorus. The sweep is the effect, so depth must change the
+    // output and not merely be stored.
+    Chorus still, moving;
+    still.prepare(kSampleRate);
+    moving.prepare(kSampleRate);
+
+    for (auto* c : { &still, &moving })
+    {
+        c->setMix(1.0f);
+        c->setRateHz(2.0f);
+    }
+    still.setDepth(0.0f);
+    moving.setDepth(1.0f);
+
+    const auto flat  = throughChorus(still, 440.0, 20000);
+    const auto swept = throughChorus(moving, 440.0, 20000);
+
+    float worst = 0.0f;
+    for (size_t n = 5000; n < flat.size(); ++n)
+        worst = std::max(worst, std::abs(flat[n] - swept[n]));
+
+    INFO("largest difference between static and swept: " << worst);
+    REQUIRE(worst > 0.05f);
+}
+
+TEST_CASE("A swept chorus doesn't generate harmonics", "[engine][pedal]")
+{
+    // The reason the delay is read at a fractional position, measured rather
+    // than asserted. A stepped delay is a nonlinearity: it puts energy at
+    // harmonics of the tone, which neither a delay nor a slow modulation of one
+    // can produce. Measured at 2x and 3x the tone, interpolation leaves about
+    // 0.3% of the fundamental there and whole-sample reads leave about 11%.
+    //
+    // This replaced a worst-sample-to-sample-step test, which did not
+    // discriminate: a one-sample delay jump moves the output by roughly the
+    // same amount as one sample of the tone's own slope, so no threshold on
+    // step size separates them.
+    constexpr double tone = 3000.0;
+
+    Chorus chorus;
+    chorus.prepare(kSampleRate);
+    chorus.setMix(1.0f);
+    chorus.setDepth(1.0f);
+    chorus.setRateHz(4.0f);
+
+    const auto out = throughChorus(chorus, tone, 32768);
+    const std::vector<float> steady(out.begin() + 8192, out.end());
+
+    const double fundamental = magnitudeAtHz(steady, tone, kSampleRate);
+    REQUIRE(fundamental > 1.0e-3); // the tone got through at all
+
+    for (double harmonic : { tone * 2.0, tone * 3.0 })
+    {
+        const double level = magnitudeAtHz(steady, harmonic, kSampleRate);
+        INFO("harmonic " << harmonic << " at " << (100.0 * level / fundamental)
+             << "% of the fundamental");
+        REQUIRE(level < fundamental * 0.02);
+    }
+}
+
+TEST_CASE("A chorus stays bounded and finite", "[engine][pedal]")
+{
+    // No feedback path, so it cannot run away — but the taps are summed, and
+    // a summing error would show up here.
+    Chorus chorus;
+    chorus.prepare(kSampleRate);
+    chorus.setMix(1.0f);
+    chorus.setDepth(1.0f);
+    chorus.setRateHz(8.0f);
+
+    for (int n = 0; n < 200000; ++n)
+    {
+        const float out = chorus.processSample(n % 2 == 0 ? 1.0f : -1.0f);
+        REQUIRE(std::isfinite(out));
+        REQUIRE(std::abs(out) <= 2.0f);
+    }
+}
+
+TEST_CASE("Chorus settings are clamped to usable ranges", "[engine][pedal]")
+{
+    // Depth past its range would ask the delay line for a position it hasn't
+    // allocated, and rate at zero would leave the sweep stationary.
+    Chorus chorus;
+    chorus.prepare(kSampleRate);
+    chorus.setMix(2.0f);
+    chorus.setDepth(50.0f);
+    chorus.setRateHz(1000.0f);
+
+    for (int n = 0; n < 8000; ++n)
+    {
+        const float out = chorus.processSample((float) std::sin(0.02 * n));
+        REQUIRE(std::isfinite(out));
+        REQUIRE(std::abs(out) <= 2.0f);
+    }
+}

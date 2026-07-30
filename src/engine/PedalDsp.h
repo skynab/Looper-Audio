@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "engine/DelayLine.h"
+
 namespace looper::engine
 {
 /**
@@ -155,6 +157,89 @@ private:
     double phase_      = 0.0;
     float  rateHz_     = 5.0f;
     float  depth_      = 0.5f;
+};
+
+/**
+    A chorus pedal: the signal mixed with slightly delayed, slowly detuned
+    copies of itself.
+
+    The detuning is the effect. A fixed short delay mixed with the dry signal
+    is a comb filter — a static tone colour, not a chorus. Sweeping that delay
+    makes each copy drift sharp and flat around the original, and it's the
+    beating between them that reads as several instruments rather than one.
+    Depth at zero is therefore a deliberate state, not a broken one: it leaves
+    the comb without the movement.
+
+    Two voices, their LFOs half a cycle apart, so one copy drifts sharp while
+    the other drifts flat. In phase they would move together and sound like a
+    single detuned copy.
+
+    The delay is read at a fractional position. Reading whole samples only
+    would quantise the sweep and click on every step — see
+    DelayLine::processSampleFractional, which exists for this.
+
+    JUCE-free so the claims about it can be measured headlessly: that the
+    modulation actually modulates, and that a swept delay stays smooth.
+*/
+class Chorus
+{
+public:
+    void prepare(double sampleRate)
+    {
+        sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+
+        // Sized for the longest delay the controls can ask for, once, here —
+        // the audio thread never resizes it.
+        const int maxSamples = (int) std::ceil((kMaxDelayMs + kMaxDepthMs) * 0.001 * sampleRate_) + 4;
+        line_.prepare(maxSamples);
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        line_.reset();
+        phase_ = 0.0;
+    }
+
+    void setRateHz(float hz) noexcept  { rateHz_ = std::clamp(hz, 0.05f, 8.0f); }
+    void setDepth(float depth) noexcept { depth_ = std::clamp(depth, 0.0f, 1.0f); }
+    void setMix(float mix) noexcept     { mix_ = std::clamp(mix, 0.0f, 1.0f); }
+
+    float processSample(float input) noexcept
+    {
+        const double centreSamples = kCentreDelayMs * 0.001 * sampleRate_;
+        const double swingSamples  = (double) depth_ * kMaxDepthMs * 0.001 * sampleRate_;
+
+        // Half a cycle apart: one copy drifts sharp as the other drifts flat.
+        const double lfoA = std::sin(kTwoPi * phase_);
+        const double lfoB = std::sin(kTwoPi * (phase_ + 0.5));
+
+        // One line, read twice. Two lines would hold the same samples twice
+        // over for no benefit — the taps differ in where they read, not in
+        // what was written.
+        const float wetA = line_.processSampleFractional(input, centreSamples + swingSamples * lfoA, 0.0f);
+        const float wetB = line_.readFractional(centreSamples + swingSamples * lfoB);
+
+        phase_ += (double) rateHz_ / sampleRate_;
+        if (phase_ >= 1.0)
+            phase_ -= 1.0;
+
+        const float wet = 0.5f * (wetA + wetB);
+        return input * (1.0f - mix_) + wet * mix_;
+    }
+
+private:
+    static constexpr double kTwoPi         = 6.283185307179586;
+    static constexpr double kCentreDelayMs = 14.0; // short enough to fuse, long enough to beat
+    static constexpr double kMaxDelayMs    = 14.0;
+    static constexpr double kMaxDepthMs    = 8.0;
+
+    DelayLine line_;
+    double    sampleRate_ = 48000.0;
+    double    phase_      = 0.0;
+    float     rateHz_     = 0.6f;
+    float     depth_      = 0.5f;
+    float     mix_        = 0.5f;
 };
 
 } // namespace looper::engine
