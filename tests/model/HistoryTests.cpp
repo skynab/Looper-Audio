@@ -144,3 +144,35 @@ TEST_CASE("Loading a document gives it a fresh identity", "[model][history]")
     history.reset(42);
     REQUIRE(history.stateId() != before);
 }
+
+TEST_CASE("Committing an edit invalidates references into the old state", "[model][history]")
+{
+    // Not a wish: a caller that holds a reference into current() across an
+    // edit is reading freed memory afterwards. Pinning it here because the
+    // mute path did exactly that — it was safe while mute used
+    // mutableCurrent, which mutates in place, and became a dangling read the
+    // moment mute became an undoable edit.
+    //
+    // Checked by identity rather than by dereferencing the old reference,
+    // which would be the undefined behaviour itself.
+    History<std::vector<int>> history(std::vector<int> { 1, 2, 3 });
+
+    const int* before = history.current().data();
+
+    history.edit("grow", [](std::vector<int>& v) { v.push_back(4); });
+
+    const int* after = history.current().data();
+    REQUIRE(before != after); // the old buffer is not the live one any more
+    REQUIRE(history.current().size() == 4);
+}
+
+TEST_CASE("An edit that changes nothing is still an undo step", "[model][history]")
+{
+    // History doesn't second-guess its callers: skipping no-op edits is the
+    // caller's job, which is why setTrackMuted checks before committing.
+    History<int> history(5);
+    history.edit("same", [](int&) {});
+
+    REQUIRE(history.canUndo());
+    REQUIRE(history.current() == 5);
+}

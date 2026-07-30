@@ -689,10 +689,15 @@ MainComponent::MainComponent()
         if (trackIndex < 0 || trackIndex >= (int) tracks.size())
             return;
 
+        // Both read before the change. setTrackMuted is an undoable edit now,
+        // and committing one move-assigns the document — which leaves any
+        // reference into the old one dangling. Copying the name out first is
+        // what keeps this from reading freed memory a line later.
         const bool nowMuted = ! tracks[(size_t) trackIndex].muted;
+        const auto name     = juce::String(tracks[(size_t) trackIndex].name);
+
         setTrackMuted(trackIndex, nowMuted);
 
-        const auto name = juce::String(tracks[(size_t) trackIndex].name);
         showStatus((nowMuted ? "Muted " : "Unmuted ") + (name.isEmpty()
                        ? "track " + juce::String(trackIndex + 1) : "\"" + name + "\""));
     };
@@ -2911,11 +2916,33 @@ void MainComponent::setTrackGain(int index, float gainDb)
     engine_.setTrackGainDb(index, gainDb);
 }
 
+/** Mutes or unmutes a track, as an undoable edit.
+
+    Mute and solo go through the history where gain, pan and send level do
+    not, and the difference is that these two are discrete. A click is one
+    edit, so it makes one undo step. A fader is a drag of hundreds of values,
+    and putting each on the stack would bury the last real edit under a
+    hundred nudges — those stay live tweaks until there is somewhere to
+    coalesce a whole drag into a single step.
+
+    Undo reaches the audio as well as the document: refreshFromModel runs
+    syncEngineTracks, which pushes every track's mute and solo back to the
+    engine. Without that an undone mute would restore the checkbox and leave
+    the track silent. */
 void MainComponent::setTrackMuted(int index, bool muted)
 {
-    auto& song = history_.mutableCurrent();
-    if (index >= 0 && index < (int) song.tracks.size())
-        song.tracks[(size_t) index].muted = muted;
+    const auto& song = history_.current();
+    if (index < 0 || index >= (int) song.tracks.size())
+        return;
+
+    if (song.tracks[(size_t) index].muted == muted)
+        return; // nothing changed, so nothing worth an undo step
+
+    history_.edit(muted ? "Mute track" : "Unmute track", [index, muted](model::Song& s)
+    {
+        s.tracks[(size_t) index].muted = muted;
+    });
+
     engine_.setTrackMuted(index, muted);
 
     // Both views show mute, and either can set it, so both are refreshed from
@@ -2927,12 +2954,24 @@ void MainComponent::setTrackMuted(int index, bool muted)
     updateMixerStrips();
 }
 
+/** Solos or unsolos a track. Undoable for the same reason as mute — see
+    setTrackMuted, which explains why the continuous controls are not. */
 void MainComponent::setTrackSolo(int index, bool solo)
 {
-    auto& song = history_.mutableCurrent();
-    if (index >= 0 && index < (int) song.tracks.size())
-        song.tracks[(size_t) index].solo = solo;
+    const auto& song = history_.current();
+    if (index < 0 || index >= (int) song.tracks.size())
+        return;
+
+    if (song.tracks[(size_t) index].solo == solo)
+        return;
+
+    history_.edit(solo ? "Solo track" : "Unsolo track", [index, solo](model::Song& s)
+    {
+        s.tracks[(size_t) index].solo = solo;
+    });
+
     engine_.setTrackSolo(index, solo);
+    updateMixerStrips();
 }
 
 void MainComponent::setTrackPan(int index, float pan)
