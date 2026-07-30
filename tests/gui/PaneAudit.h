@@ -126,6 +126,68 @@ inline void requireUsable(juce::Component& pane, const juce::String& paneName)
     REQUIRE(findings.empty());
 }
 
+/**
+    Reports every interactive control that nothing is listening to.
+
+    The other half of the layout audit. A control can be parented, sized and
+    hit-testable and still do nothing at all, because whoever added it never
+    assigned its callback — which is how the drive pedal's controls existed for
+    a whole commit while being unreachable.
+
+    A deliberately empty handler counts as wired. Several controls here are read
+    on demand rather than reacted to — the strum spread is read when a chord is
+    stamped, not when it moves — and those are given an empty lambda on
+    purpose. The shape being caught is "nobody ever assigned anything", not
+    "the handler does little".
+
+    Buttons are optional, because a button whose state is only read is a normal
+    thing while a slider nobody reads is not.
+*/
+inline std::vector<Finding> auditWiring(juce::Component& pane, bool includeButtons)
+{
+    std::vector<Finding> findings;
+
+    std::vector<juce::Component*> controls;
+    collectControls(pane, controls);
+
+    for (auto* control : controls)
+    {
+        const auto name = control->getName().isEmpty() ? juce::String("(unnamed)")
+                                                       : control->getName();
+
+        if (auto* slider = dynamic_cast<juce::Slider*>(control))
+        {
+            if (slider->onValueChange == nullptr && slider->onDragEnd == nullptr)
+                findings.push_back({ "slider with no handler", name.toStdString() });
+        }
+        else if (auto* box = dynamic_cast<juce::ComboBox*>(control))
+        {
+            if (box->onChange == nullptr)
+                findings.push_back({ "combo box with no handler", name.toStdString() });
+        }
+        else if (includeButtons)
+        {
+            if (auto* button = dynamic_cast<juce::Button*>(control))
+                if (button->onClick == nullptr && button->onStateChange == nullptr)
+                    findings.push_back({ "button with no handler", name.toStdString() });
+        }
+    }
+
+    return findings;
+}
+
+inline void requireWired(juce::Component& pane, const juce::String& paneName,
+                         bool includeButtons = true)
+{
+    const auto findings = auditWiring(pane, includeButtons);
+
+    for (const auto& finding : findings)
+        UNSCOPED_INFO(paneName << ": " << finding.what << " - " << finding.detail);
+
+    INFO(paneName << " had " << findings.size() << " unwired control(s)");
+    REQUIRE(findings.empty());
+}
+
 /** Every control the pane manages must be a child of it. A component that was
     never parented lays out, shows and hides perfectly while drawing nothing —
     which is how a whole pedal shipped invisible. */

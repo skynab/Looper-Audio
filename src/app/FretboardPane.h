@@ -84,15 +84,21 @@ public:
             chordMode_.addItem(engine::movableShapeName((engine::MovableShape) i), i + 2);
         chordMode_.setSelectedId(1, juce::dontSendNotification);
         chordMode_.setTooltip("What clicking a fret plays: one note, or a chord rooted there");
+        // Read when a fret is clicked, not reacted to. Said explicitly rather
+        // than left unassigned, so a control nobody reads at all is still
+        // distinguishable from one deliberately read on demand.
+        chordMode_.onChange = [] {};
         addChildComponent(chordMode_);
 
         writeToClip_.setButtonText("Write");
         writeToClip_.setTooltip("Also write the chord into the open clip, not just play it");
+        writeToClip_.onClick = [] {}; // read on demand — see chordMode_ above
         addChildComponent(writeToClip_);
 
         strumDirection_.addItem("Down", 1);
         strumDirection_.addItem("Up", 2);
         strumDirection_.setSelectedId(1, juce::dontSendNotification);
+        strumDirection_.onChange = [] {}; // read on demand — see chordMode_ above
         addChildComponent(strumDirection_);
 
         setupSlider(strumSpread_, 0.0, 60.0, 1.0, " ms", [] {});

@@ -1,0 +1,268 @@
+#include "PaneAudit.h"
+
+#include <app/DrumsPane.h>
+#include <app/EffectChainPanel.h>
+#include <app/FileBrowserPanel.h>
+#include <app/FretboardPane.h>
+#include <app/MixerStrip.h>
+#include <app/SessionView.h>
+#include <app/SynthEditor.h>
+
+using namespace looper;
+
+namespace
+{
+    struct JuceFixture
+    {
+        juce::ScopedJuceInitialiser_GUI juce;
+    };
+
+    /** Button::triggerClick posts a message rather than calling back directly,
+        so the queue has to be pumped before the callback has run. */
+    void pump(int ms = 60)
+    {
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(ms);
+    }
+}
+
+TEST_CASE("Every pane's controls have something listening to them", "[gui][wiring]")
+{
+    // The other half of the layout audit. A control can be parented, sized and
+    // hit-testable and still do nothing, because whoever added it never
+    // assigned its callback — which is how the drive pedal's controls existed
+    // for a commit while being unreachable.
+    //
+    // Read-on-demand controls are assigned an empty handler explicitly, so
+    // "deliberately not reacted to" stays distinguishable from "nobody ever
+    // wired this".
+    JuceFixture fixture;
+
+    DrumsPane drums;
+    drums.connectCallbacks();
+    paneaudit::requireWired(drums, "DrumsPane");
+
+    SessionView session;
+    paneaudit::requireWired(session, "SessionView");
+
+    MixerStrip strip;
+    paneaudit::requireWired(strip, "MixerStrip");
+
+    EffectChainPanel fx;
+    paneaudit::requireWired(fx, "EffectChainPanel");
+
+    FileBrowserPanel files;
+    paneaudit::requireWired(files, "FileBrowserPanel");
+
+    FretboardPane fret;
+    paneaudit::requireWired(fret, "FretboardPane");
+
+    SynthEditor synth;
+    paneaudit::requireWired(synth, "SynthEditor");
+}
+
+TEST_CASE("A mixer strip reports every move the user makes", "[gui][wiring]")
+{
+    // Five separate callbacks, and the strip is the only way to reach any of
+    // them. One left unwired is a fader that moves and changes nothing.
+    JuceFixture fixture;
+
+    MixerStrip strip;
+    strip.setVisible(true);
+    strip.setBounds(0, 0, 120, 320);
+    strip.resized();
+
+    float gain = 0.0f,  send = -1.0f, pan = -99.0f;
+    bool  muted = false, soloed = false;
+    int   gains = 0, sends = 0, pans = 0, mutes = 0, solos = 0;
+
+    strip.onGainChange = [&](float v) { gain = v;   ++gains; };
+    strip.onSendChange = [&](float v) { send = v;   ++sends; };
+    strip.onPanChange  = [&](float v) { pan  = v;   ++pans;  };
+    strip.onMuteChange = [&](bool  v) { muted = v;  ++mutes; };
+    strip.onSoloChange = [&](bool  v) { soloed = v; ++solos; };
+
+    std::vector<juce::Component*> controls;
+    paneaudit::collectControls(strip, controls);
+
+    // Each control on its own, and each must report something: five callbacks
+    // checked together would let a dead fader hide behind a live one.
+    int reportsBefore = 0;
+    for (auto* control : controls)
+    {
+        reportsBefore = gains + sends + pans + mutes + solos;
+
+        if (auto* slider = dynamic_cast<juce::Slider*>(control))
+            slider->setValue(slider->getMinimum()
+                             + (slider->getMaximum() - slider->getMinimum()) * 0.25);
+        else if (auto* button = dynamic_cast<juce::Button*>(control))
+            button->triggerClick();
+
+        pump();
+
+        INFO("control " << (control->getName().isEmpty() ? juce::String("(unnamed)")
+                                                         : control->getName())
+             << " reported nothing");
+        REQUIRE(gains + sends + pans + mutes + solos > reportsBefore);
+    }
+
+    INFO("gain " << gains << " send " << sends << " pan " << pans
+         << " mute " << mutes << " solo " << solos);
+    REQUIRE(gains > 0);
+    REQUIRE(sends > 0);
+    REQUIRE(pans > 0);
+    REQUIRE(mutes > 0);
+    REQUIRE(solos > 0);
+
+    // The values reported are the ones the controls were set to, not defaults.
+    REQUIRE(muted);
+    REQUIRE(soloed);
+    REQUIRE(pan != -99.0f);
+    REQUIRE(send >= 0.0f);
+}
+
+TEST_CASE("The effect panel reports a parameter change for every kind", "[gui][wiring]")
+{
+    // Each kind shows its own controls. A kind whose controls were never
+    // hooked to pushParams would be an effect whose knobs move and do nothing
+    // — and each kind has to be checked, since they are wired separately.
+    JuceFixture fixture;
+
+    std::vector<model::EffectSlot> chain;
+    for (auto kind : { model::EffectKind::Filter, model::EffectKind::Delay,
+                       model::EffectKind::Reverb, model::EffectKind::Drive,
+                       model::EffectKind::Compressor, model::EffectKind::Tremolo })
+    {
+        model::EffectSlot slot;
+        slot.kind    = kind;
+        slot.enabled = true;
+        chain.push_back(slot);
+    }
+
+    for (int selected = 0; selected < (int) chain.size(); ++selected)
+    {
+        EffectChainPanel panel;
+        panel.setVisible(true);
+        panel.setBounds(0, 0, 700, 420);
+        panel.setChain(chain);
+        panel.selectSlotForTesting(selected);
+        panel.resized();
+
+        int reports = 0;
+        panel.onSlotParamsChanged = [&reports](const model::EffectSlot&, int) { ++reports; };
+
+        std::vector<juce::Component*> controls;
+        paneaudit::collectControls(panel, controls);
+
+        // One control at a time. Nudging them all together and asking for any
+        // report at all is too weak: a kind with five controls would pass with
+        // four of them wired, which is exactly the bug being looked for.
+        int checked = 0;
+        for (auto* control : controls)
+        {
+            if (! paneaudit::effectivelyVisible(panel, control))
+                continue;
+
+            auto* slider = dynamic_cast<juce::Slider*>(control);
+            if (slider == nullptr)
+                continue;
+
+            const int before = reports;
+            slider->setValue(slider->getMinimum()
+                             + (slider->getMaximum() - slider->getMinimum()) * 0.4);
+            pump();
+
+            INFO("effect kind index " << selected << ", slider "
+                 << (slider->getName().isEmpty() ? juce::String("(unnamed)") : slider->getName())
+                 << " reported " << (reports - before) << " change(s)");
+            REQUIRE(reports > before);
+            ++checked;
+        }
+
+        INFO("effect kind index " << selected << " showed " << checked << " slider(s)");
+        REQUIRE(checked > 0); // a kind showing no controls would pass vacuously
+    }
+}
+
+TEST_CASE("The synth editor reports its parameter changes", "[gui][wiring]")
+{
+    JuceFixture fixture;
+
+    SynthEditor editor;
+    editor.setVisible(true);
+    editor.setBounds(0, 0, 700, 420);
+
+    // setSettings is what reveals the controls — without it the editor shows
+    // its placeholder and the sweep below finds nothing to check. The
+    // checked > 0 assertion is there so that state fails loudly rather than
+    // passing vacuously, which is what it did on the first run of this test.
+    editor.setSettings(model::SynthSettings {});
+    editor.resized();
+
+    int reports = 0;
+    editor.onSettingsChanged = [&reports](const model::SynthSettings&) { ++reports; };
+
+    std::vector<juce::Component*> controls;
+    paneaudit::collectControls(editor, controls);
+
+    // Per control, for the same reason as the effect panel: any-of-them is
+    // satisfied by a single wired slider among a dozen dead ones.
+    int checked = 0;
+    for (auto* control : controls)
+    {
+        auto* slider = dynamic_cast<juce::Slider*>(control);
+        if (slider == nullptr || ! paneaudit::effectivelyVisible(editor, control))
+            continue;
+
+        const int before = reports;
+        slider->setValue(slider->getMinimum()
+                         + (slider->getMaximum() - slider->getMinimum()) * 0.6);
+        pump();
+
+        INFO("synth slider " << (slider->getName().isEmpty() ? juce::String("(unnamed)")
+                                                             : slider->getName())
+             << " reported " << (reports - before) << " change(s)");
+        REQUIRE(reports > before);
+        ++checked;
+    }
+
+    REQUIRE(checked > 0);
+}
+
+TEST_CASE("The drums pane reports adding and removing a pad", "[gui][wiring]")
+{
+    // connectCallbacks() wires the two halves through to the pane's own
+    // outputs. If it missed one, the button would work internally and the app
+    // would never hear about it.
+    JuceFixture fixture;
+
+    DrumsPane pane;
+    pane.setVisible(true);
+    pane.setBounds(0, 0, 900, 500);
+    pane.connectCallbacks();
+
+    engine::Pattern pattern;
+    pattern.lengthBeats = 4.0;
+    pane.setKit(model::makeDefaultDrumKit().pads, pattern);
+    pane.resized();
+
+    int added = 0, removed = 0;
+    pane.onPadAdded   = [&added] { ++added; };
+    pane.onPadRemoved = [&removed](int) { ++removed; };
+
+    std::vector<juce::Component*> controls;
+    paneaudit::collectControls(pane, controls);
+
+    for (auto* control : controls)
+    {
+        const auto name = control->getName();
+        if (name == "Add Pad" || name == "Remove Pad")
+            if (auto* button = dynamic_cast<juce::Button*>(control))
+                button->triggerClick();
+    }
+
+    pump();
+
+    INFO("added " << added << " removed " << removed);
+    REQUIRE(added > 0);
+    REQUIRE(removed > 0);
+}
