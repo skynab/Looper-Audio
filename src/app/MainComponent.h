@@ -23,6 +23,7 @@
 #include "PianoRoll.h"
 #include "PluginEditorWindow.h"
 #include "ChordStamp.h"
+#include "DragCommit.h"
 #include "TrackSelection.h"
 #include "SessionView.h"
 #include "TrackColours.h"
@@ -161,6 +162,8 @@ private:
     void                   updateSendBusControls();
     void                   updateSendBusEffectVisibility();
     void                   updateMixerStrips();
+    void                   beginFaderDrag(int trackIndex, MixerStrip::Fader fader);
+    void                   endFaderDrag(int trackIndex, MixerStrip::Fader fader);
     void                   setTrackGain(int index, float gainDb);
     void                   setTrackMuted(int index, bool muted);
     void                   setTrackSolo(int index, bool solo);
@@ -235,6 +238,13 @@ private:
     juce::File         projectFile_;
     unsigned long long savedStateId_ = 0;
     juce::String       windowTitle_;
+
+    // Where a fader was grabbed, so the whole drag can be committed as one
+    // undo step when it is released rather than one step per pixel.
+    bool               faderDragging_  = false;
+    int                faderDragTrack_ = -1;
+    MixerStrip::Fader  faderDragWhich_ = MixerStrip::Fader::Gain;
+    float              faderDragFrom_  = 0.0f;
 
     juce::MenuBarComponent          menuBar_;
 

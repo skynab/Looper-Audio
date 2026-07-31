@@ -567,6 +567,8 @@ MainComponent::MainComponent()
     {
         auto* strip = new MixerStrip();
         strip->onGainChange = [this, i](float db) { setTrackGain(i, db); };
+        strip->onFaderDragStart = [this, i](MixerStrip::Fader f) { beginFaderDrag(i, f); };
+        strip->onFaderDragEnd   = [this, i](MixerStrip::Fader f) { endFaderDrag(i, f); };
         strip->onMuteChange = [this, i](bool m)   { setTrackMuted(i, m); };
         strip->onSoloChange = [this, i](bool s)   { setTrackSolo(i, s); };
         strip->onSendChange = [this, i](float lv) { setTrackSendLevel(i, lv); };
@@ -2932,6 +2934,79 @@ void MainComponent::setTrackGain(int index, float gainDb)
                  .addPoint(uiTempoMap_.ppqFromSamples(engine_.playheadSamples()), gainDb);
     }
     engine_.setTrackGainDb(index, gainDb);
+}
+
+/** Reads the value a fader controls, straight from the document. */
+static float readFader(const model::Song& song, int index, MixerStrip::Fader fader)
+{
+    if (index < 0 || index >= (int) song.tracks.size())
+        return 0.0f;
+
+    const auto& track = song.tracks[(size_t) index];
+    switch (fader)
+    {
+        case MixerStrip::Fader::Gain: return track.gainDb;
+        case MixerStrip::Fader::Pan:  return track.pan;
+        case MixerStrip::Fader::Send: return track.sendLevel;
+    }
+    return 0.0f;
+}
+
+static void writeFader(model::Song& song, int index, MixerStrip::Fader fader, float value)
+{
+    if (index < 0 || index >= (int) song.tracks.size())
+        return;
+
+    auto& track = song.tracks[(size_t) index];
+    switch (fader)
+    {
+        case MixerStrip::Fader::Gain: track.gainDb    = value; break;
+        case MixerStrip::Fader::Pan:  track.pan       = value; break;
+        case MixerStrip::Fader::Send: track.sendLevel = value; break;
+    }
+}
+
+static const char* faderName(MixerStrip::Fader fader)
+{
+    switch (fader)
+    {
+        case MixerStrip::Fader::Gain: return "Set track gain";
+        case MixerStrip::Fader::Pan:  return "Set track pan";
+        case MixerStrip::Fader::Send: return "Set track send";
+    }
+    return "Set track level";
+}
+
+/** Remembers where a fader was when it was grabbed. */
+void MainComponent::beginFaderDrag(int trackIndex, MixerStrip::Fader fader)
+{
+    faderDragTrack_ = trackIndex;
+    faderDragWhich_ = fader;
+    faderDragFrom_  = readFader(history_.current(), trackIndex, fader);
+    faderDragging_  = true;
+}
+
+/** Turns a whole fader drag into one undo step.
+
+    The live changes during the drag go through mutableCurrent, so the audio
+    follows the fader without hundreds of snapshots. On release the document is
+    rewound to where the drag started and the final value committed as a single
+    edit — which is what leaves exactly one step on the stack for the whole
+    gesture.
+
+    Mute and solo don't need this: a click is already one edit. A fader is
+    hundreds of values, and one step each would bury the last real edit under a
+    drag. */
+void MainComponent::endFaderDrag(int trackIndex, MixerStrip::Fader fader)
+{
+    if (! faderDragging_ || faderDragTrack_ != trackIndex || faderDragWhich_ != fader)
+        return;
+
+    faderDragging_ = false;
+
+    const float landedOn = readFader(history_.current(), trackIndex, fader);
+    commitDrag(history_, faderName(fader), faderDragFrom_, landedOn,
+               [trackIndex, fader](model::Song& s, float v) { writeFader(s, trackIndex, fader, v); });
 }
 
 /** Mutes or unmutes a track, as an undoable edit.

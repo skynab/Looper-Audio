@@ -21,6 +21,17 @@ namespace looper
 class MixerStrip final : public juce::Component
 {
 public:
+    /** Which fader a drag belongs to. One pair of drag callbacks carrying this
+        beats three pairs that must each be remembered. */
+    enum class Fader { Gain, Pan, Send };
+
+    /** Fired when a fader is grabbed and released. The owner uses them to turn
+        a whole drag into one undo step: hundreds of onXChange calls make the
+        audio follow the fader, and the pair around them says where the move
+        began and ended. */
+    std::function<void(Fader)> onFaderDragStart;
+    std::function<void(Fader)> onFaderDragEnd;
+
     std::function<void(float)> onGainChange;
     std::function<void(bool)>  onMuteChange;
     std::function<void(bool)>  onSoloChange;
@@ -49,6 +60,7 @@ public:
         sendSlider_.setRange(0.0, 100.0, 1.0);
         sendSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         sendSlider_.onValueChange = [this] { if (onSendChange) onSendChange((float) (sendSlider_.getValue() / 100.0)); };
+        wireDrag(sendSlider_, Fader::Send);
         addAndMakeVisible(sendSlider_);
 
         sendLabel_.setText("Send", juce::dontSendNotification);
@@ -62,6 +74,7 @@ public:
         panSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
         panSlider_.setDoubleClickReturnValue(true, 0.0); // double-click re-centres
         panSlider_.onValueChange = [this] { if (onPanChange) onPanChange((float) (panSlider_.getValue() / 100.0)); };
+        wireDrag(panSlider_, Fader::Pan);
         addAndMakeVisible(panSlider_);
 
         panLabel_.setText("Pan", juce::dontSendNotification);
@@ -75,6 +88,7 @@ public:
         gainSlider_.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 72, 20);
         gainSlider_.setTextValueSuffix(" dB");
         gainSlider_.onValueChange = [this] { if (onGainChange) onGainChange((float) gainSlider_.getValue()); };
+        wireDrag(gainSlider_, Fader::Gain);
         addAndMakeVisible(gainSlider_);
 
         addAndMakeVisible(meter_);
@@ -136,6 +150,14 @@ public:
     }
 
 private:
+    /** Reports a fader's grab and release. Both are needed: the start says
+        what to undo back to, and without the end a drag would never commit. */
+    void wireDrag(juce::Slider& slider, Fader fader)
+    {
+        slider.onDragStart = [this, fader] { if (onFaderDragStart) onFaderDragStart(fader); };
+        slider.onDragEnd   = [this, fader] { if (onFaderDragEnd)   onFaderDragEnd(fader); };
+    }
+
     juce::Label      nameLabel_;
     juce::TextButton muteButton_ { "M" };
     juce::TextButton soloButton_ { "S" };

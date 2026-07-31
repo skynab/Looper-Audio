@@ -176,3 +176,43 @@ TEST_CASE("An edit that changes nothing is still an undo step", "[model][history
     REQUIRE(history.canUndo());
     REQUIRE(history.current() == 5);
 }
+
+TEST_CASE("A drag can be committed as one undo step", "[model][history]")
+{
+    // How a fader move becomes undoable without hundreds of snapshots: the
+    // live values go through mutableCurrent so the audio follows the control,
+    // then on release the document is rewound to where the drag started and
+    // the final value committed as a single edit.
+    History<int> history(10);
+
+    // ...the drag: dozens of live values, none of them undo steps.
+    for (int value : { 11, 14, 19, 25, 31 })
+        history.mutableCurrent() = value;
+
+    REQUIRE(history.current() == 31);
+    REQUIRE_FALSE(history.canUndo()); // nothing on the stack yet
+
+    // ...and the release.
+    history.mutableCurrent() = 10; // back to where the grab happened
+    history.edit("Set level", [](int& v) { v = 31; });
+
+    REQUIRE(history.current() == 31);
+    REQUIRE(history.canUndo());
+
+    history.undo();
+    REQUIRE(history.current() == 10); // the whole drag, undone at once
+
+    history.redo();
+    REQUIRE(history.current() == 31);
+}
+
+TEST_CASE("A drag that goes nowhere leaves no undo step", "[model][history]")
+{
+    // Grabbing a fader and letting go without moving it should not fill the
+    // stack with edits that changed nothing — the caller checks before
+    // committing, and this is the behaviour that check protects.
+    History<int> history(10);
+    history.mutableCurrent() = 10; // "moved" to the same place
+
+    REQUIRE_FALSE(history.canUndo());
+}

@@ -30,7 +30,8 @@ add_executable(looper_tests
   app/ClipPreviewTests.cpp
   app/ScrollFollowTests.cpp
   app/ChordStampTests.cpp
-  app/TrackSelectionTests.cpp)
+  app/TrackSelectionTests.cpp
+  app/DragCommitTests.cpp)
 
 target_link_libraries(looper_tests
   PRIVATE
