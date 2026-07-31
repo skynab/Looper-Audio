@@ -42,6 +42,21 @@ inline bool shouldRestartFromStart(double playheadBeats, double contentEndBeats)
     return contentEndBeats > 0.0 && playheadBeats >= contentEndBeats - tolerance;
 }
 
+/** How many beats a duration in seconds occupies at a given tempo.
+
+    One definition because there were two, and they disagreed: importing audio
+    sized its clip from the file's real duration while recording used a flat
+    four beats whatever had been played. That single difference collapsed the
+    loop region to one bar after a take, so playback wrapped seconds in and
+    the transport wouldn't run past a recording it had just made. */
+inline double beatsForSeconds(double seconds, double bpm) noexcept
+{
+    if (seconds <= 0.0 || bpm <= 0.0)
+        return 0.0;
+
+    return seconds * bpm / 60.0;
+}
+
 /** Positive floating-point modulo: result is always in [0, length). */
 inline double wrapPositive(double x, double length) noexcept
 {

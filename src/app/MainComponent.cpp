@@ -3307,7 +3307,8 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
     // functionally gates playback the moment a track has more than one clip,
     // so guessing wrong there would audibly truncate the clip.
     const double durationSeconds = engine_.probeDurationSeconds(file);
-    const double lengthBeats     = durationSeconds > 0.0 ? durationSeconds * song.bpm / 60.0 : 4.0;
+    const double measured        = engine::beatsForSeconds(durationSeconds, song.bpm);
+    const double lengthBeats     = measured > 0.0 ? measured : 4.0;
     const auto   path            = file.getFullPathName().toStdString();
 
     if (addToExistingTrack)
@@ -3402,12 +3403,20 @@ void MainComponent::toggleRecording()
         awaitingRecordedTake_ = true;
         recordButton.setToggleState(true, juce::dontSendNotification); // swaps to the stop square
         recordButton.setTooltip(withShortcut("Stop recording", keys::record));
+
+        // The transport runs free for the length of a take. Looping would wrap
+        // it at the end of what is already arranged, which is precisely where
+        // a recording needs to keep going — you are recording the part that
+        // isn't there yet. The button's own state is left alone and restored
+        // when the take ends, so the user's setting survives.
+        post(Cmd::SetLooping, 0.0);
         post(Cmd::SetPlaying, 1.0);
     }
     else
     {
         engine_.stopRecording();
         post(Cmd::SetPlaying, 0.0);
+        post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0); // whatever it was before
         recordButton.setToggleState(false, juce::dontSendNotification); // back to the record disc
         recordButton.setTooltip(withShortcut("Record", keys::record));
     }
@@ -3418,6 +3427,13 @@ void MainComponent::finishRecordingIfReady()
     if (! awaitingRecordedTake_ || ! engine_.isRecordingFinished())
         return;
     awaitingRecordedTake_ = false;
+
+    // Every ending passes through here — the stop button, play/pause during a
+    // take, or the engine finishing on its own — so this is where looping is
+    // put back. Restoring it only in the stop button's handler would leave
+    // loop silently off after any other route out, including an empty take
+    // that returns just below.
+    post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
 
     const int length = engine_.recordedTakeLength();
     if (length <= 0)
@@ -3441,7 +3457,18 @@ void MainComponent::finishRecordingIfReady()
     const auto path = file.getFullPathName().toStdString();
     int        newTrackIndex = -1;
 
-    history_.edit("Record audio", [&path, &newTrackIndex](model::Song& s)
+    // The take's real duration, not a fixed guess. This used to be a flat four
+    // beats however long the recording was, and that one number was the whole
+    // of two separate faults: songEndBeats came back as four beats, so the
+    // loop region collapsed to a bar and the transport wrapped seconds into
+    // playback — while the audio kept going, because a track's sole audio clip
+    // gets an unbounded window regardless. The result was a recording that
+    // jumped back to its start shortly after beginning, and a transport that
+    // couldn't run past the end of a take it had just made.
+    const double takeSeconds = engine_.sampleRate() > 0.0
+                                 ? (double) length / engine_.sampleRate() : 0.0;
+
+    history_.edit("Record audio", [&path, &newTrackIndex, takeSeconds](model::Song& s)
     {
         const auto name = "Recording " + juce::String((int) s.tracks.size() + 1);
         model::addTrack(s, model::TrackType::Audio, name.toStdString());
@@ -3450,7 +3477,8 @@ void MainComponent::finishRecordingIfReady()
         clip.id          = model::allocateId(s);
         clip.type        = model::ClipType::Audio;
         clip.startBeats  = 0.0;
-        clip.lengthBeats = 4.0;
+        const double measured = engine::beatsForSeconds(takeSeconds, s.bpm);
+        clip.lengthBeats = measured > 0.0 ? measured : 4.0;
         clip.audioFile   = path;
         s.tracks.back().clips.push_back(clip);
 

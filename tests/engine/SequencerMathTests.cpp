@@ -108,3 +108,32 @@ TEST_CASE("With nothing arranged there is no end to restart from", "[engine][tra
     REQUIRE_FALSE(looper::engine::shouldRestartFromStart(0.0, 0.0));
     REQUIRE_FALSE(looper::engine::shouldRestartFromStart(50.0, 0.0));
 }
+
+TEST_CASE("Seconds convert to beats at the song's tempo", "[engine][tempo]")
+{
+    // Two seconds at 120bpm is four beats. A recorded take is sized with this,
+    // and so is an imported file — they used to compute it separately and only
+    // one of them was right.
+    REQUIRE(looper::engine::beatsForSeconds(2.0, 120.0) == Approx(4.0));
+    REQUIRE(looper::engine::beatsForSeconds(2.0, 60.0) == Approx(2.0));
+    REQUIRE(looper::engine::beatsForSeconds(30.0, 120.0) == Approx(60.0));
+}
+
+TEST_CASE("A long recording is a long clip", "[engine][tempo]")
+{
+    // The specific fault: a thirty-second take used to be given a four-beat
+    // clip, which made the whole song look four beats long.
+    const double beats = looper::engine::beatsForSeconds(30.0, 120.0);
+    REQUIRE(beats > 4.0);
+    REQUIRE(beats == Approx(60.0));
+}
+
+TEST_CASE("A nonsense duration or tempo converts to nothing", "[engine][tempo]")
+{
+    // Callers fall back to a default on zero, so this must not return a
+    // plausible-looking length for a take that never happened.
+    REQUIRE(looper::engine::beatsForSeconds(0.0, 120.0) == 0.0);
+    REQUIRE(looper::engine::beatsForSeconds(-5.0, 120.0) == 0.0);
+    REQUIRE(looper::engine::beatsForSeconds(10.0, 0.0) == 0.0);
+    REQUIRE(looper::engine::beatsForSeconds(10.0, -120.0) == 0.0);
+}
