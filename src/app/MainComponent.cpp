@@ -1934,10 +1934,23 @@ void MainComponent::deleteSelectedClip()
     has no pane that can do anything and no obvious way back. */
 void MainComponent::deleteSelectedTrack()
 {
+    deleteTrackAt(selectedTrackIndex_);
+}
+
+/** Deletes one track by index, which is not necessarily the selected one —
+    the gear menu acts on the track whose gear was clicked.
+
+    That is why the selection is fixed up through selectionAfterTrackRemoved
+    rather than merely clamped: removing a track above the selected one shifts
+    it down, and getting that wrong doesn't crash, it quietly leaves a
+    different track selected than the one that was highlighted, so the next
+    edit lands somewhere the user didn't mean. */
+void MainComponent::deleteTrackAt(int trackIndex)
+{
     const auto& song = history_.current();
-    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+    if (trackIndex < 0 || trackIndex >= (int) song.tracks.size())
     {
-        showError("No track selected");
+        showError("No track to delete");
         return;
     }
 
@@ -1947,20 +1960,22 @@ void MainComponent::deleteSelectedTrack()
         return;
     }
 
-    const auto& track   = song.tracks[(size_t) selectedTrackIndex_];
+    const auto& track   = song.tracks[(size_t) trackIndex];
     const int   trackId = track.id;
-    const int   removed = selectedTrackIndex_;
 
-    const auto name = track.name.empty() ? ("track " + juce::String(removed + 1))
+    // Copied before the edit: committing one move-assigns the document, which
+    // leaves any reference into the old one dangling.
+    const auto name = track.name.empty() ? ("track " + juce::String(trackIndex + 1))
                                          : ("\"" + juce::String(track.name) + "\"");
 
     history_.edit("Delete track", [trackId](model::Song& s) { model::removeTrack(s, trackId); });
 
-    selectTrackAndRefreshAll(juce::jmin(removed, trackCount() - 1));
+    selectTrackAndRefreshAll(selectionAfterTrackRemoved(selectedTrackIndex_, trackIndex,
+                                                        trackCount()));
 
-    // It's on an unmodified key now, so it can be hit by accident. Saying what
-    // went and that undo will bring it back is the difference between a
-    // recoverable slip and a mystery.
+    // Deleting is reachable by an unmodified key and by one menu click, so it
+    // can be hit by accident. Saying what went and that undo will bring it
+    // back is the difference between a recoverable slip and a mystery.
     showStatus("Deleted " + name + " - undo to bring it back");
 }
 
@@ -2074,6 +2089,11 @@ void MainComponent::showTrackSettingsMenu(int trackIndex)
                                              : juce::String(track.name));
     menu.addSubMenu("Colour", colours);
     menu.addItem(1, "Rename...");
+    menu.addSeparator();
+
+    // Greyed rather than absent when it's the last track: an item that isn't
+    // there reads as a missing feature, where a disabled one says the rule.
+    menu.addItem(2, "Delete Track", song.tracks.size() > 1);
 
     juce::Component::SafePointer<MainComponent> self(this);
     menu.showMenuAsync(juce::PopupMenu::Options(), [self, trackIndex](int result)
@@ -2084,6 +2104,12 @@ void MainComponent::showTrackSettingsMenu(int trackIndex)
         if (result == 1)
         {
             self->renameTrackAt(trackIndex);
+            return;
+        }
+
+        if (result == 2)
+        {
+            self->deleteTrackAt(trackIndex);
             return;
         }
 

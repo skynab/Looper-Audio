@@ -23,6 +23,7 @@
 #include "PianoRoll.h"
 #include "PluginEditorWindow.h"
 #include "ChordStamp.h"
+#include "TrackSelection.h"
 #include "SessionView.h"
 #include "TrackColours.h"
 #include "StatusBanner.h"
@@ -179,6 +180,7 @@ private:
     void                   duplicateClip();
     void                   deleteSelectedClip();
     void                   deleteSelectedTrack();
+    void                   deleteTrackAt(int trackIndex);
     void                   renameSelectedTrack();
     void                   renameTrackAt(int trackIndex);
     void                   showTrackSettingsMenu(int trackIndex);
