@@ -137,3 +137,22 @@ TEST_CASE("A nonsense duration or tempo converts to nothing", "[engine][tempo]")
     REQUIRE(looper::engine::beatsForSeconds(10.0, 0.0) == 0.0);
     REQUIRE(looper::engine::beatsForSeconds(10.0, -120.0) == 0.0);
 }
+
+TEST_CASE("A beat division converts to Hz at the song's tempo", "[engine][tempo]")
+{
+    // A quarter note at 120bpm is two per second, so 2Hz. Halving the
+    // division doubles the rate; doubling the tempo also doubles it — this
+    // is the arithmetic a tempo-synced wobble or LFO is built on.
+    REQUIRE(looper::engine::hzForBeatDivision(120.0, 1.0) == Approx(2.0));
+    REQUIRE(looper::engine::hzForBeatDivision(120.0, 0.5) == Approx(4.0));
+    REQUIRE(looper::engine::hzForBeatDivision(240.0, 1.0) == Approx(4.0));
+}
+
+TEST_CASE("A nonsense tempo or division converts to no rate", "[engine][tempo]")
+{
+    // Zero here must mean "don't advance the phase", not a division by zero.
+    REQUIRE(looper::engine::hzForBeatDivision(0.0, 1.0) == 0.0);
+    REQUIRE(looper::engine::hzForBeatDivision(-120.0, 1.0) == 0.0);
+    REQUIRE(looper::engine::hzForBeatDivision(120.0, 0.0) == 0.0);
+    REQUIRE(looper::engine::hzForBeatDivision(120.0, -1.0) == 0.0);
+}

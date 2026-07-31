@@ -352,3 +352,131 @@ TEST_CASE("Chorus settings are clamped to usable ranges", "[engine][pedal]")
         REQUIRE(std::abs(out) <= 2.0f);
     }
 }
+
+namespace
+{
+    /** Runs a steady tone through a wobble at a fixed bpm and returns the
+        output. */
+    std::vector<float> throughWobble(Wobble& wobble, double toneHz, double bpm, int samples)
+    {
+        std::vector<float> out;
+        out.reserve((size_t) samples);
+        for (int n = 0; n < samples; ++n)
+            out.push_back(wobble.processSample(
+                (float) std::sin(2.0 * 3.14159265358979 * toneHz * n / kSampleRate), bpm));
+        return out;
+    }
+}
+
+TEST_CASE("A wobble at zero mix is the dry signal", "[engine][pedal]")
+{
+    // The only reading of a mix control under which turning it down leaves
+    // the signal alone, same contract as Chorus.
+    Wobble wobble;
+    wobble.prepare(kSampleRate);
+    wobble.setMix(0.0f);
+    wobble.setDepth(1.0f);
+
+    for (int n = 0; n < 4000; ++n)
+    {
+        const float in  = (float) std::sin(0.01 * n);
+        const float out = wobble.processSample(in, 120.0);
+        REQUIRE(std::abs(out - in) < 1.0e-6f);
+    }
+}
+
+TEST_CASE("Modulation is what makes it a wobble", "[engine][pedal]")
+{
+    // A static resonant low-pass is just a filter pedal. The sweep is the
+    // effect, so depth must actually change the output, not merely be stored.
+    Wobble still, moving;
+    still.prepare(kSampleRate);
+    moving.prepare(kSampleRate);
+
+    for (auto* w : { &still, &moving })
+        w->setMix(1.0f);
+    still.setDepth(0.0f);
+    moving.setDepth(1.0f);
+
+    const auto flat  = throughWobble(still, 100.0, 120.0, 20000);
+    const auto swept = throughWobble(moving, 100.0, 120.0, 20000);
+
+    float worst = 0.0f;
+    for (size_t n = 5000; n < flat.size(); ++n)
+        worst = std::max(worst, std::abs(flat[n] - swept[n]));
+
+    INFO("largest difference between static and swept: " << worst);
+    REQUIRE(worst > 0.02f);
+}
+
+TEST_CASE("A wobble's sweep tracks tempo", "[engine][pedal]")
+{
+    // The whole point of tempo-locking the wobble over a free-running filter
+    // LFO: after the same number of samples, doubling the tempo must have
+    // carried the sweep twice as far round its cycle. Measured directly off
+    // the filter's own cutoff — which rises monotonically from the start of
+    // a cycle to its midpoint — rather than inferred from audio, since the
+    // sweep is a cutoff sweep and not a simple amplitude modulation. A
+    // wobble that silently ignored bpm would produce identical cutoffs here,
+    // which is exactly the bug this guards against.
+    Wobble slow, fast;
+    slow.prepare(kSampleRate);
+    fast.prepare(kSampleRate);
+    for (auto* w : { &slow, &fast })
+    {
+        w->setDepth(1.0f);
+        w->setRateInBeats(1.0f);
+    }
+
+    // A quarter of a cycle at 120bpm: short enough that the 240bpm instance,
+    // moving twice as fast, is only at the halfway point of its own cycle
+    // rather than having wrapped past it.
+    const double hzAt120 = hzForBeatDivision(120.0, 1.0);
+    const int    samples = (int) std::lround(kSampleRate / hzAt120 / 4.0);
+
+    for (int n = 0; n < samples; ++n)
+    {
+        slow.processSample(0.0f, 120.0);
+        fast.processSample(0.0f, 240.0);
+    }
+
+    INFO("slow (120bpm) cutoff=" << slow.currentCutoffHz()
+         << " fast (240bpm) cutoff=" << fast.currentCutoffHz());
+    REQUIRE(fast.currentCutoffHz() > slow.currentCutoffHz());
+}
+
+TEST_CASE("A wobble stays bounded and finite", "[engine][pedal]")
+{
+    Wobble wobble;
+    wobble.prepare(kSampleRate);
+    wobble.setMix(1.0f);
+    wobble.setDepth(1.0f);
+    wobble.setRateInBeats(0.25f);
+
+    for (int n = 0; n < 200000; ++n)
+    {
+        const float out = wobble.processSample(n % 2 == 0 ? 1.0f : -1.0f, 140.0);
+        REQUIRE(std::isfinite(out));
+        REQUIRE(std::abs(out) <= 2.0f);
+    }
+}
+
+TEST_CASE("Wobble settings are clamped to usable ranges", "[engine][pedal]")
+{
+    // Resonance at zero would feed the filter a coefficient it wasn't built
+    // for, and a rate of zero would leave the sweep stationary.
+    Wobble wobble;
+    wobble.prepare(kSampleRate);
+    wobble.setMix(2.0f);
+    wobble.setDepth(50.0f);
+    wobble.setBaseCutoffHz(-100.0f);
+    wobble.setResonance(0.0f);
+    wobble.setRateInBeats(0.0f);
+
+    for (int n = 0; n < 8000; ++n)
+    {
+        const float out = wobble.processSample((float) std::sin(0.02 * n), 120.0);
+        REQUIRE(std::isfinite(out));
+        REQUIRE(std::abs(out) <= 2.0f);
+    }
+}

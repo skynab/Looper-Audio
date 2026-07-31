@@ -4,6 +4,8 @@
 #include <cmath>
 
 #include "engine/DelayLine.h"
+#include "engine/SequencerMath.h"
+#include "engine/StateVariableFilter.h"
 
 namespace looper::engine
 {
@@ -240,6 +242,100 @@ private:
     float     rateHz_     = 0.6f;
     float     depth_      = 0.5f;
     float     mix_        = 0.5f;
+};
+
+/**
+    A wobble filter: a resonant low-pass whose cutoff is swept by an LFO
+    locked to the song's tempo, in beats rather than Hz.
+
+    The tempo lock is the point. Dubstep's wobble is dialled in as a note
+    division — a sixteenth, an eighth — because it has to land exactly on
+    the bar; a free-running Hz rate would drift out of the groove the moment
+    the song's tempo changed, which is a different and much less useful
+    effect. bpm is taken per sample rather than cached at prepare() so a
+    tempo change mid-block is heard immediately rather than one buffer late,
+    matching how the rest of the engine treats tempo as something that can
+    move under playback.
+
+    Built on StateVariableFilter rather than a filter of its own: everything
+    about *being* a resonant low-pass already lives there, and the only new
+    behaviour here is how its cutoff argument changes over time.
+
+    The sweep opens the filter rather than closing it — depth multiplies how
+    far the cutoff rises above the base frequency, so depth 0 leaves the base
+    tone playing rather than muting it, the same "depth 0 does nothing"
+    contract Tremolo and Chorus already keep.
+
+    JUCE-free so the tempo-sync claim is measurable headlessly: that the
+    wobble period actually scales with bpm is exactly the kind of thing that
+    is easy to wire wrong and go unnoticed one throb at a time.
+*/
+class Wobble
+{
+public:
+    void prepare(double sampleRate) noexcept
+    {
+        sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+        filter_.prepare(sampleRate_);
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        phase_ = 0.0;
+        filter_.reset();
+    }
+
+    /** How many beats one full sweep takes: 0.25/0.5/1.0/2.0 for a sixteenth,
+        an eighth, a quarter, a half note — the values a wobble is actually
+        dialled in as. Floored well above zero so a mis-set rate slows the
+        sweep to a crawl rather than dividing by it. */
+    void setRateInBeats(float beats) noexcept { rateBeats_ = std::max(0.03125f, beats); }
+    void setDepth(float depth) noexcept       { depth_ = std::clamp(depth, 0.0f, 1.0f); }
+    void setBaseCutoffHz(float hz) noexcept   { baseCutoffHz_ = std::clamp(hz, 40.0f, 4000.0f); }
+    void setResonance(float q) noexcept       { filter_.setResonance(std::max(0.1f, q)); }
+    void setMix(float mix) noexcept           { mix_ = std::clamp(mix, 0.0f, 1.0f); }
+
+    /** Advances the LFO by one sample at @p bpm and returns the filtered,
+        mixed result. */
+    float processSample(float input, double bpm) noexcept
+    {
+        // Starts at the base cutoff and sweeps upward, so a wobble beginning
+        // on a downbeat opens rather than snapping shut on the first sample.
+        const float lfo         = 0.5f * (1.0f - std::cos(kTwoPi * (float) phase_));
+        const float octaveSweep = depth_ * kMaxOctaves * lfo;
+        cutoffHz_ = baseCutoffHz_ * std::pow(2.0f, octaveSweep);
+        filter_.setCutoff(cutoffHz_);
+
+        const float hz = (float) hzForBeatDivision(bpm, (double) rateBeats_);
+        if (hz > 0.0f)
+        {
+            phase_ += (double) hz / sampleRate_;
+            if (phase_ >= 1.0)
+                phase_ -= 1.0;
+        }
+
+        const float wet = filter_.processSample(input);
+        return input * (1.0f - mix_) + wet * mix_;
+    }
+
+    /** The filter's cutoff as of the last processSample() call, in Hz. Used
+        by the tests to measure the sweep directly rather than infer it from
+        the audio it produces, and by any meter that wants to show it. */
+    float currentCutoffHz() const noexcept { return cutoffHz_; }
+
+private:
+    static constexpr float kTwoPi      = 6.283185307179586f;
+    static constexpr float kMaxOctaves = 3.0f; // full depth reaches 8x the base cutoff
+
+    StateVariableFilter filter_;
+    double sampleRate_   = 48000.0;
+    double phase_        = 0.0;
+    float  rateBeats_    = 0.25f; // a sixteenth note, a common wobble rate
+    float  depth_        = 0.7f;
+    float  baseCutoffHz_ = 200.0f;
+    float  mix_          = 1.0f;
+    float  cutoffHz_     = 200.0f;
 };
 
 } // namespace looper::engine

@@ -57,6 +57,23 @@ inline double beatsForSeconds(double seconds, double bpm) noexcept
     return seconds * bpm / 60.0;
 }
 
+/** The frequency, in Hz, of something that completes one cycle every
+    @p beatsPerCycle beats at @p bpm — turns a tempo-relative rate (a wobble's
+    1/16 note, a synced LFO's dotted eighth) into the Hz a DSP object actually
+    runs at. A free-running Hz rate drifts out of the groove the moment the
+    song's tempo changes; this is what keeps a wobble locked to the bar
+    instead.
+
+    Returns 0 for a rate or tempo that doesn't make sense, so a caller can
+    treat that as "don't advance the phase" rather than divide by zero. */
+inline double hzForBeatDivision(double bpm, double beatsPerCycle) noexcept
+{
+    if (bpm <= 0.0 || beatsPerCycle <= 0.0)
+        return 0.0;
+
+    return bpm / (60.0 * beatsPerCycle);
+}
+
 /** Positive floating-point modulo: result is always in [0, length). */
 inline double wrapPositive(double x, double length) noexcept
 {
