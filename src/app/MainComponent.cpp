@@ -927,6 +927,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         addItem(menu, 5, "Bounce to WAV...", keys::bounce);
         menu.addSeparator();
         menu.addItem(13, "Set Project Root Folder...");
+        menu.addItem(31, "Repair Recorded Clip Lengths...");
         menu.addSeparator();
         menu.addItem(6, "Audio Settings...");
     }
@@ -997,6 +998,7 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 28: copyTrack(); break;
         case 29: pasteTrack(); break;
         case 30: duplicateTrackAt(selectedTrackIndex_); break;
+        case 31: repairRecordedClipLengths(); break;
         case 4:  chooseFile(); break; // import audio (preview player)
         case 5:  bounceProject(); break;
         case 6:  showAudioSettings(); break;
@@ -3334,6 +3336,40 @@ void MainComponent::setProjectRootFolderDialog()
         fileBrowser_.setProjectRootFolder(dir);
         showStatus("Project root folder set to: " + dir.getFullPathName());
     });
+}
+
+/** One-time fix-up for projects saved while recorded takes were always given
+    a flat four beats regardless of how long the take actually ran (see
+    finishRecordingIfReady). Re-measures every audio clip against its file and
+    corrects any that disagree — see ClipLengthRepair.h for why "disagrees
+    with its file" rather than "is exactly four beats" is the right test. */
+void MainComponent::repairRecordedClipLengths()
+{
+    auto probe = [this](const std::string& path) -> double
+    {
+        const juce::File file(path);
+        return file.existsAsFile() ? engine_.probeDurationSeconds(file) : 0.0;
+    };
+
+    // A dry run on a copy first, so nothing is added to the undo stack when
+    // there is nothing to fix.
+    auto        dryRun = history_.current();
+    const auto  fixes  = repairAudioClipLengths(dryRun, probe);
+
+    if (fixes.empty())
+    {
+        showStatus("No recorded clips needed a length fix");
+        return;
+    }
+
+    history_.edit("Repair recorded clip lengths", [probe](model::Song& s)
+    {
+        repairAudioClipLengths(s, probe);
+    });
+
+    refreshFromModel();
+    showStatus(juce::String((int) fixes.size())
+               + (fixes.size() == 1 ? " clip length was fixed" : " clip lengths were fixed"));
 }
 
 /** Imports an audio file onto a brand-new Audio track (as its one clip, at

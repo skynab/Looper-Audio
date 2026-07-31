@@ -23,6 +23,7 @@
 #include "PianoRoll.h"
 #include "PluginEditorWindow.h"
 #include "ChordStamp.h"
+#include "ClipLengthRepair.h"
 #include "DragCommit.h"
 #include "TrackSelection.h"
 #include "SessionView.h"
@@ -114,6 +115,7 @@ private:
     void                   importMidiFileDialog();
     void                   exportMidiFileDialog();
     void                   setProjectRootFolderDialog();
+    void                   repairRecordedClipLengths();
     void                   toggleRecording();
     void                   finishRecordingIfReady();
     juce::File             recordingsDirectory() const;
