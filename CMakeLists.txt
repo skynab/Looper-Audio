@@ -20,6 +20,12 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# JUCE refuses to compile under Xcode 15.0's Clang, citing a linker bug that
+# can produce broken binaries — accepted here for local dev/test builds via
+# JUCE's own escape hatch. A release build meant to ship should still be made
+# on (or verified against) Xcode 15.1 or later.
+add_compile_definitions(JUCE_SILENCE_XCODE_15_LINKER_WARNING=1)
+
 option(LOOPER_BUILD_APP   "Build the Looper-Audio application (pulls JUCE)" ON)
 option(LOOPER_BUILD_TESTS "Build unit tests (pulls Catch2)"                 ON)
 option(LOOPER_BUILD_TOOLS "Build command-line tools (needs JUCE)"          ON)
