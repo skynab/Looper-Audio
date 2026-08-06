@@ -176,4 +176,78 @@ private:
     std::atomic<float> mix_     { 0.5f };
 };
 
+/**
+    The wobble pedal as a chain node: a tempo-synced filter sweep, one Wobble
+    per channel so each side's LFO can't drift apart the way a shared detector
+    keeps Compressor's channels together — the reasoning is the mirror image
+    of ChorusEffect's two voices, which are kept *out* of phase on purpose.
+    Here both channels must sweep identically, or a mono wobble bass would
+    smear into a stereo one.
+
+    bpm arrives through setBpm() rather than a constructor argument or a
+    per-process() parameter: it is pushed once per block by whatever holds
+    the transport (see InstrumentTrack::render), the same way enabled/rate/
+    depth are pushed from the message thread, because it can change between
+    blocks exactly like a knob can. Every other node in the chain ignores
+    setBpm() (see EffectProcessor's default), since tempo has no meaning to a
+    filter, a delay in milliseconds, or a plugin.
+*/
+class WobbleEffect
+{
+public:
+    void prepare(double sampleRate, int /*blockSize*/)
+    {
+        for (auto& channel : channels_)
+            channel.prepare(sampleRate);
+    }
+
+    void setEnabled(bool enabled)    { enabled_.store(enabled, std::memory_order_relaxed); }
+    void setRateInBeats(float beats) { rateBeats_.store(beats, std::memory_order_relaxed); }
+    void setDepth(float depth)       { depth_.store(depth, std::memory_order_relaxed); }
+    void setBaseCutoffHz(float hz)   { baseCutoffHz_.store(hz, std::memory_order_relaxed); }
+    void setResonance(float q)       { resonance_.store(q, std::memory_order_relaxed); }
+    void setMix(float mix)           { mix_.store(mix, std::memory_order_relaxed); }
+    void setBpm(double bpm)          { bpm_.store(bpm, std::memory_order_relaxed); }
+
+    void process(juce::AudioBuffer<float>& buffer)
+    {
+        if (! enabled_.load(std::memory_order_relaxed))
+            return;
+
+        const float  rateBeats    = rateBeats_.load(std::memory_order_relaxed);
+        const float  depth        = depth_.load(std::memory_order_relaxed);
+        const float  baseCutoffHz = baseCutoffHz_.load(std::memory_order_relaxed);
+        const float  resonance    = resonance_.load(std::memory_order_relaxed);
+        const float  mix          = mix_.load(std::memory_order_relaxed);
+        const double bpm          = bpm_.load(std::memory_order_relaxed);
+
+        const int numChannels = juce::jmin(buffer.getNumChannels(), (int) channels_.size());
+
+        for (int channel = 0; channel < numChannels; ++channel)
+        {
+            auto& wobble = channels_[(size_t) channel];
+            wobble.setRateInBeats(rateBeats);
+            wobble.setDepth(depth);
+            wobble.setBaseCutoffHz(baseCutoffHz);
+            wobble.setResonance(resonance);
+            wobble.setMix(mix);
+
+            auto* samples = buffer.getWritePointer(channel);
+            for (int n = 0; n < buffer.getNumSamples(); ++n)
+                samples[n] = wobble.processSample(samples[n], bpm);
+        }
+    }
+
+private:
+    std::array<Wobble, 2> channels_;
+
+    std::atomic<bool>   enabled_      { false };
+    std::atomic<float>  rateBeats_    { 0.25f };
+    std::atomic<float>  depth_        { 0.7f };
+    std::atomic<float>  baseCutoffHz_ { 200.0f };
+    std::atomic<float>  resonance_    { 0.9f };
+    std::atomic<float>  mix_          { 1.0f };
+    std::atomic<double> bpm_          { 120.0 };
+};
+
 } // namespace looper::engine

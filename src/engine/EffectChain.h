@@ -27,7 +27,8 @@ enum class EffectNodeKind
     Drive      = 4,
     Compressor = 5,
     Tremolo    = 6,
-    Chorus     = 7
+    Chorus     = 7,
+    Wobble     = 8
 };
 
 /** What a chain slot should be. Carries plugin identity as plain strings —
@@ -88,6 +89,12 @@ struct EffectSlotParams
     float chorusRateHz = 0.6f;
     float chorusDepth  = 0.5f;
     float chorusMix    = 0.5f;
+
+    float wobbleRateBeats    = 0.25f;
+    float wobbleDepth        = 0.7f;
+    float wobbleBaseCutoffHz = 200.0f;
+    float wobbleResonance    = 0.9f;
+    float wobbleMix          = 1.0f;
 };
 
 /** One effect in a track's chain. Virtual dispatch costs one indirect call
@@ -105,6 +112,14 @@ struct EffectProcessor
     /** Bypass. Means the same thing for a hosted plugin as for a built-in: the
         node stays in the chain and passes audio through untouched. */
     virtual void setEnabled(bool enabled) = 0;
+
+    /** Tempo, pushed once per block before process() (see EffectChain::setBpm).
+        A no-op for every node except Wobble: bpm has no meaning to a filter, a
+        delay in milliseconds, or a plugin, so only the one node that actually
+        needs it overrides this. A default here rather than widening
+        process()'s signature, so the other seven nodes' call sites don't have
+        to thread through a value none of them read. */
+    virtual void setBpm(double /*bpm*/) {}
 };
 
 struct FilterNode final : EffectProcessor
@@ -167,6 +182,17 @@ struct ChorusNode final : EffectProcessor
     void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
 };
 
+struct WobbleNode final : EffectProcessor
+{
+    WobbleEffect effect;
+
+    EffectNodeKind kind() const noexcept override { return EffectNodeKind::Wobble; }
+    void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
+    void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
+    void setBpm(double bpm) override { effect.setBpm(bpm); }
+};
+
 struct ReverbNode final : EffectProcessor
 {
     ReverbEffect effect;
@@ -212,6 +238,15 @@ public:
 
     bool   empty() const noexcept { return nodes_.empty(); }
     size_t size() const noexcept  { return nodes_.size(); }
+
+    /** Tempo, forwarded to every node once per block — see
+        EffectProcessor::setBpm for why this exists instead of widening
+        process()'s signature. */
+    void setBpm(double bpm)
+    {
+        for (auto& node : nodes_)
+            node->setBpm(bpm);
+    }
 
     /** Applies one slot's parameters, addressed by *position*. By index rather
         than by kind because a chain may hold two filters, and "the filter"
@@ -261,6 +296,14 @@ public:
         {
             trem->effect.setRateHz(params.tremoloRateHz);
             trem->effect.setDepth(params.tremoloDepth);
+        }
+        else if (auto* wobble = dynamic_cast<WobbleNode*>(&node))
+        {
+            wobble->effect.setRateInBeats(params.wobbleRateBeats);
+            wobble->effect.setDepth(params.wobbleDepth);
+            wobble->effect.setBaseCutoffHz(params.wobbleBaseCutoffHz);
+            wobble->effect.setResonance(params.wobbleResonance);
+            wobble->effect.setMix(params.wobbleMix);
         }
         else if (auto* drive = dynamic_cast<DriveNode*>(&node))
         {

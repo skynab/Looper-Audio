@@ -251,7 +251,14 @@ public:
         }
 
         if (effectChain_ != nullptr)
+        {
+            // Pushed every block rather than only on rebuild, like the rest
+            // of this chain's live parameters — a tempo change mid-playback
+            // reaches a wobble immediately instead of waiting for the next
+            // structural rebuild.
+            effectChain_->setBpm(context.transport.bpm);
             effectChain_->process(scratch);
+        }
 
         const float staticGainDb = gainDb.load(std::memory_order_relaxed);
         const float staticPan    = pan.load(std::memory_order_relaxed);

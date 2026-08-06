@@ -1024,6 +1024,161 @@ int main(int argc, char** argv)
         chorusDepthMatters = worstDifference(swept, static_) > 1.0e-3f;
     }
 
+    // The wobble in a real chain: it must audibly change the sound, its depth
+    // must audibly change it again, and — the point of the whole pedal —
+    // rendering the same passage at two different tempos must produce
+    // different audio even though nothing else changed. That last one is the
+    // only thing here that actually proves InstrumentTrack::render is pushing
+    // ProcessContext::transport.bpm into the chain via EffectChain::setBpm; a
+    // wobble that silently ignored bpm would pass every other check in this
+    // file and still be wrong.
+    bool wobbleChangesSound = false;
+    bool wobbleDepthMatters = false;
+    bool wobbleTracksTempo  = false;
+    {
+        auto renderWobble = [&](int layout, double bpmForRender) // 0 = clean, 1 = swept, 2 = depth zero
+        {
+            const int totalSamples = (int) (sampleRate * 1.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+
+            if (layout != 0)
+            {
+                auto chain = std::make_unique<EffectChain>();
+                auto node  = std::make_unique<WobbleNode>();
+                node->effect.setEnabled(true);
+                node->effect.setRateInBeats(1.0f);
+                node->effect.setMix(1.0f);
+                node->effect.setDepth(layout == 1 ? 1.0f : 0.0f);
+                chain->add(std::move(node));
+                chain->prepare(sampleRate, 512);
+                track.setEffectChain(chain.release());
+            }
+
+            ClipSlot slot;
+            slot.pattern     = arp;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpmForRender;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+            return mix;
+        };
+
+        auto worstDifference = [](const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+        {
+            const int n = std::min(a.getNumSamples(), b.getNumSamples());
+            float worst = 0.0f;
+            for (int i = 0; i < n; ++i)
+                worst = std::max(worst, std::abs(a.getSample(0, i) - b.getSample(0, i)));
+            return worst;
+        };
+
+        const auto clean   = renderWobble(0, bpm);
+        const auto swept   = renderWobble(1, bpm);
+        const auto static_ = renderWobble(2, bpm);
+
+        wobbleChangesSound = clean.getRMSLevel(0, 0, clean.getNumSamples()) > 1.0e-4f
+                          && worstDifference(clean, swept) > 1.0e-3f;
+
+        // Depth zero is a fixed low-pass; depth one sweeps. If they matched,
+        // the sweep — the whole effect — would not be in the signal path.
+        wobbleDepthMatters = worstDifference(swept, static_) > 1.0e-3f;
+
+        // Same rate-in-beats, only the tempo differs — the sweep must land
+        // at different points in the audio at each tempo. Fed through the
+        // audio-clip path (AudioFilePlayerNode) rather than the sequencer:
+        // a clip starting at beat 0 plays at a position that's purely
+        // sample-based (see AudioFilePlayerNode::process — its window and
+        // read position both reduce to the raw sample count when
+        // startBeats is 0), so changing bpm here doesn't also shift when
+        // anything sounds, the way it would through a beat-scheduled MIDI
+        // pattern. That keeps this test isolated to one thing: whether
+        // InstrumentTrack::render actually pushes context.transport.bpm into
+        // the chain via EffectChain::setBpm.
+        auto renderWobbleAt = [&](double bpmForRender)
+        {
+            const int totalSamples = (int) sampleRate; // one second
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            ClipData tone;
+            tone.audio.setSize(1, totalSamples);
+            tone.sourceSampleRate = sampleRate;
+            tone.numChannels      = 1;
+            tone.lengthSamples    = totalSamples;
+            float* data = tone.audio.getWritePointer(0);
+            for (int n = 0; n < totalSamples; ++n)
+                data[n] = (float) std::sin(2.0 * 3.14159265358979 * 100.0 * n / sampleRate);
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+            track.audioPlayer.submitSingleClip(new ClipData(tone), 0.0);
+
+            auto chain = std::make_unique<EffectChain>();
+            auto node  = std::make_unique<WobbleNode>();
+            node->effect.setEnabled(true);
+            node->effect.setRateInBeats(1.0f);
+            node->effect.setMix(1.0f);
+            node->effect.setDepth(1.0f);
+            chain->add(std::move(node));
+            chain->prepare(sampleRate, 512);
+            track.setEffectChain(chain.release());
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpmForRender;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+            return mix;
+        };
+
+        const auto atBpm       = renderWobbleAt(bpm);
+        const auto atDoubleBpm = renderWobbleAt(bpm * 2.0);
+        wobbleTracksTempo = worstDifference(atBpm, atDoubleBpm) > 1.0e-3f;
+    }
+
     bool effectChainOrderMatters = false;
     bool effectChainRunsAllNodes = false;
     {
@@ -1551,6 +1706,9 @@ int main(int argc, char** argv)
               << "  guitarHammerOn=" << (guitarHammerOn ? 1 : 0)
               << "  chorusChangesSound=" << (chorusChangesSound ? 1 : 0)
               << "  chorusDepthMatters=" << (chorusDepthMatters ? 1 : 0)
+              << "  wobbleChangesSound=" << (wobbleChangesSound ? 1 : 0)
+              << "  wobbleDepthMatters=" << (wobbleDepthMatters ? 1 : 0)
+              << "  wobbleTracksTempo=" << (wobbleTracksTempo ? 1 : 0)
               << "  compressorSquashes=" << (compressorSquashes ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  driveChangesSound=" << (driveChangesSound ? 1 : 0)
