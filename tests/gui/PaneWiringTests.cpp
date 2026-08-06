@@ -130,7 +130,8 @@ TEST_CASE("The effect panel reports a parameter change for every kind", "[gui][w
     std::vector<model::EffectSlot> chain;
     for (auto kind : { model::EffectKind::Filter, model::EffectKind::Delay,
                        model::EffectKind::Reverb, model::EffectKind::Drive,
-                       model::EffectKind::Compressor, model::EffectKind::Tremolo })
+                       model::EffectKind::Compressor, model::EffectKind::Tremolo,
+                       model::EffectKind::Chorus, model::EffectKind::Wobble })
     {
         model::EffectSlot slot;
         slot.kind    = kind;

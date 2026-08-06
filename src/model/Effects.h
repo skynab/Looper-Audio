@@ -115,7 +115,8 @@ enum class EffectKind
     Drive      = 4, // the guitar pedals — see engine::DriveEffect and PedalEffects.h
     Compressor = 5,
     Tremolo    = 6,
-    Chorus     = 7
+    Chorus     = 7,
+    Wobble     = 8
 };
 
 /**
@@ -183,6 +184,24 @@ struct ChorusSettings
     bool operator==(const ChorusSettings&) const = default;
 };
 
+/** A wobble pedal: a resonant low-pass swept by an LFO locked to the song's
+    tempo, in beats rather than Hz — dubstep's "wub wub." `rateBeats` is how
+    many beats one full sweep takes (0.25/0.5/1.0/2.0 for a sixteenth, an
+    eighth, a quarter, a half note); `depth` is how far the sweep opens above
+    `baseCutoffHz`, so depth zero leaves a static low-pass rather than muting
+    anything. See engine::Wobble and PedalDsp.h. */
+struct WobbleSettings
+{
+    bool  enabled      = false;
+    float rateBeats    = 0.25f;
+    float depth        = 0.7f;
+    float baseCutoffHz = 200.0f;
+    float resonance    = 0.9f;
+    float mix          = 1.0f;
+
+    bool operator==(const WobbleSettings&) const = default;
+};
+
 struct EffectSlot
 {
     EffectKind kind    = EffectKind::Filter;
@@ -195,6 +214,7 @@ struct EffectSlot
     CompressorSettings compressor;
     TremoloSettings    tremolo;
     ChorusSettings     chorus;
+    WobbleSettings     wobble;
     PluginRef          plugin; // meaningful when kind == Plugin
 
     bool operator==(const EffectSlot&) const = default;

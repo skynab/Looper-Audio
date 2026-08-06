@@ -50,8 +50,10 @@ namespace looper::model
       22  TRACK carries its colour before the rest-of-line name, the same
           way pan joined in v15.
       23  + three more FXSLOT fields: the chorus pedal, read the same
-          tolerant way as 20's and 21's. */
-inline constexpr int kFormatVersion = 23;
+          tolerant way as 20's and 21's.
+      24  + five more FXSLOT fields: the wobble pedal, read the same
+          tolerant way as 20's, 21's, and 23's. */
+inline constexpr int kFormatVersion = 24;
 namespace detail
 {
     inline std::string num(double v)
@@ -204,7 +206,12 @@ inline std::string serialize(const Song& song)
                 << detail::num((double) slot.tremolo.depth) << " "
                 << detail::num((double) slot.chorus.rateHz) << " "
                 << detail::num((double) slot.chorus.depth) << " "
-                << detail::num((double) slot.chorus.mix) << "\n";
+                << detail::num((double) slot.chorus.mix) << " "
+                << detail::num((double) slot.wobble.rateBeats) << " "
+                << detail::num((double) slot.wobble.depth) << " "
+                << detail::num((double) slot.wobble.baseCutoffHz) << " "
+                << detail::num((double) slot.wobble.resonance) << " "
+                << detail::num((double) slot.wobble.mix) << "\n";
 
             if (slot.kind == EffectKind::Plugin)
             {
@@ -635,13 +642,16 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 double compRelease = 120.0, compMakeUp = 0.0;
                 double tremRate = 5.0, tremDepth = 0.5;
                 double chorusRate = 0.6, chorusDepth = 0.5, chorusMix = 0.5;
+                double wobbleRateBeats = 0.25, wobbleDepth = 0.7, wobbleBaseCutoffHz = 200.0;
+                double wobbleResonance = 0.9, wobbleMix = 1.0;
 
                 ss >> kind >> enabled >> filterMode >> cutoff >> resonance
                    >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix
                    >> driveAmount >> driveTone >> driveLevel >> driveHard >> driveCab
                    >> compThreshold >> compRatio >> compAttack >> compRelease >> compMakeUp
                    >> tremRate >> tremDepth
-                   >> chorusRate >> chorusDepth >> chorusMix;
+                   >> chorusRate >> chorusDepth >> chorusMix
+                   >> wobbleRateBeats >> wobbleDepth >> wobbleBaseCutoffHz >> wobbleResonance >> wobbleMix;
 
                 EffectSlot slot;
                 slot.kind              = (EffectKind) kind;
@@ -677,6 +687,12 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 slot.chorus.rateHz          = (float) chorusRate;
                 slot.chorus.depth           = (float) chorusDepth;
                 slot.chorus.mix             = (float) chorusMix;
+                slot.wobble.enabled         = slot.enabled && slot.kind == EffectKind::Wobble;
+                slot.wobble.rateBeats       = (float) wobbleRateBeats;
+                slot.wobble.depth           = (float) wobbleDepth;
+                slot.wobble.baseCutoffHz    = (float) wobbleBaseCutoffHz;
+                slot.wobble.resonance       = (float) wobbleResonance;
+                slot.wobble.mix             = (float) wobbleMix;
 
                 if (slot.kind == EffectKind::Plugin)
                 {

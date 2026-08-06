@@ -1630,6 +1630,11 @@ static engine::EffectSlotParams toSlotParams(const model::EffectSlot& slot)
     params.chorusRateHz    = slot.chorus.rateHz;
     params.chorusDepth     = slot.chorus.depth;
     params.chorusMix       = slot.chorus.mix;
+    params.wobbleRateBeats    = slot.wobble.rateBeats;
+    params.wobbleDepth        = slot.wobble.depth;
+    params.wobbleBaseCutoffHz = slot.wobble.baseCutoffHz;
+    params.wobbleResonance    = slot.wobble.resonance;
+    params.wobbleMix          = slot.wobble.mix;
     return params;
 }
 
@@ -2526,6 +2531,7 @@ void MainComponent::syncEngineTracks()
                 case model::EffectKind::Compressor: spec.kind = engine::EffectNodeKind::Compressor; break;
                 case model::EffectKind::Tremolo:    spec.kind = engine::EffectNodeKind::Tremolo;    break;
                 case model::EffectKind::Chorus:     spec.kind = engine::EffectNodeKind::Chorus;     break;
+                case model::EffectKind::Wobble:     spec.kind = engine::EffectNodeKind::Wobble;     break;
                 case model::EffectKind::Plugin:
                     spec.kind             = engine::EffectNodeKind::Plugin;
                     spec.pluginFormat     = pluginFormatName(slot.plugin.format);

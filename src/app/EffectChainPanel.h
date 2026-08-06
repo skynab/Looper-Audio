@@ -106,6 +106,16 @@ public:
         setupSlider(chorusDepth_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
         setupSlider(chorusMix_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
 
+        // Rate is beats-per-cycle, not Hz: 0.25 is a sixteenth note, 1.0 a
+        // quarter — the values a wobble is actually dialled in as, so it
+        // stays locked to the bar as the song's tempo changes.
+        setupSlider(wobbleRate_, 0.0625, 4.0, 0.0625, " beats", [this] { pushParams(); });
+        setupSlider(wobbleDepth_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
+        setupSlider(wobbleCutoff_, 40.0, 4000.0, 1.0, " Hz", [this] { pushParams(); });
+        wobbleCutoff_.setSkewFactorFromMidPoint(400.0);
+        setupSlider(wobbleResonance_, 0.1, 5.0, 0.01, " Q", [this] { pushParams(); });
+        setupSlider(wobbleMix_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
+
         filterMode_.addItem("Low-pass", 1);
         filterMode_.addItem("High-pass", 2);
         filterMode_.addItem("Band-pass", 3);
@@ -276,6 +286,10 @@ public:
         {
             row(chorusRate_); row(chorusDepth_); row(chorusMix_);
         }
+        else if (kind == model::EffectKind::Wobble)
+        {
+            row(wobbleRate_); row(wobbleDepth_); row(wobbleCutoff_); row(wobbleResonance_); row(wobbleMix_);
+        }
     }
 
 private:
@@ -316,6 +330,7 @@ private:
             case model::EffectKind::Compressor: return "Compressor";
             case model::EffectKind::Tremolo:    return "Tremolo";
             case model::EffectKind::Chorus:     return "Chorus";
+            case model::EffectKind::Wobble:     return "Wobble";
             case model::EffectKind::Plugin:
                 // A plugin the machine no longer has still names itself, which
                 // is the whole reason the document stores the name.
@@ -340,6 +355,7 @@ private:
         pedals.addItem(6, "Compressor");
         pedals.addItem(7, "Tremolo");
         pedals.addItem(8, "Chorus");
+        pedals.addItem(9, "Wobble");
         menu.addSubMenu("Guitar pedals", pedals);
         menu.addSeparator();
 
@@ -369,6 +385,7 @@ private:
             else if (result == 6 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Compressor);
             else if (result == 7 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Tremolo);
             else if (result == 8 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Chorus);
+            else if (result == 9 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Wobble);
             else if (result == 5 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Drive);
             else if (result == 4 && onScanRequested) onScanRequested();
             else if (result >= 100)
@@ -399,7 +416,8 @@ private:
                  &driveHardClip_, &driveCabinet_,
                  &compThreshold_, &compRatio_, &compAttack_,
                  &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_,
-                 &chorusRate_, &chorusDepth_, &chorusMix_ };
+                 &chorusRate_, &chorusDepth_, &chorusMix_,
+                 &wobbleRate_, &wobbleDepth_, &wobbleCutoff_, &wobbleResonance_, &wobbleMix_ };
     }
 
     void setupSlider(juce::Slider& slider, double lo, double hi, double step,
@@ -485,6 +503,17 @@ private:
                 chorusMix_.setVisible(true);
                 break;
 
+            case model::EffectKind::Wobble:
+                wobbleRate_.setValue(slot.wobble.rateBeats, juce::dontSendNotification);
+                wobbleDepth_.setValue(slot.wobble.depth * 100.0, juce::dontSendNotification);
+                wobbleCutoff_.setValue(slot.wobble.baseCutoffHz, juce::dontSendNotification);
+                wobbleResonance_.setValue(slot.wobble.resonance, juce::dontSendNotification);
+                wobbleMix_.setValue(slot.wobble.mix * 100.0, juce::dontSendNotification);
+                wobbleRate_.setVisible(true); wobbleDepth_.setVisible(true);
+                wobbleCutoff_.setVisible(true); wobbleResonance_.setVisible(true);
+                wobbleMix_.setVisible(true);
+                break;
+
             case model::EffectKind::Plugin:
                 editorButton_.setVisible(true);
                 break;
@@ -543,6 +572,13 @@ private:
                 slot.chorus.depth  = (float) (chorusDepth_.getValue() / 100.0);
                 slot.chorus.mix    = (float) (chorusMix_.getValue() / 100.0);
                 break;
+            case model::EffectKind::Wobble:
+                slot.wobble.rateBeats    = (float) wobbleRate_.getValue();
+                slot.wobble.depth        = (float) (wobbleDepth_.getValue() / 100.0);
+                slot.wobble.baseCutoffHz = (float) wobbleCutoff_.getValue();
+                slot.wobble.resonance    = (float) wobbleResonance_.getValue();
+                slot.wobble.mix          = (float) (wobbleMix_.getValue() / 100.0);
+                break;
             case model::EffectKind::Plugin:
                 return; // a plugin's parameters live in its own editor
         }
@@ -583,6 +619,7 @@ private:
     juce::Slider       compThreshold_, compRatio_, compAttack_, compRelease_, compMakeUp_;
     juce::Slider       tremRate_, tremDepth_;
     juce::Slider       chorusRate_, chorusDepth_, chorusMix_;
+    juce::Slider       wobbleRate_, wobbleDepth_, wobbleCutoff_, wobbleResonance_, wobbleMix_;
     juce::ToggleButton driveHardClip_, driveCabinet_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EffectChainPanel)
