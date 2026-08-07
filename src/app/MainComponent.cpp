@@ -781,6 +781,9 @@ MainComponent::MainComponent()
     synthEditor_.onSettingsChanged   = [this](const model::SynthSettings& s) { setTrackSynthSettings(s); };
     synthEditor_.onSettingsDragStart = [this] { beginSynthSettingsDrag(); };
     synthEditor_.onSettingsDragEnd   = [this] { endSynthSettingsDrag(); };
+    synthEditor_.onPresetSelected        = [this](int i) { applyPreset(i); };
+    synthEditor_.onSavePresetRequested   = [this] { savePresetDialog(); };
+    synthEditor_.onDeletePresetRequested = [this](int i) { deletePresetAt(i); };
     sessionView_.onLaunchClip  = [this](int track, int scene)
     {
         engine_.launchSessionSlot(track, scene);
@@ -841,6 +844,9 @@ MainComponent::MainComponent()
     engine_.pluginHost().restoreScanCache(settings_.getValue("pluginScanCache").toStdString());
     effectChain_.setAvailablePlugins(engine_.pluginHost().knownPlugins());
     effectChain_.onPluginEditorRequested = [this](int slot) { openPluginEditor(slot); };
+
+    seedFactoryPresets();
+    refreshPresetList();
 
     workspace_.registerPanel("Files", fileBrowser_);
     workspace_.registerPanel("Transport", leftPane_);
@@ -3845,6 +3851,274 @@ juce::File MainComponent::recordingsDirectory() const
                   .getChildFile("Looper-Audio Recordings");
     dir.createDirectory();
     return dir;
+}
+
+/** Where synth presets live — one file per preset, listed by directory scan
+    rather than through any index, the same "no bookkeeping beyond the
+    filesystem itself" choice recordingsDirectory() already makes. */
+juce::File MainComponent::presetsDirectory() const
+{
+    auto dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                  .getChildFile("Looper-Audio Presets");
+    dir.createDirectory();
+    return dir;
+}
+
+/** Rescans presetsDirectory() and pushes the names into the Synth pane's
+    list. Called whenever the set of saved presets can have changed (save,
+    delete, startup) — the list is never mutated in place, only rebuilt,
+    since a directory scan is cheap and a project with a handful of presets
+    is the expected case, not hundreds. */
+void MainComponent::refreshPresetList()
+{
+    presetFiles_.clear();
+    for (const auto& entry : juce::RangedDirectoryIterator(presetsDirectory(), false, "*.looperpreset",
+                                                            juce::File::findFiles))
+        presetFiles_.push_back(entry.getFile());
+
+    std::sort(presetFiles_.begin(), presetFiles_.end(),
+             [](const juce::File& a, const juce::File& b) { return a.getFileName() < b.getFileName(); });
+
+    juce::StringArray names;
+    for (const auto& file : presetFiles_)
+    {
+        model::SynthPreset preset;
+        // An unreadable preset (hand-edited, half-written) is still listed
+        // by filename rather than silently vanishing — invisible is worse
+        // than ugly for something the user put there on purpose.
+        names.add(model::deserializePreset(file.loadFileAsString().toStdString(), preset)
+                     ? (preset.name.empty() ? file.getFileNameWithoutExtension() : juce::String(preset.name))
+                     : file.getFileNameWithoutExtension());
+    }
+    synthEditor_.setPresetNames(names);
+}
+
+/** Prompts for a name and saves the selected track's synth settings and
+    whole effect chain (built-ins and any hosted distortion plugin alike) as
+    a new preset file. */
+void MainComponent::savePresetDialog()
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+    const auto& track = history_.current().tracks[(size_t) selectedTrackIndex_];
+    if (track.type != model::TrackType::Instrument)
+        return;
+
+    auto* window = new juce::AlertWindow("Save Preset", "Name this preset:", juce::MessageBoxIconType::NoIcon, this);
+    window->addTextEditor("name", track.name.empty() ? "My Preset" : (juce::String(track.name) + " Preset"));
+    window->addButton("Save", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    window->enterModalState(true,
+        juce::ModalCallbackFunction::create(
+            [self = juce::Component::SafePointer<MainComponent>(this), window,
+             trackIndex = selectedTrackIndex_](int result)
+            {
+                if (self == nullptr || result != 1)
+                    return;
+
+                const auto name = window->getTextEditorContents("name").trim();
+                if (name.isEmpty())
+                    return;
+
+                const auto& song = self->history_.current();
+                if (trackIndex < 0 || trackIndex >= (int) song.tracks.size())
+                    return;
+                const auto& savedTrack = song.tracks[(size_t) trackIndex];
+
+                model::SynthPreset preset;
+                preset.name        = name.toStdString();
+                preset.synth       = savedTrack.synthSettings;
+                preset.effectChain = savedTrack.effectChain;
+
+                const auto file = self->presetsDirectory()
+                                      .getNonexistentChildFile(juce::File::createLegalFileName(name), ".looperpreset");
+                if (file.replaceWithText(juce::String(model::serializePreset(preset))))
+                {
+                    self->refreshPresetList();
+                    self->showStatus("Saved preset: " + name);
+                }
+                else
+                {
+                    self->showError("Could not save preset: " + name);
+                }
+            }),
+        true);
+}
+
+/** Loads a preset onto the selected Instrument track, replacing its synth
+    settings and whole effect chain as one undo step — a preset is one
+    thing, not two separate edits a user would have to undo twice. */
+void MainComponent::applyPreset(int index)
+{
+    if (index < 0 || index >= (int) presetFiles_.size())
+        return;
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+    if (history_.current().tracks[(size_t) selectedTrackIndex_].type != model::TrackType::Instrument)
+        return;
+
+    model::SynthPreset preset;
+    std::string        error;
+    if (! model::deserializePreset(presetFiles_[(size_t) index].loadFileAsString().toStdString(), preset, &error))
+    {
+        showError("Could not load preset: " + juce::String(error));
+        return;
+    }
+
+    const int trackIndex = selectedTrackIndex_;
+    history_.edit("Load preset \"" + preset.name + "\"", [trackIndex, preset](model::Song& s)
+    {
+        auto& track = s.tracks[(size_t) trackIndex];
+        track.synthSettings = preset.synth;
+        track.effectChain   = preset.effectChain;
+    });
+
+    syncEngineTracks();
+    refreshSynthEditorForSelected();
+    refreshEffectChainForSelected();
+    showStatus("Loaded preset: " + juce::String(preset.name));
+}
+
+/** Deletes a preset file and refreshes the list — no confirmation dialog,
+    matching how this app treats every other delete (undo is the safety net
+    for document edits, but a preset file is outside the document, so this
+    one really is final; the list refresh and status message are the
+    acknowledgment). */
+void MainComponent::deletePresetAt(int index)
+{
+    if (index < 0 || index >= (int) presetFiles_.size())
+        return;
+
+    const auto file = presetFiles_[(size_t) index];
+    const auto name = file.getFileNameWithoutExtension();
+
+    if (file.deleteFile())
+    {
+        refreshPresetList();
+        showStatus("Deleted preset: " + name);
+    }
+    else
+    {
+        showError("Could not delete preset: " + name);
+    }
+}
+
+/** Populates an empty presets directory with a handful of starting points on
+    first run, so the feature isn't an empty list the first time anyone
+    opens it. Never touches a directory that already has anything in it —
+    including a user who deleted every factory preset on purpose. */
+void MainComponent::seedFactoryPresets()
+{
+    const auto dir = presetsDirectory();
+    if (dir.getNumberOfChildFiles(juce::File::findFiles, "*.looperpreset") > 0)
+        return;
+
+    auto drive = [](float amount, float tone, float level, bool hardClip)
+    {
+        model::EffectSlot slot;
+        slot.kind             = model::EffectKind::Drive;
+        slot.enabled          = true;
+        slot.drive.enabled    = true;
+        slot.drive.drive      = amount;
+        slot.drive.tone       = tone;
+        slot.drive.level      = level;
+        slot.drive.hardClip   = hardClip;
+        slot.drive.cabinet    = true;
+        return slot;
+    };
+
+    std::vector<model::SynthPreset> factory;
+
+    {
+        model::SynthPreset p;
+        p.name             = "Warm Pad";
+        p.synth.waveform   = 3; // triangle
+        p.synth.attackMs   = 400.0f;
+        p.synth.decayMs    = 600.0f;
+        p.synth.sustain    = 0.8f;
+        p.synth.releaseMs  = 1200.0f;
+        p.synth.filterEnabled   = true;
+        p.synth.filterMode      = 0;
+        p.synth.filterCutoff    = 1800.0f;
+        p.synth.filterResonance = 0.6f;
+
+        model::EffectSlot chorus;
+        chorus.kind          = model::EffectKind::Chorus;
+        chorus.enabled       = true;
+        chorus.chorus.enabled = true;
+        chorus.chorus.rateHz = 0.4f;
+        chorus.chorus.depth  = 0.6f;
+        chorus.chorus.mix    = 0.5f;
+        p.effectChain = { chorus };
+        factory.push_back(std::move(p));
+    }
+    {
+        model::SynthPreset p;
+        p.name             = "Aggressive Bass";
+        p.synth.waveform   = 1; // saw
+        p.synth.attackMs   = 2.0f;
+        p.synth.decayMs    = 80.0f;
+        p.synth.sustain    = 0.9f;
+        p.synth.releaseMs  = 60.0f;
+        p.synth.filterEnabled   = true;
+        p.synth.filterMode      = 0;
+        p.synth.filterCutoff    = 500.0f;
+        p.synth.filterResonance = 1.4f;
+
+        model::EffectSlot compressor;
+        compressor.kind                    = model::EffectKind::Compressor;
+        compressor.enabled                 = true;
+        compressor.compressor.enabled      = true;
+        compressor.compressor.thresholdDb  = -20.0f;
+        compressor.compressor.ratio        = 6.0f;
+        p.effectChain = { drive(16.0f, 0.4f, 0.8f, false), compressor };
+        factory.push_back(std::move(p));
+    }
+    {
+        model::SynthPreset p;
+        p.name             = "Dubstep Wobble Bass";
+        p.synth.waveform   = 1; // saw
+        p.synth.attackMs   = 1.0f;
+        p.synth.decayMs    = 50.0f;
+        p.synth.sustain    = 1.0f;
+        p.synth.releaseMs  = 40.0f;
+
+        model::EffectSlot wobble;
+        wobble.kind                = model::EffectKind::Wobble;
+        wobble.enabled             = true;
+        wobble.wobble.enabled      = true;
+        wobble.wobble.rateBeats    = 0.25f;
+        wobble.wobble.depth        = 0.85f;
+        wobble.wobble.baseCutoffHz = 150.0f;
+        wobble.wobble.resonance    = 1.6f;
+        p.effectChain = { drive(20.0f, 0.5f, 0.7f, true), wobble };
+        factory.push_back(std::move(p));
+    }
+    {
+        model::SynthPreset p;
+        p.name             = "Bright Pluck";
+        p.synth.waveform   = 2; // square
+        p.synth.attackMs   = 1.0f;
+        p.synth.decayMs    = 220.0f;
+        p.synth.sustain    = 0.0f;
+        p.synth.releaseMs  = 80.0f;
+
+        model::EffectSlot tremolo;
+        tremolo.kind            = model::EffectKind::Tremolo;
+        tremolo.enabled         = true;
+        tremolo.tremolo.enabled = true;
+        tremolo.tremolo.rateHz  = 6.0f;
+        tremolo.tremolo.depth   = 0.3f;
+        p.effectChain = { tremolo };
+        factory.push_back(std::move(p));
+    }
+
+    for (const auto& preset : factory)
+    {
+        const auto file = dir.getNonexistentChildFile(juce::File::createLegalFileName(preset.name), ".looperpreset");
+        file.replaceWithText(juce::String(model::serializePreset(preset)));
+    }
 }
 
 /** Puts a passing message on screen. Deliberately not routed through any

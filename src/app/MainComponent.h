@@ -11,6 +11,7 @@
 #include "engine/AudioEngine.h"
 #include "engine/TempoMap.h"
 #include "model/History.h"
+#include "model/PresetSerialization.h"
 #include "model/Song.h"
 
 #include "ArrangementView.h"
@@ -132,6 +133,12 @@ private:
     void                   toggleRecording();
     void                   finishRecordingIfReady();
     juce::File             recordingsDirectory() const;
+    juce::File             presetsDirectory() const;
+    void                   refreshPresetList();
+    void                   savePresetDialog();
+    void                   applyPreset(int index);
+    void                   deletePresetAt(int index);
+    void                   seedFactoryPresets();
     void                   selectTrackAndRefreshAll(int newTrackIndex);
     void                   addTrack();
     void                   addDrumTrack();
@@ -287,6 +294,11 @@ private:
     bool                   guitarSettingsDragging_ = false;
     int                    guitarSettingsDragTrack_ = -1;
     model::GuitarSettings  guitarSettingsDragFrom_;
+
+    // The preset list SynthEditor is currently showing, in the same order —
+    // presetBox_'s indices are indices into this. Reloaded from disk by
+    // refreshPresetList() whenever a preset is saved or deleted.
+    std::vector<juce::File> presetFiles_;
 
     juce::MenuBarComponent          menuBar_;
 

@@ -40,12 +40,49 @@ public:
     std::function<void()> onSettingsDragStart;
     std::function<void()> onSettingsDragEnd;
 
+    /** Presets are named elsewhere (MainComponent owns the files); this pane
+        only shows names and reports intent, the same separation ArrangementView
+        keeps from track colours and EffectChainPanel keeps from the plugin
+        list. Index is into whatever list setPresetNames() was last given. */
+    std::function<void(int index)> onPresetSelected;
+    std::function<void()>          onSavePresetRequested;
+    std::function<void(int index)> onDeletePresetRequested;
+
     SynthEditor()
     {
         placeholderLabel_.setText("Select an Instrument track to edit its synth", juce::dontSendNotification);
         placeholderLabel_.setJustificationType(juce::Justification::centred);
         placeholderLabel_.setColour(juce::Label::textColourId, juce::Colours::white.withAlpha(0.5f));
         addAndMakeVisible(placeholderLabel_);
+
+        // "(no preset)" occupies id 1 so that loading a project whose synth
+        // doesn't match any saved preset has something honest to show,
+        // rather than the box silently defaulting to whatever preset
+        // happens to be first.
+        presetBox_.addItem("(no preset)", 1);
+        presetBox_.setSelectedId(1, juce::dontSendNotification);
+        presetBox_.onChange = [this]
+        {
+            const int index = presetBox_.getSelectedId() - 2; // -1 for "(no preset)", -1 for 1-based ids
+            if (index >= 0 && onPresetSelected)
+                onPresetSelected(index);
+        };
+        addAndMakeVisible(presetBox_);
+
+        savePresetButton_.setButtonText("Save...");
+        savePresetButton_.setTooltip("Save this track's synth and effect chain as a new preset");
+        savePresetButton_.onClick = [this] { if (onSavePresetRequested) onSavePresetRequested(); };
+        addAndMakeVisible(savePresetButton_);
+
+        deletePresetButton_.setButtonText("Delete");
+        deletePresetButton_.setTooltip("Delete the selected preset");
+        deletePresetButton_.onClick = [this]
+        {
+            const int index = presetBox_.getSelectedId() - 2;
+            if (index >= 0 && onDeletePresetRequested)
+                onDeletePresetRequested(index);
+        };
+        addAndMakeVisible(deletePresetButton_);
 
         setupSectionHeader(oscHeader_, "Oscillator");
         waveformBox_.addItem("Sine", 1);
@@ -131,6 +168,23 @@ public:
 
         updateFilterControlsEnabled();
         setControlsVisible(true);
+
+        // Selecting a track (or undoing/redoing into different settings)
+        // doesn't correspond to any particular saved preset — leaving the
+        // box on whatever it last showed would claim otherwise.
+        presetBox_.setSelectedId(1, juce::dontSendNotification);
+    }
+
+    /** The names of the presets available to load, in the order they should
+        be listed — MainComponent owns the actual files, this only shows
+        what it's told. */
+    void setPresetNames(const juce::StringArray& names)
+    {
+        presetBox_.clear(juce::dontSendNotification);
+        presetBox_.addItem("(no preset)", 1);
+        for (int i = 0; i < names.size(); ++i)
+            presetBox_.addItem(names[i], i + 2);
+        presetBox_.setSelectedId(1, juce::dontSendNotification);
     }
 
     /** Shows the placeholder instead of the controls — the selected track
@@ -167,6 +221,12 @@ public:
         auto area = getLocalBounds();
         area.removeFromTop(kTrackHeaderHeight);
         area = area.reduced(10);
+
+        auto presetRow = area.removeFromTop(kRowHeight);
+        deletePresetButton_.setBounds(presetRow.removeFromRight(64).reduced(2, 0));
+        savePresetButton_.setBounds(presetRow.removeFromRight(64).reduced(2, 0));
+        presetBox_.setBounds(presetRow.reduced(2, 0));
+        area.removeFromTop(10);
 
         layoutHeader(oscHeader_, area);
         layoutRow(area, waveformBox_);
@@ -255,7 +315,8 @@ private:
     {
         controlsVisible_ = visible;
         placeholderLabel_.setVisible(! visible);
-        juce::Component* controls[] = { &oscHeader_, &waveformBox_, &ampHeader_,
+        juce::Component* controls[] = { &presetBox_, &savePresetButton_, &deletePresetButton_,
+                                        &oscHeader_, &waveformBox_, &ampHeader_,
                                         &attackSlider_, &decaySlider_, &sustainSlider_, &releaseSlider_, &filterHeader_,
                                         &filterEnabledButton_, &filterModeBox_, &filterCutoffSlider_, &filterResonanceSlider_,
                                         &outputHeader_, &gainSlider_ };
@@ -276,6 +337,9 @@ private:
     juce::uint32          trackColour_ = 0;
 
     juce::Label      placeholderLabel_;
+
+    juce::ComboBox   presetBox_;
+    juce::TextButton savePresetButton_, deletePresetButton_;
 
     juce::Label      oscHeader_;
     juce::ComboBox   waveformBox_;
