@@ -7,9 +7,11 @@
 
 #include "engine/Pattern.h"
 #include "model/DrumKit.h"
+#include "model/Track.h"
 
 #include "DrumKitEditor.h"
 #include "DrumStepGrid.h"
+#include "TrackColours.h"
 
 namespace looper
 {
@@ -76,6 +78,17 @@ public:
         setContentVisible(true);
     }
 
+    /** Which track this is, so the header says so — this tab's title never
+        changes per track, so without this there was no on-screen way to
+        tell which track's kit was actually open after switching tracks
+        while parked here. */
+    void setTrackInfo(const juce::String& name, juce::uint32 colour)
+    {
+        trackName_    = name;
+        trackColour_  = colour;
+        repaint();
+    }
+
     /** Refreshes only what a live mix tweak affects — the grid's dimming of
         muted pads — without rebuilding the kit editor's row widgets underneath
         the mouse mid-drag (see DrumKitEditor::setPads). */
@@ -121,6 +134,12 @@ public:
         };
     }
 
+    void paint(juce::Graphics& g) override
+    {
+        if (contentVisible_)
+            paintTrackHeader(g, headerBounds(), trackName_, trackColour_, model::TrackType::Drum);
+    }
+
     void resized() override
     {
         placeholderLabel_.setBounds(getLocalBounds());
@@ -128,6 +147,7 @@ public:
             return;
 
         auto area = getLocalBounds();
+        area.removeFromTop(kTrackHeaderHeight);
         juce::Component* items[] = { &kitEditor_, &divider_, &stepGrid_ };
         layout_.layOutComponents(items, 3, area.getX(), area.getY(), area.getWidth(), area.getHeight(),
                                  false, // side by side
@@ -135,6 +155,13 @@ public:
     }
 
 private:
+    /** Same top strip resized() carves out before laying out the two halves
+        — kept in one place so paint() and resized() can't drift apart. */
+    juce::Rectangle<int> headerBounds() const
+    {
+        return getLocalBounds().removeFromTop(kTrackHeaderHeight);
+    }
+
     void setContentVisible(bool visible)
     {
         contentVisible_ = visible;
@@ -148,6 +175,8 @@ private:
     DrumKitEditor kitEditor_;
     DrumStepGrid  stepGrid_;
     bool          contentVisible_ = false;
+    juce::String  trackName_;
+    juce::uint32  trackColour_ = 0;
 
     juce::Label                       placeholderLabel_;
     juce::StretchableLayoutManager    layout_;

@@ -65,4 +65,54 @@ inline const char* trackTypeTag(model::TrackType type)
     return "SYN";
 }
 
+/** How tall a track-identity header (see paintTrackHeader) is. A caller
+    reserves this much space itself; nothing here lays anything out. */
+inline constexpr int kTrackHeaderHeight = 20;
+
+/**
+    Draws a track-identity strip: a colour swatch, the track's type tag, and
+    its name — the same three things ArrangementView already shows per lane,
+    reused here so a pane reached through a dock tab (whose title doesn't
+    change per track) can say which track is actually open.
+
+    Switching tracks while parked on a tab titled "Keys"/"Synth"/"Drums"/
+    "Guitar" gave no on-screen confirmation of which track's notes, patch,
+    kit, or fretboard was showing — this is the fix, applied the same way in
+    every pane that needed it rather than once per file.
+
+    A free function rather than a Component: every pane that needs this
+    already owns its paint()/resized(), and a real child Component would
+    mean each of them re-deriving bounds math a caller can just pass in
+    directly.
+*/
+inline void paintTrackHeader(juce::Graphics& g, juce::Rectangle<int> bounds,
+                             const juce::String& trackName, juce::uint32 storedColour,
+                             model::TrackType type)
+{
+    if (bounds.getHeight() <= 0 || bounds.getWidth() <= 0)
+        return;
+
+    const auto colour = trackColour(storedColour);
+
+    g.setColour(juce::Colours::white.withAlpha(0.04f));
+    g.fillRect(bounds);
+
+    g.setColour(colour);
+    g.fillRect(bounds.removeFromLeft(4));
+    bounds.removeFromLeft(6);
+
+    const auto tagArea = bounds.removeFromLeft(32).withSizeKeepingCentre(32, 16);
+    g.setColour(juce::Colours::white.withAlpha(0.12f));
+    g.fillRoundedRectangle(tagArea.toFloat(), 3.0f);
+    g.setColour(juce::Colours::white.withAlpha(0.7f));
+    g.setFont(juce::FontOptions(10.0f));
+    g.drawText(trackTypeTag(type), tagArea, juce::Justification::centred);
+
+    bounds.removeFromLeft(6);
+    g.setColour(juce::Colours::white.withAlpha(0.85f));
+    g.setFont(juce::FontOptions(13.0f));
+    g.drawText(trackName.isEmpty() ? juce::String("(unnamed track)") : trackName,
+               bounds, juce::Justification::centredLeft);
+}
+
 } // namespace looper

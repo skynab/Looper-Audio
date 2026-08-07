@@ -2628,7 +2628,9 @@ void MainComponent::refreshDrumsPaneForSelected()
         return;
     }
 
-    drumsPane_.setKit(history_.current().tracks[(size_t) trackIndex].drumKit.pads, currentPattern());
+    const auto& track = history_.current().tracks[(size_t) trackIndex];
+    drumsPane_.setKit(track.drumKit.pads, currentPattern());
+    drumsPane_.setTrackInfo(track.name, track.colour);
 }
 
 /** The selected track's index if it's a Drum track, or -1 — the one check
