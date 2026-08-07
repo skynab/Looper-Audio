@@ -306,23 +306,11 @@ MainComponent::MainComponent()
     mixerView_.addAndMakeVisible(addDrumTrackButton_);
     mixerView_.addAndMakeVisible(addGuitarTrackButton_);
 
-    // ---- master panel: collapsible (see toggleMasterPanelButton_) since at
-    // narrow widths it was clipping against the track strips ----
-    mixerView_.addAndMakeVisible(masterPanel_);
+    // ---- master panel: its own dock tab (see workspace_.registerPanel
+    // below), not a pull-out inside Mixer — it applies to the whole song,
+    // not to any one track, so it doesn't belong nested inside the pane
+    // that's specifically about per-track strips. ----
     masterPanel_.onResized = [this] { layoutMasterPanel(); };
-    masterPanelVisible_ = settings_.getValue("masterPanelVisible", "1") != "0";
-    masterPanel_.setVisible(masterPanelVisible_);
-    toggleMasterPanelButton_.setButtonText(masterPanelVisible_ ? "Hide Master" : "Show Master");
-    toggleMasterPanelButton_.onClick = [this]
-    {
-        masterPanelVisible_ = ! masterPanelVisible_;
-        masterPanel_.setVisible(masterPanelVisible_);
-        toggleMasterPanelButton_.setButtonText(masterPanelVisible_ ? "Hide Master" : "Show Master");
-        settings_.setValue("masterPanelVisible", masterPanelVisible_ ? "1" : "0");
-        settings_.saveIfNeeded();
-        layoutMixerView();
-    };
-    mixerView_.addAndMakeVisible(toggleMasterPanelButton_);
 
     masterSlider.setRange(-60.0, 6.0, 0.1);
     masterSlider.setValue(0.0, juce::dontSendNotification);
@@ -856,6 +844,7 @@ MainComponent::MainComponent()
     workspace_.registerPanel("Session", sessionView_);
     workspace_.registerPanel("Track FX", effectChain_);
     workspace_.registerPanel("Mixer", mixerView_);
+    workspace_.registerPanel("Master", masterPanel_);
     workspace_.registerPanel("Keyboard", keyboard_);
     loadDockLayout(); // last session's arrangement, or the default one
 
@@ -4914,7 +4903,14 @@ void MainComponent::buildDefaultDockLayout()
         workspace_.addPanel(*left, "Files");
 
     if (auto* right = workspace_.splitRegion(centre, DropZone::Right, 0.72))
+    {
         workspace_.addPanel(*right, "Mixer");
+
+        // Master applies to the whole song, not to any one track, so it gets
+        // its own region beside Mixer rather than nesting inside it.
+        if (auto* master = workspace_.splitRegion(*right, DropZone::Right, 0.72))
+            workspace_.addPanel(*master, "Master");
+    }
 
     if (auto* bottom = workspace_.splitRegion(centre, DropZone::Bottom, 0.45))
     {
@@ -5142,20 +5138,7 @@ void MainComponent::layoutMixerView()
     addDrumTrackButton_.setBounds(toolbar.removeFromLeft(100));
     toolbar.removeFromLeft(6);
     addGuitarTrackButton_.setBounds(toolbar.removeFromLeft(100));
-    toolbar.removeFromLeft(6);
-    toggleMasterPanelButton_.setBounds(toolbar.removeFromRight(110));
     area.removeFromTop(8);
-
-    // The master panel (fader/automation, filter, delay, reverb, send bus,
-    // meter) is collapsible — see toggleMasterPanelButton_ — since at
-    // narrow widths its fixed 300px was clipping against the track strips.
-    // Hidden, it claims no width at all, so every track strip gets more room.
-    if (masterPanelVisible_)
-    {
-        auto masterArea = area.removeFromRight(300);
-        area.removeFromRight(12);
-        masterPanel_.setBounds(masterArea); // triggers layoutMasterPanel() via onResized
-    }
 
     // ---- per-track channel strips, filling the remaining width ----
     const int stripWidth = 96;

@@ -334,8 +334,6 @@ private:
     juce::TextButton   addTrackButton { "Add Track" };
     juce::TextButton   addDrumTrackButton_ { "Add Drum" };
     juce::TextButton   addGuitarTrackButton_ { "Add Guitar" };
-    juce::TextButton   toggleMasterPanelButton_ { "Hide Master" };
-    bool               masterPanelVisible_ = true;
     juce::ToggleButton loopButton      { "Loop" };
     // Collapses the transport pane to its first row, so the pane can be
     // dragged down to a single strip when the readouts aren't wanted.
@@ -406,7 +404,7 @@ private:
     juce::TextButton                   addClipButton_  { "Add Clip" };
 
     CallbackComponent                  mixerView_;
-    CallbackComponent                  masterPanel_; // collapsible via toggleMasterPanelButton_
+    CallbackComponent                  masterPanel_; // own top-level dock tab; see layoutMasterPanel()
     juce::OwnedArray<MixerStrip>       trackStrips_;
     std::unique_ptr<juce::FileChooser> chooser_;
 
