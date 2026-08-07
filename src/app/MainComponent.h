@@ -3,6 +3,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <juce_data_structures/juce_data_structures.h>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -95,6 +96,17 @@ private:
     void showStatus(const juce::String& message);
     void showError(const juce::String& message);
     void showBusy(const juce::String& message);
+
+    /** Turns a plain juce::Slider into one whose drags are undoable, the same
+        "rewind to where the drag started, commit the final value as one edit"
+        technique the mixer faders use — but written generically so a slider
+        that lives directly in MainComponent (the master panel's) doesn't need
+        its own Fader-style enum and dedicated begin/end methods the way a
+        reusable component like MixerStrip does. @p read/@p write are the get
+        and set for whichever model::Song field the slider controls. */
+    void wireUndoableSlider(juce::Slider& slider, juce::String label,
+                            std::function<float(const model::Song&)> read,
+                            std::function<void(model::Song&, float)> write);
     void post(engine::EngineCommand::Type type, double a = 0.0, double b = 0.0);
 
     void                   editPattern(const engine::Pattern& pattern);

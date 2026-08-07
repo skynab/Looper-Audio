@@ -374,6 +374,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.cutoff = hz;
         engine_.setMasterFilterCutoff(hz);
     };
+    wireUndoableSlider(filterCutoffSlider, "Set master filter cutoff",
+                       [](const model::Song& s) { return s.filter.cutoff; },
+                       [](model::Song& s, float v) { s.filter.cutoff = v; });
     masterPanel_.addAndMakeVisible(filterCutoffSlider);
 
     filterResoSlider.setRange(0.1, 5.0, 0.01);
@@ -385,6 +388,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().filter.resonance = q;
         engine_.setMasterFilterResonance(q);
     };
+    wireUndoableSlider(filterResoSlider, "Set master filter resonance",
+                       [](const model::Song& s) { return s.filter.resonance; },
+                       [](model::Song& s, float v) { s.filter.resonance = v; });
     masterPanel_.addAndMakeVisible(filterResoSlider);
 
     // ---- master delay (stored in the document, so it saves + restores) ----
@@ -406,6 +412,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.timeMs = ms;
         engine_.setMasterDelayTimeMs(ms);
     };
+    wireUndoableSlider(delayTimeSlider, "Set master delay time",
+                       [](const model::Song& s) { return s.delay.timeMs; },
+                       [](model::Song& s, float v) { s.delay.timeMs = v; });
     masterPanel_.addAndMakeVisible(delayTimeSlider);
 
     delayFbSlider.setRange(0.0, 95.0, 1.0);
@@ -417,6 +426,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.feedback = fb;
         engine_.setMasterDelayFeedback(fb);
     };
+    wireUndoableSlider(delayFbSlider, "Set master delay feedback",
+                       [](const model::Song& s) { return s.delay.feedback; },
+                       [](model::Song& s, float v) { s.delay.feedback = v; });
     masterPanel_.addAndMakeVisible(delayFbSlider);
 
     delayMixSlider.setRange(0.0, 100.0, 1.0);
@@ -428,6 +440,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().delay.mix = mix;
         engine_.setMasterDelayMix(mix);
     };
+    wireUndoableSlider(delayMixSlider, "Set master delay mix",
+                       [](const model::Song& s) { return s.delay.mix; },
+                       [](model::Song& s, float v) { s.delay.mix = v; });
     masterPanel_.addAndMakeVisible(delayMixSlider);
 
     // ---- master reverb (stored in the document) ----
@@ -449,6 +464,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.roomSize = v;
         engine_.setMasterReverbRoomSize(v);
     };
+    wireUndoableSlider(reverbRoomSlider, "Set master reverb room size",
+                       [](const model::Song& s) { return s.reverb.roomSize; },
+                       [](model::Song& s, float v) { s.reverb.roomSize = v; });
     masterPanel_.addAndMakeVisible(reverbRoomSlider);
 
     reverbDampSlider.setRange(0.0, 100.0, 1.0);
@@ -460,6 +478,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.damping = v;
         engine_.setMasterReverbDamping(v);
     };
+    wireUndoableSlider(reverbDampSlider, "Set master reverb damping",
+                       [](const model::Song& s) { return s.reverb.damping; },
+                       [](model::Song& s, float v) { s.reverb.damping = v; });
     masterPanel_.addAndMakeVisible(reverbDampSlider);
 
     reverbMixSlider.setRange(0.0, 100.0, 1.0);
@@ -471,6 +492,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().reverb.mix = v;
         engine_.setMasterReverbMix(v);
     };
+    wireUndoableSlider(reverbMixSlider, "Set master reverb mix",
+                       [](const model::Song& s) { return s.reverb.mix; },
+                       [](model::Song& s, float v) { s.reverb.mix = v; });
     masterPanel_.addAndMakeVisible(reverbMixSlider);
 
     // ---- send bus: a shared reverb-or-delay every track can send into (stored in the document) ----
@@ -505,6 +529,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.roomSize = v;
         engine_.setSendBusRoomSize(v);
     };
+    wireUndoableSlider(sendRoomSlider, "Set send bus room size",
+                       [](const model::Song& s) { return s.sendBus.roomSize; },
+                       [](model::Song& s, float v) { s.sendBus.roomSize = v; });
     masterPanel_.addAndMakeVisible(sendRoomSlider);
 
     sendDampSlider.setRange(0.0, 100.0, 1.0);
@@ -516,6 +543,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.damping = v;
         engine_.setSendBusDamping(v);
     };
+    wireUndoableSlider(sendDampSlider, "Set send bus damping",
+                       [](const model::Song& s) { return s.sendBus.damping; },
+                       [](model::Song& s, float v) { s.sendBus.damping = v; });
     masterPanel_.addAndMakeVisible(sendDampSlider);
 
     sendDelayTimeSlider.setRange(20.0, 1000.0, 1.0);
@@ -527,6 +557,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.delayTimeMs = ms;
         engine_.setSendBusDelayTimeMs(ms);
     };
+    wireUndoableSlider(sendDelayTimeSlider, "Set send bus delay time",
+                       [](const model::Song& s) { return s.sendBus.delayTimeMs; },
+                       [](model::Song& s, float v) { s.sendBus.delayTimeMs = v; });
     masterPanel_.addAndMakeVisible(sendDelayTimeSlider);
 
     sendDelayFbSlider.setRange(0.0, 95.0, 1.0);
@@ -538,6 +571,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.delayFeedback = fb;
         engine_.setSendBusDelayFeedback(fb);
     };
+    wireUndoableSlider(sendDelayFbSlider, "Set send bus delay feedback",
+                       [](const model::Song& s) { return s.sendBus.delayFeedback; },
+                       [](model::Song& s, float v) { s.sendBus.delayFeedback = v; });
     masterPanel_.addAndMakeVisible(sendDelayFbSlider);
 
     sendReturnSlider.setRange(0.0, 100.0, 1.0);
@@ -549,6 +585,9 @@ MainComponent::MainComponent()
         history_.mutableCurrent().sendBus.returnLevel = v;
         engine_.setSendBusReturnLevel(v);
     };
+    wireUndoableSlider(sendReturnSlider, "Set send bus return level",
+                       [](const model::Song& s) { return s.sendBus.returnLevel; },
+                       [](model::Song& s, float v) { s.sendBus.returnLevel = v; });
     masterPanel_.addAndMakeVisible(sendReturnSlider);
 
     // ---- gain automation: arm, then move the master fader or a track's fader
@@ -3722,6 +3761,23 @@ void MainComponent::showBusy(const juce::String& message)
     status_.show(message, false);
     if (auto* peer = getPeer())
         peer->performAnyPendingRepaintsNow();
+}
+
+void MainComponent::wireUndoableSlider(juce::Slider& slider, juce::String label,
+                                       std::function<float(const model::Song&)> read,
+                                       std::function<void(model::Song&, float)> write)
+{
+    // Shared, not a member: this is called once per slider (there are over a
+    // dozen in the master panel alone), and a dedicated member per slider is
+    // exactly the per-control bookkeeping this helper exists to avoid.
+    auto dragFrom = std::make_shared<float>(0.0f);
+
+    slider.onDragStart = [this, dragFrom, read] { *dragFrom = read(history_.current()); };
+    slider.onDragEnd = [this, dragFrom, label, read, write]
+    {
+        const float landedOn = read(history_.current());
+        commitDrag(history_, label.toStdString(), *dragFrom, landedOn, write);
+    };
 }
 
 /** True while the document differs from what's on disk. Asks the history for
