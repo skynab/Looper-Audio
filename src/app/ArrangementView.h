@@ -39,7 +39,8 @@ namespace looper
     to that track if it's an audio track, or otherwise creates a new one.
 */
 class ArrangementView final : public juce::Component,
-                              public juce::DragAndDropTarget
+                              public juce::DragAndDropTarget,
+                              public juce::TooltipClient
 {
 public:
     ArrangementView()
@@ -668,6 +669,20 @@ private:
     {
         updateMuteHover(-1);
         updateGearHover(-1);
+    }
+
+    /** Neither the mute toggle nor the gear icon are real child Components
+        (both are painted regions, hit-tested by hand like the rest of a
+        track's row) so neither can carry its own setTooltip() the way a real
+        Button would — this is what TooltipWindow actually asks instead. */
+    juce::String getTooltip() override
+    {
+        const auto pos = getMouseXYRelative().toFloat();
+        if (gearButtonAt(pos) >= 0)
+            return "Track settings - rename, recolor, duplicate, delete";
+        if (muteButtonAt(pos) >= 0)
+            return "Mute this track";
+        return {};
     }
 
     // juce::DragAndDropTarget

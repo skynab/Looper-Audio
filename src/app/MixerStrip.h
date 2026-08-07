@@ -49,11 +49,13 @@ public:
         muteButton_.setClickingTogglesState(true);
         muteButton_.setColour(juce::TextButton::buttonOnColourId, juce::Colours::orangered);
         muteButton_.onClick = [this] { if (onMuteChange) onMuteChange(muteButton_.getToggleState()); };
+        muteButton_.setTooltip("Mute this track");
         addAndMakeVisible(muteButton_);
 
         soloButton_.setClickingTogglesState(true);
         soloButton_.setColour(juce::TextButton::buttonOnColourId, juce::Colours::yellow);
         soloButton_.onClick = [this] { if (onSoloChange) onSoloChange(soloButton_.getToggleState()); };
+        soloButton_.setTooltip("Solo this track - silences every other track");
         addAndMakeVisible(soloButton_);
 
         sendSlider_.setSliderStyle(juce::Slider::LinearHorizontal);

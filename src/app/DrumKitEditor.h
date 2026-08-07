@@ -91,6 +91,7 @@ public:
                 pushMixChangeFor(index, [this, index](model::DrumPad& p)
                                         { p.muted = muteButtons_[index]->getToggleState(); });
             };
+            mute->setTooltip("Mute this pad");
             addAndMakeVisible(mute);
 
             auto* solo = soloButtons_.add(new juce::TextButton("S"));
@@ -102,6 +103,7 @@ public:
                 pushMixChangeFor(index, [this, index](model::DrumPad& p)
                                         { p.solo = soloButtons_[index]->getToggleState(); });
             };
+            solo->setTooltip("Solo this pad - silences every other pad");
             addAndMakeVisible(solo);
 
             auto* load = loadButtons_.add(new juce::TextButton("Load..."));
