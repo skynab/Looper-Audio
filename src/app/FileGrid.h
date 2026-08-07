@@ -53,6 +53,10 @@ public:
 
         table_.setModel(this);
         table_.setMultipleSelectionEnabled(false);
+        // Right-click is otherwise the only way to discover New Folder,
+        // Rename, and Delete exist at all — nothing else in this row hints
+        // at it.
+        table_.setTooltip("Double-click to preview - right-click for New Folder, Rename, Delete");
         addAndMakeVisible(table_);
     }
 

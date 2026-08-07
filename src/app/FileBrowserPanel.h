@@ -84,6 +84,9 @@ public:
         // non-empty description to start a drag at all.
         fileTree_.setDragAndDropDescription("audiofile");
         fileTree_.addListener(this);
+        // Right-click is otherwise the only way to discover New Folder,
+        // Rename, and Delete exist at all.
+        fileTree_.setTooltip("Right-click for New Folder, Rename, Delete");
         addAndMakeVisible(fileTree_);
 
         fileGrid_.onFilePreview      = [this](const juce::File& file) { if (onFilePreview) onFilePreview(file); };
