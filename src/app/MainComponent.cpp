@@ -1383,7 +1383,10 @@ void MainComponent::playChordAtFret(engine::MovableShape shape, int rootString, 
 void MainComponent::addGuitarTrack()
 {
     if (trackCount() >= engine_.maxTracks())
+    {
+        showError("Track limit reached");
         return;
+    }
 
     history_.edit("Add guitar track", [](model::Song& s)
     {
@@ -1537,28 +1540,37 @@ void MainComponent::deleteSessionScene(int sceneIndex)
     if (sceneIndex < 0 || sceneIndex >= (int) song.scenes.size())
         return;
 
+    const auto name = song.scenes[(size_t) sceneIndex].name;
+
     engine_.stopAllSessionSlots();
 
     history_.edit("Delete scene", [sceneIndex](model::Song& s) { model::removeScene(s, sceneIndex); });
 
     syncEngineTracks();
     refreshSessionView();
+
+    // Bigger blast radius than a track deletion — every clip on every track
+    // in the row — so it earns the same reassurance, not less.
+    showStatus("Deleted \"" + juce::String(name) + "\" - undo to bring it back");
 }
 
 void MainComponent::addSessionScene()
 {
-    history_.edit("Add scene", [](model::Song& s)
+    std::string name;
+    history_.edit("Add scene", [&name](model::Song& s)
     {
-        model::addScene(s, "Scene " + std::to_string(s.scenes.size() + 1));
+        name = "Scene " + std::to_string(s.scenes.size() + 1);
+        model::addScene(s, name);
     });
 
     syncEngineTracks();
     refreshSessionView();
+    showStatus("Added \"" + juce::String(name) + "\"");
 }
 
 /** Clicking an empty cell fills it with a copy of the track's currently open
     clip — the quickest way to get material into the grid without a separate
-    "new session clip" flow. Does nothing if there's nothing to copy. */
+    "new session clip" flow. Declines if there's nothing to copy. */
 void MainComponent::captureClipIntoSession(int trackIndex, int sceneIndex)
 {
     const auto& song = history_.current();
@@ -1567,7 +1579,10 @@ void MainComponent::captureClipIntoSession(int trackIndex, int sceneIndex)
 
     const auto& clips = song.tracks[(size_t) trackIndex].clips;
     if (clips.empty())
+    {
+        showError("Nothing to capture - this track has no clips");
         return;
+    }
 
     const int  sourceIndex = juce::jlimit(0, (int) clips.size() - 1,
                                           trackIndex == selectedTrackIndex_ ? selectedClipIndex_ : 0);
@@ -1936,6 +1951,11 @@ void MainComponent::deleteSelectedClip()
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
     updateEditingLabel();
+
+    // Reachable by a bare key and the most-used delete in the app, so it's
+    // the one most likely to be hit by accident — same reasoning as track
+    // deletion below.
+    showStatus("Deleted clip - undo to bring it back");
 }
 
 /** Deletes the selected track and everything on it. Undo covers it, as with
@@ -2233,21 +2253,38 @@ void MainComponent::quantizeNotes(double swingAmount)
     if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
         return;
 
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ >= (int) song.tracks.size())
+        return;
+    const auto& clips = song.tracks[(size_t) selectedTrackIndex_].clips;
+    if (selectedClipIndex_ < 0 || selectedClipIndex_ >= (int) clips.size())
+        return;
+
     const int  trackIdx  = selectedTrackIndex_;
     const int  clipIdx   = selectedClipIndex_;
     const auto selection = pianoRoll_.selectedNoteIndices();
+    const int  affected  = selection.empty()
+                              ? (int) clips[(size_t) clipIdx].pattern.notes.size()
+                              : (int) selection.size();
+
+    if (affected == 0)
+    {
+        showStatus("Nothing to " + juce::String(swingAmount > 0.0 ? "swing" : "quantize")
+                   + " - this clip has no notes");
+        return;
+    }
 
     history_.edit(swingAmount > 0.0 ? "Swing" : "Quantize",
                   [trackIdx, clipIdx, swingAmount, &selection](model::Song& s)
     {
         if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
             return;
-        auto& clips = s.tracks[(size_t) trackIdx].clips;
-        if (clipIdx < 0 || clipIdx >= (int) clips.size())
+        auto& trackClips = s.tracks[(size_t) trackIdx].clips;
+        if (clipIdx < 0 || clipIdx >= (int) trackClips.size())
             return;
 
         // The grid the editor draws is 16ths, so that's what notes snap to.
-        engine::NoteOps::quantizeNotes(clips[(size_t) clipIdx].pattern.notes, 0.25, swingAmount, selection);
+        engine::NoteOps::quantizeNotes(trackClips[(size_t) clipIdx].pattern.notes, 0.25, swingAmount, selection);
     });
 
     syncEngineTracks();
@@ -2261,6 +2298,9 @@ void MainComponent::quantizeNotes(double swingAmount)
     // a follow-up Swing to the whole part. Quantizing never adds, removes or
     // reorders notes, so the same indices still mean the same notes.
     pianoRoll_.setSelectedNoteIndices(selection);
+
+    showStatus((swingAmount > 0.0 ? "Swung " : "Quantized ") + juce::String(affected)
+               + (affected == 1 ? " note" : " notes"));
 }
 
 /** Sets a clip's window on the timeline (from the arrangement's resize
@@ -2674,6 +2714,10 @@ void MainComponent::removeDrumPad(int padIndex)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshSessionView();
+
+    // More destructive than the row disappearing suggests: every hit that
+    // played this pad, on every clip on the track, went with it.
+    showStatus("Removed pad - undo to bring it back");
 }
 
 /** Shows the Synth pane's controls for the selected track's timbre, or a
@@ -3998,6 +4042,7 @@ void MainComponent::timerCallback()
 
     addTrackButton.setEnabled(trackCount() < engine_.maxTracks());
     addDrumTrackButton_.setEnabled(trackCount() < engine_.maxTracks());
+    addGuitarTrackButton_.setEnabled(trackCount() < engine_.maxTracks());
     addClipButton_.setEnabled(selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount());
 
     const double sampleRate = engine_.sampleRate();
