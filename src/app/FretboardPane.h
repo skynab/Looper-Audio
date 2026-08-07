@@ -10,6 +10,9 @@
 #include "engine/GuitarChords.h"
 #include "engine/MidiNote.h"
 #include "model/GuitarSettings.h"
+#include "model/Track.h"
+
+#include "TrackColours.h"
 
 namespace looper
 {
@@ -200,11 +203,25 @@ public:
         return strum;
     }
 
+    /** Which track this is, so the header says so — this tab's title never
+        changes per track, so without this there was no on-screen way to
+        tell which track's fretboard was actually open after switching
+        tracks while parked here. */
+    void setTrackInfo(const juce::String& name, juce::uint32 colour)
+    {
+        trackName_   = name;
+        trackColour_ = colour;
+        repaint();
+    }
+
     void paint(juce::Graphics& g) override
     {
         g.fillAll(juce::Colour(0xff1a1a1e));
         if (! contentVisible_)
             return;
+
+        paintTrackHeader(g, getLocalBounds().removeFromTop(kTrackHeaderHeight),
+                         trackName_, trackColour_, model::TrackType::Guitar);
 
         const auto board = boardArea();
         if (board.getHeight() <= 0 || board.getWidth() <= 0)
@@ -296,7 +313,9 @@ public:
         if (! contentVisible_)
             return;
 
-        auto area = getLocalBounds().reduced(6);
+        auto area = getLocalBounds();
+        area.removeFromTop(kTrackHeaderHeight); // matches boardArea() and the strip paint() draws
+        area = area.reduced(6);
 
         auto tuningRow = area.removeFromTop(kTuningHeight);
         const int boxWidth = juce::jmax(40, tuningRow.getWidth() / model::kNumGuitarStrings);
@@ -362,7 +381,9 @@ private:
 
     juce::Rectangle<int> boardArea() const
     {
-        auto area = getLocalBounds().reduced(6);
+        auto area = getLocalBounds();
+        area.removeFromTop(kTrackHeaderHeight); // matches the untransformed strip paint() draws into
+        area = area.reduced(6);
         area.removeFromTop(kTuningHeight);
         area.removeFromBottom(kToneHeight);
         area.removeFromBottom(kChordHeight);
@@ -481,6 +502,8 @@ private:
     bool                                       updating_       = false;
     int                                        hoverString_    = -1;
     int                                        hoverFret_      = -1;
+    juce::String                               trackName_;
+    juce::uint32                               trackColour_ = 0;
 
     juce::Label     placeholder_;
     std::array<juce::ComboBox, model::kNumGuitarStrings> tuningBoxes_;

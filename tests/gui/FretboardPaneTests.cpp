@@ -119,6 +119,26 @@ TEST_CASE("A chord button is what the pane hit-tests at its own centre", "[gui][
     }
 }
 
+TEST_CASE("The tuning row sits below the track header", "[gui][fretboard]")
+{
+    // paintTrackHeader() draws into the pane's own top strip (see paint());
+    // this checks resized() actually reserved that space for it rather than
+    // laying the tuning row underneath where the header is drawn.
+    JuceFixture fixture;
+    auto pane = makeReadyPane(700, 400);
+
+    bool foundAny = false;
+    for (int i = 0; i < pane->getNumChildComponents(); ++i)
+    {
+        if (auto* box = dynamic_cast<juce::ComboBox*>(pane->getChildComponent(i)))
+        {
+            foundAny = true;
+            REQUIRE(box->getY() >= kTrackHeaderHeight);
+        }
+    }
+    REQUIRE(foundAny); // otherwise the loop above would have proven nothing
+}
+
 TEST_CASE("The pane stays sane when it is far too small to draw", "[gui][fretboard]")
 {
     // A docked pane can be dragged to any size. Nothing here should assert,

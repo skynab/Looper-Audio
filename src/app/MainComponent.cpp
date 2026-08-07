@@ -1425,7 +1425,11 @@ void MainComponent::refreshFretboardForSelected()
                         && history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Guitar;
 
     if (isGuitar)
-        fretboard_.setSettings(history_.current().tracks[(size_t) selectedTrackIndex_].guitarSettings);
+    {
+        const auto& track = history_.current().tracks[(size_t) selectedTrackIndex_];
+        fretboard_.setSettings(track.guitarSettings);
+        fretboard_.setTrackInfo(track.name, track.colour);
+    }
     else
         fretboard_.setNoGuitarTrackSelected();
 }
