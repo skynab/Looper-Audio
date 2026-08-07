@@ -2399,12 +2399,9 @@ void MainComponent::syncEngineTracks()
                 continue; // audio clips aren't sequenced
 
             engine::ClipSlot slot;
-            slot.pattern = clip.pattern;
-            slot.startBeats = clip.startBeats;
-            // A track's only clip keeps looping indefinitely from its start
-            // (today's validated "plays until Stop" behaviour); real length
-            // gating only applies once a track has more than one clip.
-            slot.lengthBeats = track.clips.size() == 1 ? 1.0e9 : clip.lengthBeats;
+            slot.pattern     = clip.pattern;
+            slot.startBeats  = clip.startBeats;
+            slot.lengthBeats = clip.lengthBeats;
             slots.push_back(slot);
         }
         engine_.setTrackClips(i, slots);
@@ -2412,18 +2409,11 @@ void MainComponent::syncEngineTracks()
         // Audio clips -> the track's own audio-clip player. Each Audio-type
         // clip becomes one AudioClipSlot, gated to its own
         // [startBeats, startBeats+lengthBeats) window exactly like the
-        // instrument clips above — a track's only audio clip keeps an
-        // unbounded window (plays once from its start, the original
-        // single-clip behaviour); real gating (silence between clips, and
-        // after the last one) only applies once a track has more than one.
-        // Unconditionally resubmitted every sync, same as instrument clips —
-        // cheap, since AudioEngine caches decoded audio by file path (see
-        // AudioEngine::setTrackAudioClips), so this never re-decodes a file
-        // it's already loaded, even across tracks that share one.
-        const int numAudioClips = (int) std::count_if(track.clips.begin(), track.clips.end(),
-                                                       [](const model::Clip& c)
-                                                       { return c.type == model::ClipType::Audio && ! c.audioFile.empty(); });
-
+        // instrument clips above. Unconditionally resubmitted every sync,
+        // same as instrument clips — cheap, since AudioEngine caches decoded
+        // audio by file path (see AudioEngine::setTrackAudioClips), so this
+        // never re-decodes a file it's already loaded, even across tracks
+        // that share one.
         std::vector<engine::AudioClipSpec> audioSpecs;
         for (const auto& clip : track.clips)
         {
@@ -2433,7 +2423,7 @@ void MainComponent::syncEngineTracks()
             engine::AudioClipSpec spec;
             spec.file        = juce::File(clip.audioFile);
             spec.startBeats  = clip.startBeats;
-            spec.lengthBeats = numAudioClips == 1 ? 1.0e9 : clip.lengthBeats;
+            spec.lengthBeats = clip.lengthBeats;
             audioSpecs.push_back(spec);
         }
         if (! audioSpecs.empty())
