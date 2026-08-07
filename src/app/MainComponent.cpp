@@ -1759,6 +1759,8 @@ void MainComponent::setEffectSlotParams(const model::EffectSlot& slot, int slotI
     engine::PluginHost, and §20 for what's still owed here). */
 void MainComponent::scanForPlugins()
 {
+    showBusy("Scanning for plugins...");
+
     const auto pedal = recordingsDirectory().getParentDirectory().getChildFile("plugin-scan.tmp");
 
     for (const auto& format : engine_.pluginHost().availableFormats())
@@ -3664,6 +3666,19 @@ void MainComponent::showError(const juce::String& message)
     juce::Logger::writeToLog("Status: " + message);
 }
 
+/** As showStatus, but forces the message on screen before returning — for
+    the handful of actions (bounce, plugin scan) that then block the message
+    thread for real work. A plain showStatus() only marks the banner dirty;
+    without a peer repaint forced here, that paint request would just sit
+    queued behind the very call that's about to freeze the UI, and the
+    message would never be seen until after the freeze was already over. */
+void MainComponent::showBusy(const juce::String& message)
+{
+    status_.show(message, false);
+    if (auto* peer = getPeer())
+        peer->performAnyPendingRepaintsNow();
+}
+
 /** True while the document differs from what's on disk. Asks the history for
     the identity of the state it's holding rather than tracking a modified
     flag, so undoing back to the saved state reads as saved again — see
@@ -3847,6 +3862,7 @@ void MainComponent::bounceProject()
             return;
 
         file = file.withFileExtension("wav");
+        showBusy("Rendering to WAV...");
 
         const auto& song = history_.current();
         std::vector<engine::Pattern> patterns;

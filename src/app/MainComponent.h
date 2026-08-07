@@ -94,6 +94,7 @@ private:
     void chooseFile();
     void showStatus(const juce::String& message);
     void showError(const juce::String& message);
+    void showBusy(const juce::String& message);
     void post(engine::EngineCommand::Type type, double a = 0.0, double b = 0.0);
 
     void                   editPattern(const engine::Pattern& pattern);
