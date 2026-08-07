@@ -828,6 +828,8 @@ MainComponent::MainComponent()
     effectChain_.onSlotMoved            = [this](int slot, int delta) { moveEffectSlot(slot, delta); };
     effectChain_.onSlotBypassToggled    = [this](int slot, bool on) { setEffectSlotBypass(slot, on); };
     effectChain_.onSlotParamsChanged    = [this](const model::EffectSlot& s, int i) { setEffectSlotParams(s, i); };
+    effectChain_.onSlotParamsDragStart  = [this](int i) { beginEffectSlotParamsDrag(i); };
+    effectChain_.onSlotParamsDragEnd    = [this](int i) { endEffectSlotParamsDrag(i); };
     effectChain_.onScanRequested        = [this] { scanForPlugins(); };
 
     // A previous scan, so launching doesn't re-probe every plugin on the
@@ -3126,6 +3128,51 @@ void MainComponent::endFaderDrag(int trackIndex, MixerStrip::Fader fader)
     const float landedOn = readFader(history_.current(), trackIndex, fader);
     commitDrag(history_, faderName(fader), faderDragFrom_, landedOn,
                [trackIndex, fader](model::Song& s, float v) { writeFader(s, trackIndex, fader, v); });
+}
+
+/** Remembers an effect slot's parameters before a drag on one of its controls
+    started — see EffectChainPanel::onSlotParamsDragStart. */
+void MainComponent::beginEffectSlotParamsDrag(int slotIndex)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const auto& chain = history_.current().tracks[(size_t) selectedTrackIndex_].effectChain;
+    if (slotIndex < 0 || slotIndex >= (int) chain.size())
+        return;
+
+    effectSlotDragging_  = true;
+    effectSlotDragTrack_ = selectedTrackIndex_;
+    effectSlotDragIndex_ = slotIndex;
+    effectSlotDragFrom_  = chain[(size_t) slotIndex];
+}
+
+/** Commits a whole effect-slot-parameters drag as one undo step, the
+    commitStructDrag equivalent of endFaderDrag above — a slot's parameters
+    are a struct of several fields changed together, not one number, so
+    there's no meaningful tolerance to check against: any real change
+    commits, equality is the whole test. */
+void MainComponent::endEffectSlotParamsDrag(int slotIndex)
+{
+    if (! effectSlotDragging_ || effectSlotDragTrack_ != selectedTrackIndex_ || effectSlotDragIndex_ != slotIndex)
+        return;
+
+    effectSlotDragging_ = false;
+
+    const auto& chain = history_.current().tracks[(size_t) selectedTrackIndex_].effectChain;
+    if (slotIndex < 0 || slotIndex >= (int) chain.size())
+        return;
+
+    const auto landedOn   = chain[(size_t) slotIndex];
+    const int  trackIndex = selectedTrackIndex_;
+
+    commitStructDrag(history_, "Set effect parameters", effectSlotDragFrom_, landedOn,
+                     [trackIndex, slotIndex](model::Song& s, const model::EffectSlot& value)
+    {
+        auto& c = s.tracks[(size_t) trackIndex].effectChain;
+        if (slotIndex >= 0 && slotIndex < (int) c.size())
+            c[(size_t) slotIndex] = value;
+    });
 }
 
 /** Mutes or unmutes a track, as an undoable edit.

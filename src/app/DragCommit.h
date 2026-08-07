@@ -41,4 +41,23 @@ bool commitDrag(model::History<State>& history, std::string label,
     return true;
 }
 
+/**
+    Same technique as commitDrag, for a dragged value with no meaningful
+    tolerance to compare within — a whole struct (e.g. one effect slot's
+    settings, changed as a unit the way EffectChainPanel already treats a
+    slot's parameters), rather than a single continuous number. Equality
+    replaces the tolerance check: any change commits, however small.
+*/
+template <typename State, typename Value, typename Write>
+bool commitStructDrag(model::History<State>& history, std::string label,
+                      const Value& from, const Value& to, Write write)
+{
+    if (to == from)
+        return false;
+
+    write(history.mutableCurrent(), from);
+    history.edit(std::move(label), [&write, to](State& state) { write(state, to); });
+    return true;
+}
+
 } // namespace looper

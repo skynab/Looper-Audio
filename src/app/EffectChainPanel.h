@@ -36,6 +36,16 @@ public:
     std::function<void()>                                           onScanRequested;
     std::function<void(const model::EffectSlot& slot, int slotIndex)> onSlotParamsChanged;
 
+    /** Brackets a change to the selected slot's parameters, so the owner can
+        commit the whole thing as one undo step (see MainComponent's
+        beginEffectSlotParamsDrag/endEffectSlotParamsDrag) rather than one
+        step per notch — the same problem the mixer faders solve, but for a
+        whole struct of fields rather than one number. A slider spans a real
+        drag; a toggle or dropdown fires both back to back, since a click has
+        no "during" to span. */
+    std::function<void(int slotIndex)> onSlotParamsDragStart;
+    std::function<void(int slotIndex)> onSlotParamsDragEnd;
+
     EffectChainPanel()
     {
         placeholder_.setText("Select a track to edit its effects", juce::dontSendNotification);
@@ -85,12 +95,12 @@ public:
         setupSlider(driveLevel_, 0.0, 150.0, 1.0, " %", [this] { pushParams(); });
 
         driveHardClip_.setButtonText("Fuzz (hard clip)");
-        driveHardClip_.onClick = [this] { pushParams(); };
+        driveHardClip_.onClick = [this] { reportInstantEdit(); };
         addChildComponent(driveHardClip_);
 
         driveCabinet_.setButtonText("Cabinet");
         driveCabinet_.setTooltip("Speaker simulation - without it, distortion is heard as fizz");
-        driveCabinet_.onClick = [this] { pushParams(); };
+        driveCabinet_.onClick = [this] { reportInstantEdit(); };
         addChildComponent(driveCabinet_);
 
         setupSlider(compThreshold_, -60.0, 0.0, 0.5, " dB", [this] { pushParams(); });
@@ -120,7 +130,7 @@ public:
         filterMode_.addItem("High-pass", 2);
         filterMode_.addItem("Band-pass", 3);
         filterMode_.setSelectedId(1, juce::dontSendNotification);
-        filterMode_.onChange = [this] { pushParams(); };
+        filterMode_.onChange = [this] { reportInstantEdit(); };
         addAndMakeVisible(filterMode_);
 
         // Laying out, showing and hiding a component that was never parented
@@ -431,7 +441,19 @@ private:
         slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 72, 18);
         slider.setTextValueSuffix(suffix);
         slider.onValueChange = std::move(onChange);
+        slider.onDragStart = [this] { if (onSlotParamsDragStart) onSlotParamsDragStart(selected_); };
+        slider.onDragEnd   = [this] { if (onSlotParamsDragEnd)   onSlotParamsDragEnd(selected_); };
         addChildComponent(slider);
+    }
+
+    /** For a discrete control (toggle, dropdown) rather than a slider: a
+        click has no "during" to bracket, so both ends of the drag report
+        fire back to back around the one edit it makes. */
+    void reportInstantEdit()
+    {
+        if (onSlotParamsDragStart) onSlotParamsDragStart(selected_);
+        pushParams();
+        if (onSlotParamsDragEnd) onSlotParamsDragEnd(selected_);
     }
 
     /** Mirrors the selected slot into the parameter controls, and shows only

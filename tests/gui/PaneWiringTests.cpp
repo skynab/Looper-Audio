@@ -184,6 +184,77 @@ TEST_CASE("The effect panel reports a parameter change for every kind", "[gui][w
     }
 }
 
+TEST_CASE("The effect panel brackets every slider drag, for every kind", "[gui][wiring]")
+{
+    // A slider that fires onSlotParamsChanged (checked above) but never
+    // reports onSlotParamsDragStart/End would still commit live values while
+    // dragging and simply never become undoable — the same class of gap
+    // "wired to move the value" and "wired to be undoable" leaves open.
+    // juce::Slider's onDragStart/onDragEnd are ordinary std::function
+    // members, so they're called directly here rather than needing a real
+    // simulated mouse drag.
+    JuceFixture fixture;
+
+    std::vector<model::EffectSlot> chain;
+    for (auto kind : { model::EffectKind::Filter, model::EffectKind::Delay,
+                       model::EffectKind::Reverb, model::EffectKind::Drive,
+                       model::EffectKind::Compressor, model::EffectKind::Tremolo,
+                       model::EffectKind::Chorus, model::EffectKind::Wobble })
+    {
+        model::EffectSlot slot;
+        slot.kind    = kind;
+        slot.enabled = true;
+        chain.push_back(slot);
+    }
+
+    for (int selected = 0; selected < (int) chain.size(); ++selected)
+    {
+        EffectChainPanel panel;
+        panel.setVisible(true);
+        panel.setBounds(0, 0, 700, 420);
+        panel.setChain(chain);
+        panel.selectSlotForTesting(selected);
+        panel.resized();
+
+        int starts = 0, ends = 0;
+        int startedSlot = -1, endedSlot = -1;
+        panel.onSlotParamsDragStart = [&](int i) { ++starts; startedSlot = i; };
+        panel.onSlotParamsDragEnd   = [&](int i) { ++ends; endedSlot = i; };
+
+        std::vector<juce::Component*> controls;
+        paneaudit::collectControls(panel, controls);
+
+        int checked = 0;
+        for (auto* control : controls)
+        {
+            if (! paneaudit::effectivelyVisible(panel, control))
+                continue;
+
+            auto* slider = dynamic_cast<juce::Slider*>(control);
+            if (slider == nullptr)
+                continue;
+
+            REQUIRE(slider->onDragStart);
+            REQUIRE(slider->onDragEnd);
+
+            const int startsBefore = starts, endsBefore = ends;
+            slider->onDragStart();
+            slider->onDragEnd();
+
+            INFO("effect kind index " << selected << ", slider "
+                 << (slider->getName().isEmpty() ? juce::String("(unnamed)") : slider->getName()));
+            REQUIRE(starts == startsBefore + 1);
+            REQUIRE(ends == endsBefore + 1);
+            REQUIRE(startedSlot == selected);
+            REQUIRE(endedSlot == selected);
+            ++checked;
+        }
+
+        INFO("effect kind index " << selected << " showed " << checked << " slider(s)");
+        REQUIRE(checked > 0);
+    }
+}
+
 TEST_CASE("The synth editor reports its parameter changes", "[gui][wiring]")
 {
     JuceFixture fixture;

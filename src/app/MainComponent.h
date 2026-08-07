@@ -179,6 +179,8 @@ private:
     void                   updateMixerStrips();
     void                   beginFaderDrag(int trackIndex, MixerStrip::Fader fader);
     void                   endFaderDrag(int trackIndex, MixerStrip::Fader fader);
+    void                   beginEffectSlotParamsDrag(int slotIndex);
+    void                   endEffectSlotParamsDrag(int slotIndex);
     void                   setTrackGain(int index, float gainDb);
     void                   setTrackMuted(int index, bool muted);
     void                   setTrackSolo(int index, bool solo);
@@ -260,6 +262,15 @@ private:
     int                faderDragTrack_ = -1;
     MixerStrip::Fader  faderDragWhich_ = MixerStrip::Fader::Gain;
     float              faderDragFrom_  = 0.0f;
+
+    // Where an effect slot's parameters were before a drag on one of its
+    // controls started, so the whole gesture can commit as one undo step —
+    // same reasoning as the fader-drag members above, but for a whole
+    // model::EffectSlot rather than one float (see commitStructDrag).
+    bool              effectSlotDragging_ = false;
+    int               effectSlotDragTrack_ = -1;
+    int               effectSlotDragIndex_ = -1;
+    model::EffectSlot effectSlotDragFrom_;
 
     juce::MenuBarComponent          menuBar_;
 
