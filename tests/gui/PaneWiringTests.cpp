@@ -344,6 +344,50 @@ TEST_CASE("The synth editor brackets every slider drag", "[gui][wiring]")
     REQUIRE(checked > 0);
 }
 
+TEST_CASE("The fretboard brackets every slider drag", "[gui][wiring]")
+{
+    // Same gap as the synth editor's and effect panel's equivalent tests:
+    // onSettingsChanged firing doesn't prove onSettingsDragStart/End also
+    // fire, and those are what make a drag undoable rather than merely live.
+    JuceFixture fixture;
+
+    FretboardPane pane;
+    pane.setVisible(true);
+    pane.setBounds(0, 0, 900, 600);
+    pane.setSettings(model::GuitarSettings {});
+    pane.resized();
+
+    int starts = 0, ends = 0;
+    pane.onSettingsDragStart = [&] { ++starts; };
+    pane.onSettingsDragEnd   = [&] { ++ends; };
+
+    std::vector<juce::Component*> controls;
+    paneaudit::collectControls(pane, controls);
+
+    int checked = 0;
+    for (auto* control : controls)
+    {
+        auto* slider = dynamic_cast<juce::Slider*>(control);
+        if (slider == nullptr || ! paneaudit::effectivelyVisible(pane, control))
+            continue;
+
+        REQUIRE(slider->onDragStart);
+        REQUIRE(slider->onDragEnd);
+
+        const int startsBefore = starts, endsBefore = ends;
+        slider->onDragStart();
+        slider->onDragEnd();
+
+        INFO("fretboard slider " << (slider->getName().isEmpty() ? juce::String("(unnamed)")
+                                                                  : slider->getName()));
+        REQUIRE(starts == startsBefore + 1);
+        REQUIRE(ends == endsBefore + 1);
+        ++checked;
+    }
+
+    REQUIRE(checked > 0);
+}
+
 TEST_CASE("The drums pane reports adding and removing a pad", "[gui][wiring]")
 {
     // connectCallbacks() wires the two halves through to the pane's own

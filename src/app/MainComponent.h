@@ -183,6 +183,8 @@ private:
     void                   endEffectSlotParamsDrag(int slotIndex);
     void                   beginSynthSettingsDrag();
     void                   endSynthSettingsDrag();
+    void                   beginGuitarSettingsDrag();
+    void                   endGuitarSettingsDrag();
     void                   setTrackGain(int index, float gainDb);
     void                   setTrackMuted(int index, bool muted);
     void                   setTrackSolo(int index, bool solo);
@@ -279,6 +281,12 @@ private:
     bool                  synthSettingsDragging_ = false;
     int                   synthSettingsDragTrack_ = -1;
     model::SynthSettings  synthSettingsDragFrom_;
+
+    // Same technique again, for the fretboard's settings — see
+    // beginGuitarSettingsDrag/endGuitarSettingsDrag.
+    bool                   guitarSettingsDragging_ = false;
+    int                    guitarSettingsDragTrack_ = -1;
+    model::GuitarSettings  guitarSettingsDragFrom_;
 
     juce::MenuBarComponent          menuBar_;
 

@@ -803,7 +803,9 @@ MainComponent::MainComponent()
     // Guitar track is its GuitarNode — so the fretboard plays the same
     // instrument the sequencer does, including the one-note-per-string cut.
     fretboard_.onFretPlayed      = [this](int note) { previewNote(note); };
-    fretboard_.onSettingsChanged = [this](const model::GuitarSettings& s) { setTrackGuitarSettings(s); };
+    fretboard_.onSettingsChanged   = [this](const model::GuitarSettings& s) { setTrackGuitarSettings(s); };
+    fretboard_.onSettingsDragStart = [this] { beginGuitarSettingsDrag(); };
+    fretboard_.onSettingsDragEnd   = [this] { endGuitarSettingsDrag(); };
     fretboard_.onChordStamped = [this](const engine::ChordShape& shape, int fretOffset,
                                        const engine::StrumSettings& strum)
     {
@@ -3205,6 +3207,37 @@ void MainComponent::endSynthSettingsDrag()
                      [trackIndex](model::Song& s, const model::SynthSettings& value)
     {
         s.tracks[(size_t) trackIndex].synthSettings = value;
+    });
+}
+
+/** Remembers a track's guitar settings before a drag on one of the
+    fretboard's controls started — see FretboardPane::onSettingsDragStart. */
+void MainComponent::beginGuitarSettingsDrag()
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    guitarSettingsDragging_  = true;
+    guitarSettingsDragTrack_ = selectedTrackIndex_;
+    guitarSettingsDragFrom_  = history_.current().tracks[(size_t) selectedTrackIndex_].guitarSettings;
+}
+
+/** Commits a whole guitar-settings drag as one undo step — the
+    commitStructDrag equivalent of endSynthSettingsDrag above. */
+void MainComponent::endGuitarSettingsDrag()
+{
+    if (! guitarSettingsDragging_ || guitarSettingsDragTrack_ != selectedTrackIndex_)
+        return;
+
+    guitarSettingsDragging_ = false;
+
+    const int  trackIndex = selectedTrackIndex_;
+    const auto landedOn   = history_.current().tracks[(size_t) trackIndex].guitarSettings;
+
+    commitStructDrag(history_, "Set guitar settings", guitarSettingsDragFrom_, landedOn,
+                     [trackIndex](model::Song& s, const model::GuitarSettings& value)
+    {
+        s.tracks[(size_t) trackIndex].guitarSettings = value;
     });
 }
 

@@ -38,6 +38,12 @@ public:
     std::function<void(int midiNote)>                    onFretPlayed;
     std::function<void(const model::GuitarSettings&)>    onSettingsChanged;
 
+    /** Brackets a change to the settings, so the owner can commit the whole
+        drag as one undo step — same pair as SynthEditor's, for the same
+        reason: settings are one struct changed as a unit. */
+    std::function<void()> onSettingsDragStart;
+    std::function<void()> onSettingsDragEnd;
+
     /** Stamps a strummed chord into the open clip. The pane hands over the
         shape and how to strike it; the owner decides where in the pattern it
         lands (see MainComponent::stampChord). */
@@ -66,7 +72,7 @@ public:
             auto& box = tuningBoxes_[(size_t) s];
             for (int note = kLowestTuning; note <= kHighestTuning; ++note)
                 box.addItem(engine::midiNoteName(note), note); // ids are the note numbers
-            box.onChange = [this] { pushSettings(); };
+            box.onChange = [this] { reportInstantEdit(); };
             addChildComponent(box);
         }
 
@@ -427,7 +433,23 @@ private:
         slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 64, 18);
         slider.setTextValueSuffix(suffix);
         slider.onValueChange = std::move(onChange);
+        // Also wired on the strum-spread/humanise sliders, which don't touch
+        // settings_ at all (they're read on demand — see their own comment)
+        // — a harmless no-op pair each time, since commitStructDrag skips a
+        // drag that landed back where it started.
+        slider.onDragStart = [this] { if (onSettingsDragStart) onSettingsDragStart(); };
+        slider.onDragEnd   = [this] { if (onSettingsDragEnd)   onSettingsDragEnd(); };
         addChildComponent(slider);
+    }
+
+    /** For a discrete control (the tuning dropdowns): a click has no
+        "during" to bracket, so both ends fire back to back around the one
+        edit it makes — same reasoning as SynthEditor::reportInstantEdit. */
+    void reportInstantEdit()
+    {
+        if (onSettingsDragStart) onSettingsDragStart();
+        pushSettings();
+        if (onSettingsDragEnd) onSettingsDragEnd();
     }
 
     void setupLabel(juce::Label& label, const juce::String& text)
