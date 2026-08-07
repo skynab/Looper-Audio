@@ -44,6 +44,33 @@ public:
         return (float) y0;
     }
 
+    /** The filter's steady-state gain at @p hz, in dB — evaluating the
+        transfer function H(e^jw) directly from the current coefficients
+        rather than running a sine through processSample(), so a UI can draw
+        the curve for many frequencies per frame without disturbing (or being
+        disturbed by) the filter's actual running state. */
+    float magnitudeDbAt(float hz) const
+    {
+        if (sampleRate_ <= 0.0)
+            return 0.0f;
+
+        constexpr double pi = 3.14159265358979323846;
+        const double w = 2.0 * pi * (double) hz / sampleRate_;
+        const double cosw = std::cos(w), sinw = std::sin(w);
+        const double cos2w = std::cos(2.0 * w), sin2w = std::sin(2.0 * w);
+
+        const double numReal = b0_ + b1_ * cosw + b2_ * cos2w;
+        const double numImag =     -(b1_ * sinw + b2_ * sin2w);
+        const double denReal = 1.0 + a1_ * cosw + a2_ * cos2w;
+        const double denImag =     -(a1_ * sinw + a2_ * sin2w);
+
+        const double numMag = std::sqrt(numReal * numReal + numImag * numImag);
+        const double denMag = std::sqrt(denReal * denReal + denImag * denImag);
+        const double mag    = denMag > 1.0e-12 ? numMag / denMag : 0.0;
+
+        return 20.0f * (float) std::log10(std::max(mag, 1.0e-9));
+    }
+
 private:
     void updateCoefficients()
     {

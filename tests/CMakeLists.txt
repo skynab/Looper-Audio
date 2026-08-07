@@ -22,6 +22,7 @@ add_executable(looper_tests
   engine/DelayLineTests.cpp
   engine/StateVariableFilterTests.cpp
   engine/ShelfPeakFilterTests.cpp
+  engine/EqCurveTests.cpp
   engine/ReverbTests.cpp
   model/HistoryTests.cpp
   model/SongTests.cpp

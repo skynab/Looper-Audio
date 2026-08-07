@@ -18,6 +18,7 @@
 #include "DockWorkspace.h"
 #include "DrumsPane.h"
 #include "EffectChainPanel.h"
+#include "EqCurveView.h"
 #include "FretboardPane.h"
 #include "FileBrowserPanel.h"
 #include "LevelMeter.h"
@@ -355,6 +356,7 @@ private:
     juce::Slider       reverbRoomSlider, reverbDampSlider, reverbMixSlider;
     juce::ToggleButton eqButton { "EQ" };
     juce::Slider       eqBassSlider, eqMidSlider, eqTrebleSlider;
+    EqCurveView        eqCurveView_;
     juce::ToggleButton sendBusButton { "Send FX" };
     juce::ComboBox     sendEffectTypeBox_;
     juce::Slider       sendRoomSlider, sendDampSlider; // shown when the send bus effect is Reverb

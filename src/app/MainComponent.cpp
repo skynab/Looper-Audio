@@ -491,6 +491,7 @@ MainComponent::MainComponent()
         history_.edit(on ? "Enable master EQ" : "Disable master EQ",
                       [on](model::Song& s) { s.eq.enabled = on; });
         engine_.setMasterEqEnabled(on);
+        eqCurveView_.setSettings(history_.current().eq);
     };
     masterPanel_.addAndMakeVisible(eqButton);
 
@@ -502,6 +503,7 @@ MainComponent::MainComponent()
         const float v = (float) eqBassSlider.getValue();
         history_.mutableCurrent().eq.bassDb = v;
         engine_.setMasterEqBassDb(v);
+        eqCurveView_.setSettings(history_.current().eq);
     };
     wireUndoableSlider(eqBassSlider, "Set master EQ bass",
                        [](const model::Song& s) { return s.eq.bassDb; },
@@ -516,6 +518,7 @@ MainComponent::MainComponent()
         const float v = (float) eqMidSlider.getValue();
         history_.mutableCurrent().eq.midDb = v;
         engine_.setMasterEqMidDb(v);
+        eqCurveView_.setSettings(history_.current().eq);
     };
     wireUndoableSlider(eqMidSlider, "Set master EQ mid",
                        [](const model::Song& s) { return s.eq.midDb; },
@@ -530,11 +533,13 @@ MainComponent::MainComponent()
         const float v = (float) eqTrebleSlider.getValue();
         history_.mutableCurrent().eq.trebleDb = v;
         engine_.setMasterEqTrebleDb(v);
+        eqCurveView_.setSettings(history_.current().eq);
     };
     wireUndoableSlider(eqTrebleSlider, "Set master EQ treble",
                        [](const model::Song& s) { return s.eq.trebleDb; },
                        [](model::Song& s, float v) { s.eq.trebleDb = v; });
     masterPanel_.addAndMakeVisible(eqTrebleSlider);
+    masterPanel_.addAndMakeVisible(eqCurveView_);
 
     // ---- send bus: a shared reverb-or-delay every track can send into (stored in the document) ----
     sendBusButton.onClick = [this]
@@ -3077,6 +3082,8 @@ void MainComponent::updateEqControls()
     engine_.setMasterEqBassDb(eq.bassDb);
     engine_.setMasterEqMidDb(eq.midDb);
     engine_.setMasterEqTrebleDb(eq.trebleDb);
+
+    eqCurveView_.setSettings(eq);
 }
 
 void MainComponent::updateSendBusControls()
@@ -5280,6 +5287,8 @@ void MainComponent::layoutMasterPanel()
     eqMidSlider.setBounds(eqRow.removeFromLeft(ew));
     eqRow.removeFromLeft(8);
     eqTrebleSlider.setBounds(eqRow);
+    masterArea.removeFromTop(4);
+    eqCurveView_.setBounds(masterArea.removeFromTop(48));
     masterArea.removeFromTop(6);
 
     auto sendRow = masterArea.removeFromTop(26);

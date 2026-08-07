@@ -32,7 +32,7 @@ public:
         for (auto* band : { &midLeft_, &midRight_ })
         {
             band->setShape(ShelfPeakFilter::Shape::Peaking);
-            band->setFrequency(std::sqrt(model::EqSettings::bassHz * model::EqSettings::trebleHz));
+            band->setFrequency(model::EqSettings::midHz());
             band->setQ(0.7f);
             band->prepare(sampleRate);
         }

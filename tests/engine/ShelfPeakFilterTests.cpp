@@ -121,3 +121,53 @@ TEST_CASE("Zero gain leaves the signal unchanged, in every shape", "[engine][eq]
         REQUIRE(std::abs(gainDb) < 0.1f);
     }
 }
+
+// magnitudeDbAt() exists so a UI can draw a curve without running audio
+// through the filter — these check it agrees with the sine-sweep measurement
+// above (the source of truth for "does the DSP actually do this"), so a
+// curve on screen can't silently drift from what's actually playing.
+TEST_CASE("magnitudeDbAt agrees with the measured response, for every shape", "[engine][eq]")
+{
+    const float sr = 48000.0f;
+    struct Case { ShelfPeakFilter::Shape shape; float freq; float gainDb; float probeHz; };
+    const Case cases[] = {
+        { ShelfPeakFilter::Shape::LowShelf,  250.0f,  9.0f,   60.0f },
+        { ShelfPeakFilter::Shape::LowShelf,  250.0f,  9.0f, 8000.0f },
+        { ShelfPeakFilter::Shape::HighShelf, 4000.0f, 9.0f,  100.0f },
+        { ShelfPeakFilter::Shape::HighShelf, 4000.0f, 9.0f, 12000.0f },
+        { ShelfPeakFilter::Shape::Peaking,   1000.0f, 9.0f, 1000.0f },
+        { ShelfPeakFilter::Shape::Peaking,   1000.0f, 9.0f,   60.0f },
+    };
+
+    for (const auto& c : cases)
+    {
+        ShelfPeakFilter f;
+        f.prepare(sr);
+        f.setShape(c.shape);
+        f.setFrequency(c.freq);
+        f.setQ(0.7f);
+        f.setGainDb(c.gainDb);
+
+        const float analytic = f.magnitudeDbAt(c.probeHz);
+        f.reset();
+        const float measured = measureGainDb(f, c.probeHz, sr);
+
+        REQUIRE(std::abs(analytic - measured) < 0.5f);
+    }
+}
+
+TEST_CASE("magnitudeDbAt reads 0dB everywhere at zero gain", "[engine][eq]")
+{
+    const float sr = 48000.0f;
+    for (auto shape : { ShelfPeakFilter::Shape::LowShelf, ShelfPeakFilter::Shape::HighShelf, ShelfPeakFilter::Shape::Peaking })
+    {
+        ShelfPeakFilter f;
+        f.prepare(sr);
+        f.setShape(shape);
+        f.setFrequency(1000.0f);
+        f.setGainDb(0.0f);
+
+        for (float hz : { 40.0f, 200.0f, 1000.0f, 5000.0f, 18000.0f })
+            REQUIRE(std::abs(f.magnitudeDbAt(hz)) < 0.05f);
+    }
+}

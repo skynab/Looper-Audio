@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -52,6 +53,12 @@ struct EqSettings
 
     static constexpr float bassHz   = 250.0f;
     static constexpr float trebleHz = 4000.0f;
+
+    /** The mid band's centre: geometric (not arithmetic) mean of the two
+        crossovers, since frequency perception — and the octave-wide EQ bands
+        either side of it — is logarithmic. Shared by EqEffect and EqCurve so
+        a drawn curve can't drift from what the audio actually does. */
+    static float midHz() { return std::sqrt(bassHz * trebleHz); }
 
     bool operator==(const EqSettings&) const = default;
 };
