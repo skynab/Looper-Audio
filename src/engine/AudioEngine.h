@@ -18,6 +18,7 @@
 #include "engine/AudioRecorder.h"
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
+#include "engine/EqEffect.h"
 #include "engine/FilterEffect.h"
 #include "engine/ReverbEffect.h"
 #include "engine/EngineCommand.h"
@@ -269,6 +270,11 @@ public:
     void setMasterReverbDamping(float v)       { masterReverb_.setDamping(v); }
     void setMasterReverbMix(float v)           { masterReverb_.setMix(v); }
 
+    void setMasterEqEnabled(bool enabled)      { masterEq_.setEnabled(enabled); }
+    void setMasterEqBassDb(float db)           { masterEq_.setBassDb(db); }
+    void setMasterEqMidDb(float db)            { masterEq_.setMidDb(db); }
+    void setMasterEqTrebleDb(float db)         { masterEq_.setTrebleDb(db); }
+
     // Shared send bus: every track can send a pre-fader portion of its signal
     // into one always-fully-wet effect — reverb or delay, chosen by
     // setSendBusEffectType — which mixes back into the master before the
@@ -335,6 +341,7 @@ private:
     FilterEffect        masterFilter_;
     DelayEffect         masterDelay_;
     ReverbEffect        masterReverb_;
+    EqEffect            masterEq_;
     MasterBusNode       master_;
     Transport           transport_;
 

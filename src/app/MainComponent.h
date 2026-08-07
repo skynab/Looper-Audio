@@ -185,6 +185,7 @@ private:
     void                   updateDelayControls();
     void                   updateFilterControls();
     void                   updateReverbControls();
+    void                   updateEqControls();
     void                   updateSendBusControls();
     void                   updateSendBusEffectVisibility();
     void                   updateMixerStrips();
@@ -352,6 +353,8 @@ private:
     juce::Slider       delayTimeSlider, delayFbSlider, delayMixSlider;
     juce::ToggleButton reverbButton { "Reverb" };
     juce::Slider       reverbRoomSlider, reverbDampSlider, reverbMixSlider;
+    juce::ToggleButton eqButton { "EQ" };
+    juce::Slider       eqBassSlider, eqMidSlider, eqTrebleSlider;
     juce::ToggleButton sendBusButton { "Send FX" };
     juce::ComboBox     sendEffectTypeBox_;
     juce::Slider       sendRoomSlider, sendDampSlider; // shown when the send bus effect is Reverb

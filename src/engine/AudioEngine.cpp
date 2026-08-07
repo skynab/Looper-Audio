@@ -559,6 +559,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
     masterFilter_.process(output);
     masterDelay_.process(output);
     masterReverb_.process(output);
+    masterEq_.process(output);
     master_.process(output, incomingMidi_, context);
 
     // After the master bus deliberately: the click bypasses the master
@@ -596,6 +597,7 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     masterFilter_.prepare(sampleRate, blockSize);
     masterDelay_.prepare(sampleRate, blockSize);
     masterReverb_.prepare(sampleRate, blockSize);
+    masterEq_.prepare(sampleRate, blockSize);
     master_.prepare(sampleRate, blockSize);
 
     sendBus_.setSize(2, blockSize);

@@ -30,6 +30,10 @@ static Song makeSampleSong()
     s.sendBus.delayTimeMs   = 250.0f;
     s.sendBus.delayFeedback = 0.4f;
     s.sendBus.returnLevel   = 0.45f;
+    s.eq.enabled   = true;
+    s.eq.bassDb    = 4.5f;
+    s.eq.midDb     = -2.0f;
+    s.eq.trebleDb  = 3.0f;
     s.projectRootFolder     = "/Users/test/My Looper Projects"; // with a space, deliberately
     s.masterGainDb.addPoint(0.0, -40.0f);
     s.masterGainDb.addPoint(4.0, 0.0f);
@@ -468,6 +472,10 @@ TEST_CASE("A project from before per-track synths still opens", "[model][io]")
     // Guitar settings arrived in v19; a file this old gets the defaults, which
     // are standard tuning.
     REQUIRE(track.guitarSettings == GuitarSettings {});
+
+    // The master EQ arrived in v25; a file this old has no EQ line, so it
+    // reads as flat/disabled rather than failing to parse.
+    REQUIRE(restored.eq == EqSettings {});
 
     // The session grid arrived in v17; a file this old simply has none.
     REQUIRE(restored.scenes.empty());

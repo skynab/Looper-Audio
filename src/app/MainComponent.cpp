@@ -483,6 +483,59 @@ MainComponent::MainComponent()
                        [](model::Song& s, float v) { s.reverb.mix = v; });
     masterPanel_.addAndMakeVisible(reverbMixSlider);
 
+    // ---- master EQ: fixed-band bass/mid/treble, the whole song's tone shape
+    // (stored in the document) ----
+    eqButton.onClick = [this]
+    {
+        const bool on = eqButton.getToggleState();
+        history_.edit(on ? "Enable master EQ" : "Disable master EQ",
+                      [on](model::Song& s) { s.eq.enabled = on; });
+        engine_.setMasterEqEnabled(on);
+    };
+    masterPanel_.addAndMakeVisible(eqButton);
+
+    eqBassSlider.setRange(-18.0, 18.0, 0.1);
+    eqBassSlider.setValue(0.0, juce::dontSendNotification);
+    eqBassSlider.setTextValueSuffix(" dB bass");
+    eqBassSlider.onValueChange = [this]
+    {
+        const float v = (float) eqBassSlider.getValue();
+        history_.mutableCurrent().eq.bassDb = v;
+        engine_.setMasterEqBassDb(v);
+    };
+    wireUndoableSlider(eqBassSlider, "Set master EQ bass",
+                       [](const model::Song& s) { return s.eq.bassDb; },
+                       [](model::Song& s, float v) { s.eq.bassDb = v; });
+    masterPanel_.addAndMakeVisible(eqBassSlider);
+
+    eqMidSlider.setRange(-18.0, 18.0, 0.1);
+    eqMidSlider.setValue(0.0, juce::dontSendNotification);
+    eqMidSlider.setTextValueSuffix(" dB mid");
+    eqMidSlider.onValueChange = [this]
+    {
+        const float v = (float) eqMidSlider.getValue();
+        history_.mutableCurrent().eq.midDb = v;
+        engine_.setMasterEqMidDb(v);
+    };
+    wireUndoableSlider(eqMidSlider, "Set master EQ mid",
+                       [](const model::Song& s) { return s.eq.midDb; },
+                       [](model::Song& s, float v) { s.eq.midDb = v; });
+    masterPanel_.addAndMakeVisible(eqMidSlider);
+
+    eqTrebleSlider.setRange(-18.0, 18.0, 0.1);
+    eqTrebleSlider.setValue(0.0, juce::dontSendNotification);
+    eqTrebleSlider.setTextValueSuffix(" dB treble");
+    eqTrebleSlider.onValueChange = [this]
+    {
+        const float v = (float) eqTrebleSlider.getValue();
+        history_.mutableCurrent().eq.trebleDb = v;
+        engine_.setMasterEqTrebleDb(v);
+    };
+    wireUndoableSlider(eqTrebleSlider, "Set master EQ treble",
+                       [](const model::Song& s) { return s.eq.trebleDb; },
+                       [](model::Song& s, float v) { s.eq.trebleDb = v; });
+    masterPanel_.addAndMakeVisible(eqTrebleSlider);
+
     // ---- send bus: a shared reverb-or-delay every track can send into (stored in the document) ----
     sendBusButton.onClick = [this]
     {
@@ -909,6 +962,7 @@ MainComponent::MainComponent()
     updateDelayControls();
     updateFilterControls();
     updateReverbControls();
+    updateEqControls();
     updateEditingLabel();
     updateSendBusControls();
 
@@ -3011,6 +3065,20 @@ void MainComponent::updateReverbControls()
     engine_.setMasterReverbMix(rv.mix);
 }
 
+void MainComponent::updateEqControls()
+{
+    const auto& eq = history_.current().eq;
+    eqButton.setToggleState(eq.enabled, juce::dontSendNotification);
+    eqBassSlider.setValue(eq.bassDb, juce::dontSendNotification);
+    eqMidSlider.setValue(eq.midDb, juce::dontSendNotification);
+    eqTrebleSlider.setValue(eq.trebleDb, juce::dontSendNotification);
+
+    engine_.setMasterEqEnabled(eq.enabled);
+    engine_.setMasterEqBassDb(eq.bassDb);
+    engine_.setMasterEqMidDb(eq.midDb);
+    engine_.setMasterEqTrebleDb(eq.trebleDb);
+}
+
 void MainComponent::updateSendBusControls()
 {
     const auto& sb = history_.current().sendBus;
@@ -3388,6 +3456,7 @@ void MainComponent::refreshFromModel()
     updateDelayControls();
     updateFilterControls();
     updateReverbControls();
+    updateEqControls();
     updateSendBusControls();
     fileBrowser_.setProjectRootFolder(history_.current().projectRootFolder.empty()
                                           ? juce::File{}
@@ -5200,6 +5269,17 @@ void MainComponent::layoutMasterPanel()
     reverbDampSlider.setBounds(reverbRow.removeFromLeft(rw));
     reverbRow.removeFromLeft(8);
     reverbMixSlider.setBounds(reverbRow);
+    masterArea.removeFromTop(6);
+
+    auto eqRow = masterArea.removeFromTop(26);
+    eqButton.setBounds(eqRow.removeFromLeft(70));
+    eqRow.removeFromLeft(8);
+    const int ew = juce::jmax(50, (eqRow.getWidth() - 16) / 3);
+    eqBassSlider.setBounds(eqRow.removeFromLeft(ew));
+    eqRow.removeFromLeft(8);
+    eqMidSlider.setBounds(eqRow.removeFromLeft(ew));
+    eqRow.removeFromLeft(8);
+    eqTrebleSlider.setBounds(eqRow);
     masterArea.removeFromTop(6);
 
     auto sendRow = masterArea.removeFromTop(26);

@@ -53,7 +53,7 @@ namespace looper::model
           tolerant way as 20's and 21's.
       24  + five more FXSLOT fields: the wobble pedal, read the same
           tolerant way as 20's, 21's, and 23's. */
-inline constexpr int kFormatVersion = 24;
+inline constexpr int kFormatVersion = 25;
 namespace detail
 {
     inline std::string num(double v)
@@ -111,6 +111,10 @@ inline std::string serialize(const Song& song)
         << detail::num((double) song.sendBus.delayTimeMs) << " "
         << detail::num((double) song.sendBus.delayFeedback) << " "
         << detail::num((double) song.sendBus.returnLevel) << "\n";
+    out << "EQ " << (song.eq.enabled ? 1 : 0) << " "
+        << detail::num((double) song.eq.bassDb) << " "
+        << detail::num((double) song.eq.midDb) << " "
+        << detail::num((double) song.eq.trebleDb) << "\n";
     out << "PROJECTROOT " << song.projectRootFolder << "\n";
     out << "AUTO " << song.masterGainDb.points().size() << "\n";
     for (const auto& p : song.masterGainDb.points())
@@ -395,6 +399,18 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
         song.sendBus.delayTimeMs   = (float) delayTimeMs;
         song.sendBus.delayFeedback = (float) delayFeedback;
         song.sendBus.returnLevel   = (float) returnLevel;
+    }
+
+    if (readTagged("EQ", rest)) // added in v25; older files keep the defaults (flat)
+    {
+        std::istringstream eq(rest);
+        int    enabled = 0;
+        double bassDb = 0.0, midDb = 0.0, trebleDb = 0.0;
+        eq >> enabled >> bassDb >> midDb >> trebleDb;
+        song.eq.enabled  = enabled != 0;
+        song.eq.bassDb   = (float) bassDb;
+        song.eq.midDb    = (float) midDb;
+        song.eq.trebleDb = (float) trebleDb;
     }
 
     if (readTagged("PROJECTROOT", rest))

@@ -38,6 +38,24 @@ struct ReverbSettings
     bool operator==(const ReverbSettings&) const = default;
 };
 
+/** Master 3-band EQ: fixed-frequency treble/mid/bass shelving+peak, the
+    "regular mastering controls" a whole-song bus gets rather than the
+    sweepable single-band FilterSettings above. Crossovers are fixed
+    (bassHz/trebleHz below) rather than user-adjustable — three knobs, not a
+    parametric EQ. */
+struct EqSettings
+{
+    bool  enabled = false;
+    float bassDb   = 0.0f; // -18..+18, low shelf below bassHz
+    float midDb    = 0.0f; // -18..+18, peaking band between bassHz and trebleHz
+    float trebleDb = 0.0f; // -18..+18, high shelf above trebleHz
+
+    static constexpr float bassHz   = 250.0f;
+    static constexpr float trebleHz = 4000.0f;
+
+    bool operator==(const EqSettings&) const = default;
+};
+
 /** Which effect the shared send bus applies (see SendBusSettings). */
 enum class SendBusEffectType { Reverb, Delay };
 
