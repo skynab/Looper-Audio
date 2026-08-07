@@ -447,3 +447,72 @@ TEST_CASE("A time zoom change tells the owner to resize", "[gui][pianoroll]")
     roll.setTimeZoom(3.0f);
     REQUIRE(notifications == 2);
 }
+
+namespace
+{
+    /** A synthetic click at @p position — the grid's hit-testing has never
+        been exercised through a real juce::MouseEvent before, only through
+        the row/step math it's built on, so this is the only way to catch a
+        transform bug that shifts what's drawn without shifting what a click
+        actually hits (or vice versa). */
+    juce::MouseEvent clickAt(juce::Component& target, juce::Point<float> position)
+    {
+        const auto source = juce::Desktop::getInstance().getMainMouseSource();
+        const auto now     = juce::Time::getCurrentTime();
+        return juce::MouseEvent(source, position, juce::ModifierKeys(), 1.0f,
+                                0.0f, 0.0f, 0.0f, 0.0f, &target, &target,
+                                now, position, now, 1, false);
+    }
+}
+
+TEST_CASE("A click lands on the row it's over, below the track header", "[gui][pianoroll]")
+{
+    // The header (see TrackColours.h's paintTrackHeader) sits above the
+    // grid, drawn through a graphics transform rather than a real child
+    // Component — so the grid's own paint() code stays byte-for-byte the
+    // same as before the header existed. Mouse handling has to apply the
+    // identical offset by hand instead, and that's the half of the fix a
+    // visual check alone would never catch: a header that's drawn in the
+    // right place but not accounted for in mouseDown would still *look*
+    // correct while every click landed one header-height too high.
+    JuceFixture fixture;
+    PianoRoll roll;
+    roll.setSize((int) kWidth, 400);
+    roll.setPattern(engine::Pattern {});
+    REQUIRE(roll.pattern().notes.empty());
+
+    const float gutter = roll.gutterWidthForTesting();
+    const float rowH    = roll.rowHeightForTesting(roll.gridHeightForTesting());
+    const juce::Point<float> firstRowFirstStep(gutter + 5.0f, (float) kTrackHeaderHeight + rowH * 0.5f);
+
+    roll.mouseDown(clickAt(roll, firstRowFirstStep));
+
+    REQUIRE(roll.pattern().notes.size() == 1);
+    REQUIRE(roll.pattern().notes[0].startBeats == 0.0);
+    // Row 0 specifically, not merely "some row within the grid" — a header
+    // offset applied to the paint but not the click would still land inside
+    // the grid, just one row off, which the size/startBeats checks alone
+    // wouldn't catch.
+    REQUIRE(roll.pattern().notes[0].noteNumber == PianoRoll::kDefaultLowPitch + PianoRoll::kDefaultNumRows - 1);
+}
+
+TEST_CASE("A click just above the header hits nothing", "[gui][pianoroll]")
+{
+    // The header band itself isn't part of the grid — a click there must
+    // not be silently reinterpreted as landing on row 0.
+    JuceFixture fixture;
+    PianoRoll roll;
+    roll.setSize((int) kWidth, 400);
+    roll.setPattern(engine::Pattern {});
+
+    // Comfortably inside the header, not just barely — a y within one row's
+    // height of the boundary truncates towards zero (C-style int cast of a
+    // small negative), landing back on row 0 by coincidence rather than
+    // actually proving anything about the header offset.
+    roll.mouseDown(clickAt(roll, { roll.gutterWidthForTesting() + 5.0f, 1.0f }));
+
+    // A click well above row 0 (inside the header band) resolves to a
+    // negative row, which cellAt() reports as "not on the grid" — same
+    // as clicking above the grid always has, header or not.
+    REQUIRE(roll.pattern().notes.empty());
+}

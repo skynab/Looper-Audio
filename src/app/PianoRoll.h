@@ -11,6 +11,8 @@
 #include "model/DrumKit.h"
 
 #include "PianoRollGeometry.h"
+#include "TrackColours.h"
+#include "model/Track.h"
 
 namespace looper
 {
@@ -89,6 +91,7 @@ public:
     static constexpr int maxStepsForTesting() { return kMaxSteps; }
     float rowHeightForTesting(float totalHeight) const { return geometry_.rowHeight(totalHeight); }
     double beatsPerBarForTesting() const { return beatsPerBar_; }
+    float gridHeightForTesting() const { return gridHeight(); }
 
     /** Horizontal zoom: how much wider than its viewport the grid draws.
 
@@ -205,6 +208,17 @@ public:
         repaint();
     }
 
+    /** Which track this clip belongs to, so the header says so — this tab's
+        title never changes per track, so without this there was no on-screen
+        way to tell which track's notes were actually open after switching
+        tracks while parked here. */
+    void setTrackInfo(const juce::String& name, juce::uint32 colour)
+    {
+        trackName_   = name;
+        trackColour_ = colour;
+        repaint();
+    }
+
     /** Indices into pattern().notes of the current selection, empty if none.
         Callers treat "no selection" as "the whole pattern" (see
         NoteOps::quantizeNotes), so a user who hasn't discovered the selection
@@ -307,8 +321,13 @@ public:
             onChange(pattern_);
     }
 
-    void mouseDown(const juce::MouseEvent& e) override
+    void mouseDown(const juce::MouseEvent& rawEvent) override
     {
+        // Rebased so the grid geometry below can keep treating (0,0) as its
+        // own top-left, the way it always has — the header lives above that,
+        // painted with its own untranslated transform (see paint()).
+        const auto e = rawEvent.withNewPosition(rawEvent.position.translated(0.0f, -(float) kTrackHeaderHeight));
+
         dragMode_      = DragMode::None;
         dragNoteIndex_ = -1;
 
@@ -382,8 +401,10 @@ public:
             onChange(pattern_);
     }
 
-    void mouseDrag(const juce::MouseEvent& e) override
+    void mouseDrag(const juce::MouseEvent& rawEvent) override
     {
+        const auto e = rawEvent.withNewPosition(rawEvent.position.translated(0.0f, -(float) kTrackHeaderHeight));
+
         if (rubberBanding_)
         {
             rubberCurrent_ = e.position;
@@ -441,8 +462,10 @@ public:
         dragNoteIndex_ = -1;
     }
 
-    void mouseMove(const juce::MouseEvent& e) override
+    void mouseMove(const juce::MouseEvent& rawEvent) override
     {
+        const auto e = rawEvent.withNewPosition(rawEvent.position.translated(0.0f, -(float) kTrackHeaderHeight));
+
         int row = 0, step = 0;
         const int newHoverRow = geometry_.cellAt(e.position.x, e.position.y,
                                                   (float) getWidth(), gridHeight(), row, step)
@@ -546,6 +569,16 @@ public:
                        getLocalBounds(), juce::Justification::centred);
             return;
         }
+
+        paintTrackHeader(g, getLocalBounds().removeFromTop(kTrackHeaderHeight),
+                         trackName_, trackColour_, drumMode_ ? model::TrackType::Drum : model::TrackType::Instrument);
+
+        // Everything below is drawn as though the grid started at (0,0), the
+        // way it always has — a transform, not a rewrite of every y in this
+        // function (and in the mouse handlers, which subtract the same
+        // offset from incoming positions instead — see mouseDown et al.).
+        juce::Graphics::ScopedSaveState pushHeaderOffset(g);
+        g.addTransform(juce::AffineTransform::translation(0.0f, (float) kTrackHeaderHeight));
 
         const float w  = (float) getWidth();
         const float h  = gridHeight();
@@ -696,7 +729,10 @@ private:
     static constexpr float kVelocityLaneHeight = 46.0f;
     static constexpr float kResizeEdgePixels   = 6.0f;
 
-    float gridHeight() const { return juce::jmax(1.0f, (float) getHeight() - kVelocityLaneHeight); }
+    float gridHeight() const
+    {
+        return juce::jmax(1.0f, (float) getHeight() - (float) kTrackHeaderHeight - kVelocityLaneHeight);
+    }
     float velocityLaneTop() const { return gridHeight(); }
     bool  isInVelocityLane(float y) const { return y >= velocityLaneTop(); }
 
@@ -896,6 +932,8 @@ private:
 
     PianoRollGeometry           geometry_;
     bool                        noClipSelected_ = false;
+    juce::String                trackName_;
+    juce::uint32                trackColour_ = 0;
 
     // Transport readout: where playback is inside this pattern, and whether
     // anything is playing. beatsPerBar_ drives the grid's bar lines.

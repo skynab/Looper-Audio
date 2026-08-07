@@ -2607,6 +2607,12 @@ void MainComponent::refreshPianoRollForSelected()
                           || selectedClipIndex_ >= (int) song.tracks[(size_t) selectedTrackIndex_].clips.size();
     pianoRoll_.setNoClipSelected(noClipOpen);
 
+    if (! noClipOpen)
+    {
+        const auto& track = song.tracks[(size_t) selectedTrackIndex_];
+        pianoRoll_.setTrackInfo(track.name, track.colour);
+    }
+
     const bool isDrum = selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount()
                      && history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Drum;
 
