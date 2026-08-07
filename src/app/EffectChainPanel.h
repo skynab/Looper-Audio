@@ -347,16 +347,19 @@ private:
         menu.addItem(2, "Delay");
         menu.addItem(3, "Reverb");
 
-        // Grouped because a pedal is only sensible on a guitar track while a
-        // filter is sensible anywhere. Presentation only — they all run in
-        // the same chain, in whatever order they are put in.
+        // Grouped separately from Filter/Delay/Reverb because these read as
+        // stompbox-style effects rather than studio processing — not because
+        // they're guitar-only. Wobble is the clearest case: it's a bass/synth
+        // effect that's essentially never used on a guitar. Presentation
+        // only — they all run in the same chain, in whatever order they are
+        // put in, on whatever track type.
         juce::PopupMenu pedals;
         pedals.addItem(5, "Drive");
         pedals.addItem(6, "Compressor");
         pedals.addItem(7, "Tremolo");
         pedals.addItem(8, "Chorus");
         pedals.addItem(9, "Wobble");
-        menu.addSubMenu("Guitar pedals", pedals);
+        menu.addSubMenu("Pedals", pedals);
         menu.addSeparator();
 
         if (plugins_.empty())
