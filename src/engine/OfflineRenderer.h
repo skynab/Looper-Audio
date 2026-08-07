@@ -430,18 +430,19 @@ public:
     {
         file.deleteFile();
 
-        std::unique_ptr<juce::FileOutputStream> stream(file.createOutputStream());
+        std::unique_ptr<juce::OutputStream> stream(file.createOutputStream());
         if (stream == nullptr)
             return false;
 
         juce::WavAudioFormat format;
-        std::unique_ptr<juce::AudioFormatWriter> writer(
-            format.createWriterFor(stream.get(), sampleRate,
-                                   (unsigned int) buffer.getNumChannels(), 24, {}, 0));
+        auto writer = format.createWriterFor(stream, // consumed on success, left alone on failure
+            juce::AudioFormatWriterOptions{}
+                .withSampleRate(sampleRate)
+                .withNumChannels(buffer.getNumChannels())
+                .withBitsPerSample(24));
         if (writer == nullptr)
             return false;
 
-        stream.release(); // the writer now owns the stream
         return writer->writeFromAudioSampleBuffer(buffer, 0, buffer.getNumSamples());
     }
 };

@@ -77,13 +77,18 @@ if (LOOPER_BUILD_APP)
     # loop, which JUCE gates behind this. Fine in a test binary.
     JUCE_MODAL_LOOPS_PERMITTED=1)
 
+  # See src/app/CMakeLists.txt for why looper_no_float_equal_warning exists:
+  # this codebase's exact-float-equality checks (undo/history dedup, a couple
+  # of DSP fast paths) aren't the fuzzy-comparison bug -Wfloat-equal exists
+  # to catch, and this target links the same model/engine code that trips it.
   target_link_libraries(looper_gui_tests
     PRIVATE
       looper::rt
       juce::juce_audio_utils
       Catch2::Catch2WithMain
       juce::juce_recommended_config_flags
-      juce::juce_recommended_warning_flags)
+      juce::juce_recommended_warning_flags
+      looper_no_float_equal_warning)
 
   target_compile_features(looper_gui_tests PRIVATE cxx_std_20)
   catch_discover_tests(looper_gui_tests)

@@ -15,6 +15,10 @@ target_compile_definitions(looper_bounce PRIVATE
   JUCE_WEB_BROWSER=0
   JUCE_USE_CURL=0)
 
+# See src/app/CMakeLists.txt for why looper_no_float_equal_warning exists:
+# this codebase's exact-float-equality checks (undo/history dedup, a couple
+# of DSP fast paths) aren't the fuzzy-comparison bug -Wfloat-equal exists to
+# catch, and this tool links the same engine code that trips it.
 target_link_libraries(looper_bounce
   PRIVATE
     looper::rt
@@ -22,7 +26,8 @@ target_link_libraries(looper_bounce
     juce::juce_audio_processors_headless
   PUBLIC
     juce::juce_recommended_config_flags
-    juce::juce_recommended_warning_flags)
+    juce::juce_recommended_warning_flags
+    looper_no_float_equal_warning)
 
 # Register as a smoke test: it renders audio and exits non-zero if the output is
 # silent, so CI verifies the synth + sequencer on every platform.

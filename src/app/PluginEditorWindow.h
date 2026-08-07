@@ -34,7 +34,7 @@ public:
     {
         setUsingNativeTitleBar(true);
 
-        auto* editor = plugin.hasEditor() ? plugin.createEditorIfNeeded()
+        auto* editor = plugin.hasEditor() ? plugin.createEditorAndMakeActive()
                                           : new juce::GenericAudioProcessorEditor(plugin);
         if (editor == nullptr)
             editor = new juce::GenericAudioProcessorEditor(plugin);

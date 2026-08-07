@@ -48,7 +48,7 @@ public:
             return;
         }
 
-        main->confirmDiscardChanges([this] { quit(); });
+        main->confirmDiscardChanges([] { quit(); }); // JUCEApplicationBase::quit() is static
     }
 
 private:
