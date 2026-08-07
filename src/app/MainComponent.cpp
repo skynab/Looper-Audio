@@ -346,7 +346,8 @@ MainComponent::MainComponent()
     filterButton.onClick = [this]
     {
         const bool on = filterButton.getToggleState();
-        history_.mutableCurrent().filter.enabled = on;
+        history_.edit(on ? "Enable master filter" : "Disable master filter",
+                      [on](model::Song& s) { s.filter.enabled = on; });
         engine_.setMasterFilterEnabled(on);
     };
     masterPanel_.addAndMakeVisible(filterButton);
@@ -358,7 +359,7 @@ MainComponent::MainComponent()
     filterModeBox_.onChange = [this]
     {
         const int mode = juce::jmax(0, filterModeBox_.getSelectedId() - 1);
-        history_.mutableCurrent().filter.mode = mode;
+        history_.edit("Set master filter mode", [mode](model::Song& s) { s.filter.mode = mode; });
         engine_.setMasterFilterMode(mode);
     };
     masterPanel_.addAndMakeVisible(filterModeBox_);
@@ -390,7 +391,8 @@ MainComponent::MainComponent()
     delayButton.onClick = [this]
     {
         const bool on = delayButton.getToggleState();
-        history_.mutableCurrent().delay.enabled = on;
+        history_.edit(on ? "Enable master delay" : "Disable master delay",
+                      [on](model::Song& s) { s.delay.enabled = on; });
         engine_.setMasterDelayEnabled(on);
     };
     masterPanel_.addAndMakeVisible(delayButton);
@@ -432,7 +434,8 @@ MainComponent::MainComponent()
     reverbButton.onClick = [this]
     {
         const bool on = reverbButton.getToggleState();
-        history_.mutableCurrent().reverb.enabled = on;
+        history_.edit(on ? "Enable master reverb" : "Disable master reverb",
+                      [on](model::Song& s) { s.reverb.enabled = on; });
         engine_.setMasterReverbEnabled(on);
     };
     masterPanel_.addAndMakeVisible(reverbButton);
@@ -474,7 +477,8 @@ MainComponent::MainComponent()
     sendBusButton.onClick = [this]
     {
         const bool on = sendBusButton.getToggleState();
-        history_.mutableCurrent().sendBus.enabled = on;
+        history_.edit(on ? "Enable send bus" : "Disable send bus",
+                      [on](model::Song& s) { s.sendBus.enabled = on; });
         engine_.setSendBusEnabled(on);
     };
     masterPanel_.addAndMakeVisible(sendBusButton);
@@ -486,7 +490,7 @@ MainComponent::MainComponent()
     {
         const auto type = sendEffectTypeBox_.getSelectedId() == 2 ? model::SendBusEffectType::Delay
                                                                   : model::SendBusEffectType::Reverb;
-        history_.mutableCurrent().sendBus.effectType = type;
+        history_.edit("Set send bus type", [type](model::Song& s) { s.sendBus.effectType = type; });
         engine_.setSendBusEffectType((int) type);
         updateSendBusEffectVisibility();
     };
@@ -1733,12 +1737,18 @@ void MainComponent::setEffectSlotBypass(int slotIndex, bool enabled)
     if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
         return;
 
-    auto& chain = history_.mutableCurrent().tracks[(size_t) selectedTrackIndex_].effectChain;
+    const auto& chain = history_.current().tracks[(size_t) selectedTrackIndex_].effectChain;
     if (slotIndex < 0 || slotIndex >= (int) chain.size())
         return;
 
-    chain[(size_t) slotIndex].enabled = enabled;
-    engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, toSlotParams(chain[(size_t) slotIndex]));
+    const int index = selectedTrackIndex_;
+    history_.edit(enabled ? "Enable effect" : "Bypass effect", [index, slotIndex, enabled](model::Song& s)
+    {
+        s.tracks[(size_t) index].effectChain[(size_t) slotIndex].enabled = enabled;
+    });
+
+    const auto& updatedChain = history_.current().tracks[(size_t) selectedTrackIndex_].effectChain;
+    engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, toSlotParams(updatedChain[(size_t) slotIndex]));
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
 }
@@ -3486,6 +3496,15 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
     // functionally gates playback the moment a track has more than one clip,
     // so guessing wrong there would audibly truncate the clip.
     const double durationSeconds = engine_.probeDurationSeconds(file);
+    if (durationSeconds <= 0.0)
+    {
+        // The file couldn't be decoded at all — corrupt, truncated, or an
+        // unsupported format. Falling through to a fabricated 4-beat clip
+        // pointing at a file the engine can't play would create a track (or
+        // clip) that just sits there silent with nothing to say why.
+        showError("Could not import: " + file.getFileName());
+        return;
+    }
     const double measured        = engine::beatsForSeconds(durationSeconds, song.bpm);
     const double lengthBeats     = measured > 0.0 ? measured : 4.0;
     const auto   path            = file.getFullPathName().toStdString();
