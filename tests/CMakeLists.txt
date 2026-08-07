@@ -23,6 +23,7 @@ add_executable(looper_tests
   model/HistoryTests.cpp
   model/SongTests.cpp
   model/SerializationTests.cpp
+  model/PresetSerializationTests.cpp
   model/AutomationLaneTests.cpp
   app/TimelineGeometryTests.cpp
   app/PianoRollGeometryTests.cpp
