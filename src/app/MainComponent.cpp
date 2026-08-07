@@ -778,7 +778,9 @@ MainComponent::MainComponent()
         syncEngineTracks(); // pushes every track's whole clip list, including this move
     };
 
-    synthEditor_.onSettingsChanged = [this](const model::SynthSettings& s) { setTrackSynthSettings(s); };
+    synthEditor_.onSettingsChanged   = [this](const model::SynthSettings& s) { setTrackSynthSettings(s); };
+    synthEditor_.onSettingsDragStart = [this] { beginSynthSettingsDrag(); };
+    synthEditor_.onSettingsDragEnd   = [this] { endSynthSettingsDrag(); };
     sessionView_.onLaunchClip  = [this](int track, int scene)
     {
         engine_.launchSessionSlot(track, scene);
@@ -3172,6 +3174,37 @@ void MainComponent::endEffectSlotParamsDrag(int slotIndex)
         auto& c = s.tracks[(size_t) trackIndex].effectChain;
         if (slotIndex >= 0 && slotIndex < (int) c.size())
             c[(size_t) slotIndex] = value;
+    });
+}
+
+/** Remembers a track's synth settings before a drag on one of the Synth
+    pane's controls started — see SynthEditor::onSettingsDragStart. */
+void MainComponent::beginSynthSettingsDrag()
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    synthSettingsDragging_  = true;
+    synthSettingsDragTrack_ = selectedTrackIndex_;
+    synthSettingsDragFrom_  = history_.current().tracks[(size_t) selectedTrackIndex_].synthSettings;
+}
+
+/** Commits a whole synth-settings drag as one undo step — the
+    commitStructDrag equivalent of endEffectSlotParamsDrag above. */
+void MainComponent::endSynthSettingsDrag()
+{
+    if (! synthSettingsDragging_ || synthSettingsDragTrack_ != selectedTrackIndex_)
+        return;
+
+    synthSettingsDragging_ = false;
+
+    const int  trackIndex = selectedTrackIndex_;
+    const auto landedOn   = history_.current().tracks[(size_t) trackIndex].synthSettings;
+
+    commitStructDrag(history_, "Set synth settings", synthSettingsDragFrom_, landedOn,
+                     [trackIndex](model::Song& s, const model::SynthSettings& value)
+    {
+        s.tracks[(size_t) trackIndex].synthSettings = value;
     });
 }
 

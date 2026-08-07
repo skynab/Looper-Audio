@@ -33,6 +33,13 @@ public:
     // field together).
     std::function<void(const model::SynthSettings&)> onSettingsChanged;
 
+    /** Brackets a change to the settings, so the owner can commit the whole
+        drag as one undo step — see EffectChainPanel's identical pair, which
+        this mirrors for the same reason: settings are one struct changed as
+        a unit, not one field per callback. */
+    std::function<void()> onSettingsDragStart;
+    std::function<void()> onSettingsDragEnd;
+
     SynthEditor()
     {
         placeholderLabel_.setText("Select an Instrument track to edit its synth", juce::dontSendNotification);
@@ -46,7 +53,10 @@ public:
         waveformBox_.addItem("Square", 3);
         waveformBox_.addItem("Triangle", 4);
         waveformBox_.setSelectedId(1, juce::dontSendNotification);
-        waveformBox_.onChange = [this] { settings_.waveform = waveformBox_.getSelectedId() - 1; notify(); };
+        waveformBox_.onChange = [this]
+        {
+            reportInstantEdit([this] { settings_.waveform = waveformBox_.getSelectedId() - 1; notify(); });
+        };
         addAndMakeVisible(waveformBox_);
 
         setupSectionHeader(ampHeader_, "Amp Envelope");
@@ -64,9 +74,12 @@ public:
         filterEnabledButton_.setClickingTogglesState(true);
         filterEnabledButton_.onClick = [this]
         {
-            settings_.filterEnabled = filterEnabledButton_.getToggleState();
-            updateFilterControlsEnabled();
-            notify();
+            reportInstantEdit([this]
+            {
+                settings_.filterEnabled = filterEnabledButton_.getToggleState();
+                updateFilterControlsEnabled();
+                notify();
+            });
         };
         addAndMakeVisible(filterEnabledButton_);
 
@@ -74,7 +87,14 @@ public:
         filterModeBox_.addItem("High-pass", 2);
         filterModeBox_.addItem("Band-pass", 3);
         filterModeBox_.setSelectedId(1, juce::dontSendNotification);
-        filterModeBox_.onChange = [this] { settings_.filterMode = juce::jmax(0, filterModeBox_.getSelectedId() - 1); notify(); };
+        filterModeBox_.onChange = [this]
+        {
+            reportInstantEdit([this]
+            {
+                settings_.filterMode = juce::jmax(0, filterModeBox_.getSelectedId() - 1);
+                notify();
+            });
+        };
         addAndMakeVisible(filterModeBox_);
 
         setupSlider(filterCutoffSlider_, "Cutoff", 20.0, 18000.0, 1.0, " Hz",
@@ -190,7 +210,19 @@ private:
         slider.setTextValueSuffix(unitSuffix);
         slider.setName(suffix);
         slider.onValueChange = std::move(onChange);
+        slider.onDragStart = [this] { if (onSettingsDragStart) onSettingsDragStart(); };
+        slider.onDragEnd   = [this] { if (onSettingsDragEnd)   onSettingsDragEnd(); };
         addAndMakeVisible(slider);
+    }
+
+    /** For a discrete control (toggle, dropdown): a click has no "during" to
+        bracket, so both ends fire back to back around the one edit it
+        makes — same reasoning as EffectChainPanel::reportInstantEdit. */
+    void reportInstantEdit(std::function<void()> apply)
+    {
+        if (onSettingsDragStart) onSettingsDragStart();
+        apply();
+        if (onSettingsDragEnd) onSettingsDragEnd();
     }
 
     void layoutHeader(juce::Label& label, juce::Rectangle<int>& area)

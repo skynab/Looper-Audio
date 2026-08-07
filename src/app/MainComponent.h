@@ -181,6 +181,8 @@ private:
     void                   endFaderDrag(int trackIndex, MixerStrip::Fader fader);
     void                   beginEffectSlotParamsDrag(int slotIndex);
     void                   endEffectSlotParamsDrag(int slotIndex);
+    void                   beginSynthSettingsDrag();
+    void                   endSynthSettingsDrag();
     void                   setTrackGain(int index, float gainDb);
     void                   setTrackMuted(int index, bool muted);
     void                   setTrackSolo(int index, bool solo);
@@ -271,6 +273,12 @@ private:
     int               effectSlotDragTrack_ = -1;
     int               effectSlotDragIndex_ = -1;
     model::EffectSlot effectSlotDragFrom_;
+
+    // Same technique again, for the Synth pane's settings — see
+    // beginSynthSettingsDrag/endSynthSettingsDrag.
+    bool                  synthSettingsDragging_ = false;
+    int                   synthSettingsDragTrack_ = -1;
+    model::SynthSettings  synthSettingsDragFrom_;
 
     juce::MenuBarComponent          menuBar_;
 
