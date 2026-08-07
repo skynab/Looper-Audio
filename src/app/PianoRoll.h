@@ -191,6 +191,20 @@ public:
         repaint();
     }
 
+    /** Shows a placeholder instead of the grid when there's no clip open to
+        edit — the caller falls back to a shared empty Pattern in that case
+        (see MainComponent::currentPattern), which this can't tell apart from
+        a real clip that's genuinely empty without being told directly. An
+        empty grid with nothing to explain it reads as broken, the same
+        reasoning as SynthEditor's and FretboardPane's placeholders. */
+    void setNoClipSelected(bool none)
+    {
+        if (noClipSelected_ == none)
+            return;
+        noClipSelected_ = none;
+        repaint();
+    }
+
     /** Indices into pattern().notes of the current selection, empty if none.
         Callers treat "no selection" as "the whole pattern" (see
         NoteOps::quantizeNotes), so a user who hasn't discovered the selection
@@ -523,6 +537,16 @@ public:
 
     void paint(juce::Graphics& g) override
     {
+        if (noClipSelected_)
+        {
+            g.fillAll(juce::Colour(0xff1e1e22));
+            g.setColour(juce::Colours::white.withAlpha(0.45f));
+            g.setFont(juce::FontOptions(13.0f));
+            g.drawText("Select a track and clip to edit its notes",
+                       getLocalBounds(), juce::Justification::centred);
+            return;
+        }
+
         const float w  = (float) getWidth();
         const float h  = gridHeight();
         const float cw = geometry_.colWidth(w);
@@ -871,6 +895,7 @@ private:
     }
 
     PianoRollGeometry           geometry_;
+    bool                        noClipSelected_ = false;
 
     // Transport readout: where playback is inside this pattern, and whether
     // anything is playing. beatsPerBar_ drives the grid's bar lines.

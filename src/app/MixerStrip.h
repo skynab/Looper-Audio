@@ -61,6 +61,12 @@ public:
         sendSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
         sendSlider_.setRange(0.0, 100.0, 1.0);
         sendSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        // These rows are too narrow for a static readout the way the gain
+        // fader's text box has room for — a popup while dragging gets the
+        // same "what value am I actually at" answer without needing the
+        // space.
+        sendSlider_.setPopupDisplayEnabled(true, false, this);
+        sendSlider_.setTextValueSuffix(" send");
         sendSlider_.onValueChange = [this] { if (onSendChange) onSendChange((float) (sendSlider_.getValue() / 100.0)); };
         wireDrag(sendSlider_, Fader::Send);
         addAndMakeVisible(sendSlider_);
@@ -74,6 +80,8 @@ public:
         panSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
         panSlider_.setRange(-100.0, 100.0, 1.0);
         panSlider_.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        panSlider_.setPopupDisplayEnabled(true, false, this);
+        panSlider_.setTextValueSuffix(" pan");
         panSlider_.setDoubleClickReturnValue(true, 0.0); // double-click re-centres
         panSlider_.onValueChange = [this] { if (onPanChange) onPanChange((float) (panSlider_.getValue() / 100.0)); };
         wireDrag(panSlider_, Fader::Pan);

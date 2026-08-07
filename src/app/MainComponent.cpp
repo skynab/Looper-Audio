@@ -191,6 +191,7 @@ MainComponent::MainComponent()
         post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
         updateLoopRegion();
     };
+    loopButton.setTooltip(withShortcut("Loop over what's arranged", keys::loop));
     recordButton.onClick = [this] { toggleRecording(); };
     {
         // One control, two states: the disc arms, the square stops. They're
@@ -2596,6 +2597,15 @@ void MainComponent::refreshPianoRollForSelected()
 {
     pianoRoll_.setPattern(currentPattern());
     updateBarsControl();
+
+    // The same condition currentPattern() falls back to its shared empty
+    // Pattern for — the roll can't otherwise tell "nothing is open" apart
+    // from "a real clip that's genuinely empty."
+    const auto& song = history_.current();
+    const bool  noClipOpen = selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size()
+                          || selectedClipIndex_ < 0
+                          || selectedClipIndex_ >= (int) song.tracks[(size_t) selectedTrackIndex_].clips.size();
+    pianoRoll_.setNoClipSelected(noClipOpen);
 
     const bool isDrum = selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount()
                      && history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Drum;
