@@ -5,6 +5,9 @@
 #include <functional>
 
 #include "model/SynthSettings.h"
+#include "model/Track.h"
+
+#include "TrackColours.h"
 
 namespace looper
 {
@@ -117,13 +120,33 @@ public:
         setControlsVisible(false);
     }
 
+    /** Which track this is, so the header says so — this tab's title never
+        changes per track, so without this there was no on-screen way to
+        tell which track's patch was actually open after switching tracks
+        while parked here. */
+    void setTrackInfo(const juce::String& name, juce::uint32 colour)
+    {
+        trackName_   = name;
+        trackColour_ = colour;
+        repaint();
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        if (controlsVisible_)
+            paintTrackHeader(g, headerBounds(), trackName_, trackColour_, model::TrackType::Instrument);
+    }
+
     void resized() override
     {
-        auto area = getLocalBounds().reduced(10);
         placeholderLabel_.setBounds(getLocalBounds());
 
         if (! controlsVisible_)
             return;
+
+        auto area = getLocalBounds();
+        area.removeFromTop(kTrackHeaderHeight);
+        area = area.reduced(10);
 
         layoutHeader(oscHeader_, area);
         layoutRow(area, waveformBox_);
@@ -175,6 +198,13 @@ private:
         label.setBounds(area.removeFromTop(kHeaderHeight));
     }
 
+    /** Same top strip resized() carves out before the rest of the layout —
+        kept in one place so paint() and resized() can't drift apart. */
+    juce::Rectangle<int> headerBounds() const
+    {
+        return getLocalBounds().removeFromTop(kTrackHeaderHeight);
+    }
+
     void layoutRow(juce::Rectangle<int>& area, juce::Component& control)
     {
         control.setBounds(area.removeFromTop(kRowHeight).reduced(0, 2));
@@ -210,6 +240,8 @@ private:
 
     model::SynthSettings settings_;
     bool                  controlsVisible_ = false;
+    juce::String          trackName_;
+    juce::uint32          trackColour_ = 0;
 
     juce::Label      placeholderLabel_;
 

@@ -2744,7 +2744,11 @@ void MainComponent::refreshSynthEditorForSelected()
                             && history_.current().tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Instrument;
 
     if (isInstrument)
-        synthEditor_.setSettings(history_.current().tracks[(size_t) selectedTrackIndex_].synthSettings);
+    {
+        const auto& track = history_.current().tracks[(size_t) selectedTrackIndex_];
+        synthEditor_.setSettings(track.synthSettings);
+        synthEditor_.setTrackInfo(track.name, track.colour);
+    }
     else
         synthEditor_.setNoTrackSelected();
 }
