@@ -25,15 +25,15 @@ namespace
                                                    / (float) sampleRate));
 
         juce::WavAudioFormat format;
-        std::unique_ptr<juce::FileOutputStream> stream(file.createOutputStream());
-        std::unique_ptr<juce::AudioFormatWriter> writer(
-            format.createWriterFor(stream.get(), sampleRate, 1, 16, {}, 0));
+        std::unique_ptr<juce::OutputStream> stream(file.createOutputStream());
+        auto writer = format.createWriterFor(stream, // consumed on success, left alone on failure
+            juce::AudioFormatWriterOptions{}
+                .withSampleRate(sampleRate)
+                .withNumChannels(1)
+                .withBitsPerSample(16));
 
         if (writer != nullptr)
-        {
-            stream.release(); // the writer owns it now
             writer->writeFromAudioSampleBuffer(buffer, 0, numSamples);
-        }
 
         return file;
     }
