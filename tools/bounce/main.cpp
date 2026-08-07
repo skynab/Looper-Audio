@@ -602,9 +602,9 @@ int main(int argc, char** argv)
     bool guitarHammerOn        = false;
     {
         // Renders a guitar node given (noteNumber, sampleOffset) note-ons.
-        auto renderNotes = [&](const std::vector<std::pair<int, int>>& notes, double seconds)
+        auto renderNotes = [&](const std::vector<std::pair<int, int>>& notes, double durationSeconds)
         {
-            const int totalSamples = (int) (sampleRate * seconds);
+            const int totalSamples = (int) (sampleRate * durationSeconds);
             juce::AudioBuffer<float> mix(2, totalSamples);
             mix.clear();
 
@@ -638,14 +638,14 @@ int main(int argc, char** argv)
             return mix;
         };
 
-        auto magnitude = [&](const juce::AudioBuffer<float>& buffer, double frequency, int from, int count)
+        auto magnitude = [&](const juce::AudioBuffer<float>& audioBuffer, double frequency, int from, int count)
         {
             double real = 0.0, imaginary = 0.0;
-            for (int i = 0; i < count && from + i < buffer.getNumSamples(); ++i)
+            for (int i = 0; i < count && from + i < audioBuffer.getNumSamples(); ++i)
             {
                 const double angle = 2.0 * juce::MathConstants<double>::pi * frequency * i / sampleRate;
-                real      += buffer.getSample(0, from + i) * std::cos(angle);
-                imaginary += buffer.getSample(0, from + i) * std::sin(angle);
+                real      += audioBuffer.getSample(0, from + i) * std::cos(angle);
+                imaginary += audioBuffer.getSample(0, from + i) * std::sin(angle);
             }
             return std::hypot(real, imaginary) / count;
         };
@@ -1536,8 +1536,8 @@ int main(int argc, char** argv)
         metronome.setEnabled(false);
 
         const int totalSamples = (int) (sampleRate * 1.0);
-        juce::AudioBuffer<float> quiet(2, totalSamples);
-        quiet.clear();
+        juce::AudioBuffer<float> quietBuffer(2, totalSamples);
+        quietBuffer.clear();
 
         ProcessContext context;
         context.sampleRate                   = sampleRate;
@@ -1547,9 +1547,9 @@ int main(int argc, char** argv)
         context.transport.bpm                = bpm;
         context.transport.timeSigNumerator   = 4;
         context.transport.timeSigDenominator = 4;
-        metronome.process(quiet, context, false);
+        metronome.process(quietBuffer, context, false);
 
-        metronomeSilentWhenOff = quiet.getRMSLevel(0, 0, totalSamples) < 1.0e-9f;
+        metronomeSilentWhenOff = quietBuffer.getRMSLevel(0, 0, totalSamples) < 1.0e-9f;
     }
 
     const juce::File out = juce::File::getCurrentWorkingDirectory()
