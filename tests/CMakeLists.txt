@@ -8,6 +8,8 @@ add_executable(looper_tests
   engine/InterpolationTests.cpp
   engine/MidiNoteTests.cpp
   engine/SequencerMathTests.cpp
+  engine/DefaultContentTests.cpp
+  engine/DrumSynthTests.cpp
   engine/MetronomeMathTests.cpp
   engine/NoteOpsTests.cpp
   engine/OscillatorTests.cpp
