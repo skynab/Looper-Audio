@@ -4537,10 +4537,17 @@ void MainComponent::buildDefaultDockLayout()
         workspace_.addPanel(*bottom, "Keys");
         workspace_.addPanel(*bottom, "Synth");
         workspace_.addPanel(*bottom, "Drums");
-        workspace_.addPanel(*bottom, "Track FX");
         workspace_.addPanel(*bottom, "Session");
         workspace_.addPanel(*bottom, "Guitar");
         bottom->showPanel("Keys");
+
+        // Track FX gets its own region rather than joining the tab group
+        // above: it applies to every track type, but a distortion plugin
+        // living in it was otherwise invisible while tweaking a synth's
+        // oscillator on the "Synth" tab right next to it — a click away
+        // rather than in view.
+        if (auto* fx = workspace_.splitRegion(*bottom, DropZone::Right, 0.62))
+            workspace_.addPanel(*fx, "Track FX");
 
         if (auto* transport = workspace_.splitRegion(*bottom, DropZone::Bottom, 0.68))
         {
