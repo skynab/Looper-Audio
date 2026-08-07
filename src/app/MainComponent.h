@@ -139,6 +139,10 @@ private:
     void                   applyPreset(int index);
     void                   deletePresetAt(int index);
     void                   seedFactoryPresets();
+    juce::File             factoryDrumKitDirectory() const;
+    void                   seedFactoryDrumKit();
+    model::DrumKit         defaultDrumKitWithFactorySamples() const;
+    model::Song            makeStarterSong() const;
     void                   selectTrackAndRefreshAll(int newTrackIndex);
     void                   addTrack();
     void                   addDrumTrack();

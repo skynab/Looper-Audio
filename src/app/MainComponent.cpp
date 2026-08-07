@@ -6,6 +6,8 @@
 #include "Icons.h"
 
 #include "engine/ClipSlot.h"
+#include "engine/DefaultContent.h"
+#include "engine/DrumSynth.h"
 #include "engine/GuitarChords.h"
 #include "engine/NoteOps.h"
 #include "engine/MidiFileIO.h"
@@ -104,16 +106,12 @@ MainComponent::MainComponent()
     addAndMakeVisible(workspace_);
     workspace_.onLayoutChanged = [this] { saveDockLayout(); };
 
-    // ---- document: one instrument track holding the piano-roll pattern ----
+    // ---- document: a starter synth track plus a drum track with a
+    // programmed loop and real sounds, so a fresh launch is audible
+    // immediately rather than opening on silence ----
     {
-        model::Song song;
-        const int trackId = model::addTrack(song, model::TrackType::Instrument, "Synth 1").id;
-        model::Clip clip;
-        clip.type        = model::ClipType::Instrument;
-        clip.pattern     = pianoRoll_.pattern();
-        clip.lengthBeats = clip.pattern.lengthBeats;
-        model::addClip(song, trackId, clip);
-        history_.reset(song);
+        seedFactoryDrumKit();
+        history_.reset(makeStarterSong());
     }
 
     // ---- transport ----
@@ -1209,10 +1207,17 @@ void MainComponent::addDrumTrack()
     if (trackCount() >= engine_.maxTracks())
         return;
 
-    history_.edit("Add drum track", [](model::Song& s)
+    // Real sounds by default rather than four silent pads — the same reason
+    // makeStarterSong() does this for the track a fresh launch begins with.
+    // The pattern stays empty, unlike the startup track's: this is a track
+    // the user is deliberately adding, so it gets a blank canvas to program
+    // rather than a copy of the demo loop.
+    const auto kit = defaultDrumKitWithFactorySamples();
+    history_.edit("Add drum track", [kit](model::Song& s)
     {
         const auto name = "Drums " + juce::String((int) s.tracks.size() + 1);
         const int  id   = model::addTrack(s, model::TrackType::Drum, name.toStdString()).id;
+        s.tracks.back().drumKit = kit;
         model::Clip clip;
         clip.type                = model::ClipType::Instrument;
         clip.lengthBeats         = 4.0;
@@ -4119,6 +4124,111 @@ void MainComponent::seedFactoryPresets()
         const auto file = dir.getNonexistentChildFile(juce::File::createLegalFileName(preset.name), ".looperpreset");
         file.replaceWithText(juce::String(model::serializePreset(preset)));
     }
+}
+
+/** Where the procedurally-generated starter drum sounds live — same
+    "own directory, listed by scanning it" pattern as recordingsDirectory()
+    and presetsDirectory(). */
+juce::File MainComponent::factoryDrumKitDirectory() const
+{
+    auto dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                  .getChildFile("Looper-Audio Factory Kit");
+    dir.createDirectory();
+    return dir;
+}
+
+/** Writes twelve one-shot .wav files (three kicks, three snares, three
+    closed hats, three claps — see engine::DrumSynth) into
+    factoryDrumKitDirectory(), if it's empty. Never touches a directory that
+    already has anything in it, same reasoning as seedFactoryPresets(): a
+    user who removed or replaced these on purpose keeps that choice. */
+void MainComponent::seedFactoryDrumKit()
+{
+    const auto dir = factoryDrumKitDirectory();
+    if (dir.getNumberOfChildFiles(juce::File::findFiles, "*.wav") > 0)
+        return;
+
+    // Fixed rather than the live device rate: these are rendered once, to
+    // disk, and reused across sessions — re-rendering at whatever rate the
+    // audio device happens to be running would make two machines' factory
+    // kits differ for no reason, and AudioFilePlayerNode already resamples
+    // whatever a file's own rate is.
+    const double sampleRate = 48000.0;
+
+    auto writeOneShot = [&](const juce::String& name, std::vector<float> samples)
+    {
+        engine::normalizePeak(samples);
+        juce::AudioBuffer<float> buffer(1, (int) samples.size());
+        std::copy(samples.begin(), samples.end(), buffer.getWritePointer(0));
+        engine::OfflineRenderer::writeWav(dir.getChildFile(name + ".wav"), buffer, sampleRate);
+    };
+
+    // Three variants each, so "generic" doesn't mean "one option" — a user
+    // who doesn't like the default can swap to another via the existing
+    // per-pad Load... button without leaving the app.
+    writeOneShot("Kick Tight",  engine::synthesizeKick(sampleRate, 180.0f, 55.0f, 15.0f, 150.0f, 2.0f));
+    writeOneShot("Kick Punchy", engine::synthesizeKick(sampleRate, 160.0f, 45.0f, 25.0f, 250.0f, 3.0f));
+    writeOneShot("Kick Deep",   engine::synthesizeKick(sampleRate, 120.0f, 35.0f, 40.0f, 400.0f, 1.5f));
+
+    writeOneShot("Snare Crisp", engine::synthesizeSnare(sampleRate, 200.0f, 0.25f, 140.0f, 3000.0f, 201u));
+    writeOneShot("Snare Fat",   engine::synthesizeSnare(sampleRate, 180.0f, 0.4f,  220.0f, 1800.0f, 202u));
+    writeOneShot("Snare Tight", engine::synthesizeSnare(sampleRate, 220.0f, 0.2f,  100.0f, 2500.0f, 203u));
+
+    writeOneShot("Hat Closed", engine::synthesizeHat(sampleRate, 7000.0f, 60.0f, 301u));
+    writeOneShot("Hat Tight",  engine::synthesizeHat(sampleRate, 9000.0f, 35.0f, 302u));
+    writeOneShot("Hat Bright", engine::synthesizeHat(sampleRate, 11000.0f, 90.0f, 303u));
+
+    writeOneShot("Clap Classic", engine::synthesizeClap(sampleRate, 1500.0f, 120.0f, 401u));
+    writeOneShot("Clap Tight",   engine::synthesizeClap(sampleRate, 1800.0f, 80.0f, 402u));
+    writeOneShot("Clap Roomy",   engine::synthesizeClap(sampleRate, 1200.0f, 200.0f, 403u));
+}
+
+/** model::makeDefaultDrumKit()'s four pads (Kick/Snare/Hat/Other), pointed
+    at one factory sound each — the "Tight"/"Crisp"/"Closed"/"Classic"
+    variant of each, arbitrarily chosen as the one that plays if nobody
+    picks. The other two variants of each still exist in
+    factoryDrumKitDirectory() for anyone who wants to swap. Can't live in
+    model::makeDefaultDrumKit() itself: a file path is exactly the kind of
+    thing the model layer doesn't know about. */
+model::DrumKit MainComponent::defaultDrumKitWithFactorySamples() const
+{
+    auto       kit = model::makeDefaultDrumKit();
+    const auto dir = factoryDrumKitDirectory();
+
+    kit.pads[0].samplePath = dir.getChildFile("Kick Tight.wav").getFullPathName().toStdString();
+    kit.pads[1].samplePath = dir.getChildFile("Snare Crisp.wav").getFullPathName().toStdString();
+    kit.pads[2].samplePath = dir.getChildFile("Hat Closed.wav").getFullPathName().toStdString();
+    kit.pads[3].samplePath = dir.getChildFile("Clap Classic.wav").getFullPathName().toStdString();
+    return kit;
+}
+
+/** The project that exists the moment the app opens — deliberately not also
+    what "New Project" resets to (createEmptyProject() stays a blank synth
+    track with an empty clip, on purpose: a user who explicitly asks for a
+    new project most likely wants a clean canvas, not a demo). A drum track
+    with a programmed loop and real sounds is what makes a *fresh launch*
+    audible immediately rather than opening on silence twice over — an
+    empty synth clip and a kit with nothing assigned to it. */
+model::Song MainComponent::makeStarterSong() const
+{
+    model::Song song;
+
+    const int synthId = model::addTrack(song, model::TrackType::Instrument, "Synth 1").id;
+    model::Clip synthClip;
+    synthClip.type        = model::ClipType::Instrument;
+    synthClip.pattern     = pianoRoll_.pattern();
+    synthClip.lengthBeats = synthClip.pattern.lengthBeats;
+    model::addClip(song, synthId, synthClip);
+
+    const int drumId = model::addTrack(song, model::TrackType::Drum, "Drums 1").id;
+    song.tracks.back().drumKit = defaultDrumKitWithFactorySamples();
+    model::Clip drumClip;
+    drumClip.type        = model::ClipType::Instrument;
+    drumClip.pattern     = engine::makeDefaultDrumLoopPattern();
+    drumClip.lengthBeats = drumClip.pattern.lengthBeats;
+    model::addClip(song, drumId, drumClip);
+
+    return song;
 }
 
 /** Puts a passing message on screen. Deliberately not routed through any
