@@ -228,6 +228,15 @@ public:
     void setTrackSynthFilterCutoff(int index, float hz);
     void setTrackSynthFilterResonance(int index, float q);
     void setTrackSynthGainDb(int index, float db);
+    void setTrackSynthFilterEnvAmount(int index, float hz);
+    void setTrackSynthFilterEnvAttackMs(int index, float ms);
+    void setTrackSynthFilterEnvDecayMs(int index, float ms);
+    void setTrackSynthFilterEnvSustain(int index, float level);
+    void setTrackSynthFilterEnvReleaseMs(int index, float ms);
+    void setTrackSynthSubOscEnabled(int index, bool enabled);
+    void setTrackSynthSubOscLevel(int index, float level);
+    void setTrackSynthUnisonVoices(int index, int voices);
+    void setTrackSynthUnisonDetuneCents(int index, float cents);
 
     /** Replaces a track's insert chain with nodes of these kinds, in order.
         Structural only: rebuilding allocates (on this thread) and resets every

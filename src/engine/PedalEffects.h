@@ -78,6 +78,60 @@ private:
     std::atomic<float> makeUpDb_    { 0.0f };
 };
 
+/** The gate pedal as a chain node. Same shape as CompressorEffect: one
+    detector fed the loudest channel, the resulting gain applied to all of
+    them, so a hard-panned note doesn't pull the stereo image as the gate
+    opens or closes. */
+class GateEffect
+{
+public:
+    void prepare(double sampleRate, int /*blockSize*/) { gate_.prepare(sampleRate); }
+
+    void setEnabled(bool enabled)     { enabled_.store(enabled, std::memory_order_relaxed); }
+    void setThresholdDb(float db)     { thresholdDb_.store(db, std::memory_order_relaxed); }
+    void setRangeDb(float db)         { rangeDb_.store(db, std::memory_order_relaxed); }
+    void setAttackMs(float ms)        { attackMs_.store(ms, std::memory_order_relaxed); }
+    void setHoldMs(float ms)          { holdMs_.store(ms, std::memory_order_relaxed); }
+    void setReleaseMs(float ms)       { releaseMs_.store(ms, std::memory_order_relaxed); }
+
+    void process(juce::AudioBuffer<float>& buffer)
+    {
+        if (! enabled_.load(std::memory_order_relaxed))
+            return;
+
+        gate_.setThresholdDb(thresholdDb_.load(std::memory_order_relaxed));
+        gate_.setRangeDb(rangeDb_.load(std::memory_order_relaxed));
+        gate_.setAttackMs(attackMs_.load(std::memory_order_relaxed));
+        gate_.setHoldMs(holdMs_.load(std::memory_order_relaxed));
+        gate_.setReleaseMs(releaseMs_.load(std::memory_order_relaxed));
+
+        const int numChannels = buffer.getNumChannels();
+        const int numSamples  = buffer.getNumSamples();
+
+        for (int n = 0; n < numSamples; ++n)
+        {
+            float peak = 0.0f;
+            for (int channel = 0; channel < numChannels; ++channel)
+                peak = juce::jmax(peak, std::abs(buffer.getSample(channel, n)));
+
+            const float gain = gate_.gainFor(peak);
+
+            for (int channel = 0; channel < numChannels; ++channel)
+                buffer.setSample(channel, n, buffer.getSample(channel, n) * gain);
+        }
+    }
+
+private:
+    Gate gate_;
+
+    std::atomic<bool>  enabled_     { false };
+    std::atomic<float> thresholdDb_ { -40.0f };
+    std::atomic<float> rangeDb_     { 60.0f };
+    std::atomic<float> attackMs_    { 2.0f };
+    std::atomic<float> holdMs_      { 20.0f };
+    std::atomic<float> releaseMs_   { 150.0f };
+};
+
 /** The tremolo pedal as a chain node. One LFO for every channel — a tremolo
     whose channels drifted apart would be an auto-panner. */
 class TremoloEffect

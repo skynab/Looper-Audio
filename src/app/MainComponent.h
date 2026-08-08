@@ -9,6 +9,7 @@
 #include <string>
 
 #include "engine/AudioEngine.h"
+#include "engine/GuitarTone.h"
 #include "engine/TempoMap.h"
 #include "model/History.h"
 #include "model/PresetSerialization.h"
@@ -206,6 +207,7 @@ private:
     void                   selectTrack(int index);
     void                   selectTrackAndClip(int trackIndex, int clipIndex);
     void                   addClipToSelectedTrack();
+    void                   showGenerateLoopDialog();
     void                   setClipLength(int trackIndex, int clipIndex, double newLengthBeats);
     void                   copyNotes();
     void                   pasteNotes();
@@ -215,6 +217,7 @@ private:
     void                   pasteTrack();
     void                   duplicateTrackAt(int trackIndex);
     void                   duplicateClip();
+    bool                   hasSelectedClip() const;
     void                   deleteSelectedClip();
     void                   deleteSelectedTrack();
     void                   deleteTrackAt(int trackIndex);
@@ -222,6 +225,9 @@ private:
     void                   renameTrackAt(int trackIndex);
     void                   showTrackSettingsMenu(int trackIndex);
     void                   setTrackColour(int trackIndex, unsigned int argb);
+    void                   setTrackType(int trackIndex, model::TrackType newType);
+    void                   moveClipToTrack(int srcTrackIndex, int clipIndex, int destTrackIndex, double newStartBeats);
+    void                   applyGuitarTone(engine::GuitarTone tone);
     void                   quantizeNotes(double swingAmount);
     void                   setPatternBars(int bars);
     void                   setTimeSignature(int numerator, int denominator);
@@ -406,7 +412,8 @@ private:
     juce::Slider                       keysTimeZoomBox_;
     juce::Viewport                     keysViewport_;
     juce::ToggleButton                 keysFollowButton_;
-    juce::TextButton                   addClipButton_  { "Add Clip" };
+    juce::TextButton                   addClipButton_       { "Add Clip" };
+    juce::TextButton                   generateLoopButton_  { "Generate Loop..." };
 
     CallbackComponent                  mixerView_;
     CallbackComponent                  masterPanel_; // own top-level dock tab; see layoutMasterPanel()

@@ -107,6 +107,124 @@ private:
 };
 
 /**
+    A noise gate pedal.
+
+    Compressor's mirror image: it attenuates *below* a threshold instead of
+    above one, down to a floor (rangeDb) rather than by a ratio, because a
+    gate isn't evening anything out — closed means "silent" (or as close to
+    it as rangeDb allows), not "quieter." What it exists for is what
+    high-gain distortion does to a guitar's noise floor: the hiss and hum a
+    clean signal barely has gets amplified right along with the notes, and a
+    gate is what keeps that hiss from filling every rest.
+
+    A hold time is the one thing this needs that Compressor doesn't: without
+    it, a decaying note whose level wanders back and forth across the
+    threshold makes the gate chatter open and closed instead of closing once,
+    cleanly, when the note is actually done. Held open through the hold
+    window even after the level dips back under threshold, then released.
+
+    Same feed-forward, smooth-the-output-not-the-detector shape as
+    Compressor, and the same reason: a stated attack/release time should mean
+    what it says regardless of signal level. JUCE-free for the same
+    headless-measurability reason.
+*/
+class Gate
+{
+public:
+    void prepare(double sampleRate) noexcept
+    {
+        sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+        updateCoefficients();
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        gainDb_      = -rangeDb_;
+        holdCounter_ = 0;
+    }
+
+    void setThresholdDb(float db) noexcept { thresholdDb_ = db; }
+    void setRangeDb(float db) noexcept     { rangeDb_ = std::max(0.0f, db); }
+
+    void setAttackMs(float ms) noexcept
+    {
+        attackMs_ = std::max(0.1f, ms);
+        updateCoefficients();
+    }
+
+    void setHoldMs(float ms) noexcept
+    {
+        holdMs_ = std::max(0.0f, ms);
+        updateCoefficients();
+    }
+
+    void setReleaseMs(float ms) noexcept
+    {
+        releaseMs_ = std::max(1.0f, ms);
+        updateCoefficients();
+    }
+
+    /** The linear gain to apply to this sample, advancing the internal
+        state. Returned rather than applied, same reason as Compressor's
+        gainFor: a stereo pair shares one detector so a hard-panned note
+        doesn't pull the image across as it opens/closes. */
+    float gainFor(float detectorInput) noexcept
+    {
+        const float level   = std::abs(detectorInput);
+        const float levelDb = 20.0f * std::log10(std::max(level, 1.0e-9f));
+        const bool  open    = levelDb > thresholdDb_;
+
+        if (open)
+            holdCounter_ = holdSamples_;
+        else if (holdCounter_ > 0)
+            --holdCounter_;
+
+        const float targetGainDb = (open || holdCounter_ > 0) ? 0.0f : -rangeDb_;
+
+        // Opening is the attack direction; closing is release - the mirror
+        // of Compressor's "more reduction is attack" comparison.
+        const float coeff = targetGainDb > gainDb_ ? attackCoeff_ : releaseCoeff_;
+        gainDb_ += coeff * (targetGainDb - gainDb_);
+
+        return std::pow(10.0f, gainDb_ / 20.0f);
+    }
+
+    /** How far below unity the gate currently sits, in dB (negative, 0 when
+        fully open). Same purpose as Compressor::currentReductionDb: tests,
+        and any meter that wants to show it. */
+    float currentGainDb() const noexcept { return gainDb_; }
+
+private:
+    void updateCoefficients() noexcept
+    {
+        attackCoeff_  = timeToCoeff(attackMs_);
+        releaseCoeff_ = timeToCoeff(releaseMs_);
+        holdSamples_  = (int) std::lround((double) holdMs_ * 0.001 * sampleRate_);
+    }
+
+    /** Identical to Compressor::timeToCoeff - one-pole coefficient reaching
+        ~63% of a step in the stated time. */
+    float timeToCoeff(float ms) const noexcept
+    {
+        const double samples = std::max(1.0, (double) ms * 0.001 * sampleRate_);
+        return (float) (1.0 - std::exp(-1.0 / samples));
+    }
+
+    double sampleRate_    = 48000.0;
+    float  thresholdDb_   = -40.0f;
+    float  rangeDb_       = 60.0f;
+    float  attackMs_      = 2.0f;
+    float  holdMs_        = 20.0f;
+    float  releaseMs_     = 150.0f;
+    float  attackCoeff_   = 0.5f;
+    float  releaseCoeff_  = 0.01f;
+    int    holdSamples_   = 960;
+    int    holdCounter_   = 0;
+    float  gainDb_        = -60.0f;
+};
+
+/**
     A tremolo pedal: amplitude modulation, the oldest effect on this list.
 
     Depth is expressed as how far the *quiet* part drops rather than as a

@@ -61,6 +61,13 @@ public:
     std::function<void(double)> onSeek; // beat position clicked
     std::function<void(int trackIndex, int clipIndex, double newStartBeats)> onClipMoved;
     std::function<void(int trackIndex, int clipIndex, double newLengthBeats)> onClipResized;
+
+    /** Fired instead of onClipMoved when a move-drag ends on a *different*
+        track than it started on (see typesAreCompatibleForClipMove — the
+        drag preview never lands on an incompatible track in the first
+        place, so this always names a real, allowed move). Fires even if the
+        beat position didn't also change: changing track is itself an edit. */
+    std::function<void(int srcTrackIndex, int clipIndex, int destTrackIndex, double newStartBeats)> onClipMovedToTrack;
     std::function<void(int trackIndex, int clipIndex)> onClipSelected; // fired on press, before any drag
 
     /** Fired when a track's mute button in the gutter is clicked. The view
@@ -271,11 +278,18 @@ public:
 
             for (int c = 0; c < (int) track.clips.size(); ++c)
             {
+                // Drawn separately, as a single ghost overlay after every
+                // lane is painted (see below) — that's the one code path
+                // that has to handle both "still on its own lane" and
+                // "currently over a different one," so the in-place special
+                // case that used to live here is gone.
+                if (dragging_ && i == dragTrackIndex_ && c == dragClipIndex_)
+                    continue;
+
                 const auto&  clip          = track.clips[(size_t) c];
-                const bool   isBeingDragged = dragging_ && i == dragTrackIndex_ && c == dragClipIndex_;
                 const bool   isEditSelected = i == selectedTrackForEdit_ && c == selectedClipForEdit_;
-                const double startBeats     = isBeingDragged ? dragPreviewStart_ : clip.startBeats;
-                const double lengthBeats    = isBeingDragged ? dragPreviewLength_ : clip.lengthBeats;
+                const double startBeats     = clip.startBeats;
+                const double lengthBeats    = clip.lengthBeats;
 
                 const float cx = geometry_.xForBeat(startBeats);
                 const float cw = juce::jmax(2.0f, (float) lengthBeats * ppb);
@@ -284,8 +298,6 @@ public:
                 // having one: parts are told apart by the clips, not by the
                 // gutter you have to look away to read.
                 auto clipColour = trackColour(track.colour);
-                if (isBeingDragged)
-                    clipColour = clipColour.brighter(0.3f);
                 if (track.muted)
                     clipColour = clipColour.withMultipliedSaturation(0.3f).withMultipliedBrightness(0.7f);
 
@@ -318,6 +330,42 @@ public:
                            juce::Rectangle<float>(timelineX + 8.0f, y, width - timelineX - 16.0f,
                                                   geometry_.laneHeight),
                            juce::Justification::centredLeft);
+            }
+        }
+
+        // The dragged clip's ghost, drawn once here rather than inline in
+        // the loop above: a resize always stays on dragTrackIndex_'s lane, a
+        // move follows dragPreviewTrackIndex_ — which may be a different
+        // lane than the clip's own, mid cross-track drag. Kept in the
+        // source track's colour throughout, even while hovering a different
+        // lane: it hasn't landed there yet, and recolouring it would read as
+        // "this already belongs to that track."
+        if (dragging_ && dragTrackIndex_ >= 0 && dragTrackIndex_ < (int) song_.tracks.size())
+        {
+            const int ghostRow = resizing_ ? dragTrackIndex_ : dragPreviewTrackIndex_;
+            if (ghostRow >= 0 && ghostRow < (int) song_.tracks.size())
+            {
+                const float ghostY = geometry_.rulerHeight + (float) ghostRow * geometry_.laneHeight;
+                const float cx     = geometry_.xForBeat(dragPreviewStart_);
+                const float cw     = juce::jmax(2.0f, (float) dragPreviewLength_ * ppb);
+                const juce::Rectangle<float> r(cx, ghostY + 3.0f, cw, geometry_.laneHeight - 6.0f);
+
+                auto ghostColour = trackColour(song_.tracks[(size_t) dragTrackIndex_].colour).brighter(0.3f);
+                g.setColour(ghostColour);
+                g.fillRoundedRectangle(r, 3.0f);
+
+                if (dragClipIndex_ >= 0 && dragClipIndex_ < (int) song_.tracks[(size_t) dragTrackIndex_].clips.size())
+                    paintClipContents(g, song_.tracks[(size_t) dragTrackIndex_].clips[(size_t) dragClipIndex_], r);
+
+                if (r.getWidth() > 3.0f * kResizeEdgePixels)
+                {
+                    g.setColour(juce::Colours::white.withAlpha(0.18f));
+                    g.fillRect(r.getRight() - kResizeEdgePixels, r.getY() + 2.0f,
+                               kResizeEdgePixels - 1.0f, r.getHeight() - 4.0f);
+                }
+
+                g.setColour(juce::Colours::cyan.withAlpha(0.9f));
+                g.drawRoundedRectangle(r, 3.0f, 2.0f);
             }
         }
 
@@ -357,6 +405,10 @@ public:
     static constexpr float muteSizeForTesting() { return kMuteSize; }
     int   gearButtonAtForTesting(juce::Point<float> point) const { return gearButtonAt(point); }
     float gutterWidthForTesting() const { return geometry_.gutterWidth; }
+    static bool typesAreCompatibleForClipMoveForTesting(model::TrackType a, model::TrackType b)
+    {
+        return typesAreCompatibleForClipMove(a, b);
+    }
 
 private:
     /** Draws an audio clip's waveform.
@@ -547,6 +599,7 @@ private:
             dragOriginalLength_ = clip.lengthBeats;
             dragPreviewStart_   = dragOriginalStart_;
             dragPreviewLength_  = dragOriginalLength_;
+            dragPreviewTrackIndex_ = trackIndex;
 
             if (onClipSelected)
                 onClipSelected(trackIndex, clipIndex);
@@ -607,11 +660,25 @@ private:
         const bool snap = ! e.mods.isAltDown();
 
         if (resizing_)
+        {
             dragPreviewLength_ = std::max(kMinClipBeats,
                                           maybeSnap(currentBeat - dragPreviewStart_, snap, kMinClipBeats));
+        }
         else
+        {
             dragPreviewStart_ = std::max(0.0, maybeSnap(dragOriginalStart_ + (currentBeat - dragGrabBeat_),
                                                         snap, 0.0));
+
+            // Follows the mouse into a different lane only if that track can
+            // actually take this clip (see typesAreCompatibleForClipMove) —
+            // otherwise the ghost just stays put rather than following into
+            // a lane it can't be dropped on.
+            const int hovered = trackAtY(e.position.y);
+            if (hovered >= 0 && hovered < (int) song_.tracks.size()
+                && typesAreCompatibleForClipMove(song_.tracks[(size_t) dragTrackIndex_].type,
+                                                 song_.tracks[(size_t) hovered].type))
+                dragPreviewTrackIndex_ = hovered;
+        }
         repaint();
     }
 
@@ -651,10 +718,18 @@ private:
             if (onClipResized && std::abs(dragPreviewLength_ - dragOriginalLength_) > 1.0e-9)
                 onClipResized(dragTrackIndex_, dragClipIndex_, dragPreviewLength_);
         }
+        else if (dragPreviewTrackIndex_ != dragTrackIndex_)
+        {
+            // A track change is a real edit on its own, whether or not the
+            // beat position also moved.
+            if (onClipMovedToTrack)
+                onClipMovedToTrack(dragTrackIndex_, dragClipIndex_, dragPreviewTrackIndex_, dragPreviewStart_);
+        }
         else if (onClipMoved && std::abs(dragPreviewStart_ - dragOriginalStart_) > 1.0e-9)
         {
             onClipMoved(dragTrackIndex_, dragClipIndex_, dragPreviewStart_);
         }
+        dragPreviewTrackIndex_ = -1;
         repaint();
     }
 
@@ -865,6 +940,20 @@ private:
         return x >= right - kResizeEdgePixels && x <= right;
     }
 
+    /** Whether a clip can be dragged from a track of type @p from onto a
+        track of type @p to. Same type only, and never Audio: Instrument/
+        Drum/Guitar tracks all store the same Clip/Pattern data (the same
+        boundary MainComponent::setTrackType already draws), but a drag is a
+        fast, low-friction gesture — unlike setTrackType, a deliberate
+        whole-track decision — so it doesn't also take on "maybe reinterpret
+        this clip's note numbers as a different instrument," which cross-type
+        would mean. Audio clips are file-backed, not a Pattern, so they don't
+        belong here at all. */
+    static bool typesAreCompatibleForClipMove(model::TrackType from, model::TrackType to) noexcept
+    {
+        return from == to && from != model::TrackType::Audio;
+    }
+
     bool   dragging_          = false;
     bool   resizing_          = false;
     int    dragTrackIndex_    = -1;
@@ -874,6 +963,7 @@ private:
     double dragPreviewStart_   = 0.0; // live preview while dragging
     double dragOriginalLength_ = 0.0; // the clip's lengthBeats at grab
     double dragPreviewLength_  = 0.0; // live preview while resizing
+    int    dragPreviewTrackIndex_ = -1; // which lane a move-drag is currently over (resize never changes this)
 
     int selectedTrackForEdit_ = -1;
     int selectedClipForEdit_  = -1;

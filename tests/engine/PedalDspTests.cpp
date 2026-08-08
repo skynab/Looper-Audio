@@ -141,6 +141,105 @@ TEST_CASE("Compression is stable and finite on silence", "[engine][pedal]")
     }
 }
 
+namespace
+{
+    Gate makeGate(float thresholdDb, float rangeDb, float attackMs, float holdMs, float releaseMs)
+    {
+        Gate g;
+        g.prepare(kSampleRate);
+        g.setThresholdDb(thresholdDb);
+        g.setRangeDb(rangeDb);
+        g.setAttackMs(attackMs);
+        g.setHoldMs(holdMs);
+        g.setReleaseMs(releaseMs);
+        return g;
+    }
+
+    /** Runs a constant level in for @p ms and reports the gate's gain-in-dB
+        at the end (mirrors settledGain, but reads currentGainDb rather than
+        the returned linear gain - easier to compare against -rangeDb). */
+    float settledGateDb(Gate& g, float level, double ms)
+    {
+        const int samples = (int) (ms * 0.001 * kSampleRate);
+        for (int n = 0; n < samples; ++n)
+            g.gainFor(level);
+        return g.currentGainDb();
+    }
+}
+
+TEST_CASE("A signal above threshold opens the gate to unity", "[engine][pedal]")
+{
+    auto g = makeGate(-40.0f, 60.0f, 2.0f, 20.0f, 150.0f);
+    const float gainDb = settledGateDb(g, dbToLinear(-10.0f), 500.0);
+    REQUIRE(std::abs(gainDb) < 0.1f);
+}
+
+TEST_CASE("A signal below threshold closes the gate to -rangeDb", "[engine][pedal]")
+{
+    auto g = makeGate(-40.0f, 60.0f, 2.0f, 0.0f, 20.0f);
+    const float gainDb = settledGateDb(g, dbToLinear(-70.0f), 500.0);
+    REQUIRE(std::abs(gainDb - (-60.0f)) < 0.2f);
+}
+
+TEST_CASE("Hold keeps the gate open through a brief dip under threshold", "[engine][pedal]")
+{
+    // A palm-muted decay dips under threshold well before the note is really
+    // "over" - without hold, that reads as chatter (open/closed/open) rather
+    // than one clean close. Hold set longer than the dip means the gate
+    // should still be at unity right at the end of the dip.
+    auto g = makeGate(-40.0f, 60.0f, 1.0f, 50.0f, 150.0f);
+
+    // Open it first.
+    settledGateDb(g, dbToLinear(-10.0f), 50.0);
+    REQUIRE(std::abs(g.currentGainDb()) < 0.1f);
+
+    // Dip under threshold for less than the hold window.
+    const int dipSamples = (int) (30.0 * 0.001 * kSampleRate);
+    for (int n = 0; n < dipSamples; ++n)
+        g.gainFor(dbToLinear(-70.0f));
+
+    INFO("gain after a " << dipSamples << "-sample dip: " << g.currentGainDb() << " dB");
+    REQUIRE(g.currentGainDb() > -1.0f); // still held open
+}
+
+TEST_CASE("A dip longer than hold lets the gate close", "[engine][pedal]")
+{
+    auto g = makeGate(-40.0f, 60.0f, 1.0f, 10.0f, 20.0f);
+
+    settledGateDb(g, dbToLinear(-10.0f), 50.0);
+    REQUIRE(std::abs(g.currentGainDb()) < 0.1f);
+
+    // Well past the 10ms hold window plus release.
+    const float gainDb = settledGateDb(g, dbToLinear(-70.0f), 300.0);
+    REQUIRE(std::abs(gainDb - (-60.0f)) < 0.2f);
+}
+
+TEST_CASE("A faster gate attack opens sooner", "[engine][pedal]")
+{
+    auto fast = makeGate(-40.0f, 60.0f, 0.5f, 0.0f, 150.0f);
+    auto slow = makeGate(-40.0f, 60.0f, 30.0f, 0.0f, 150.0f);
+
+    const float loud = dbToLinear(-10.0f);
+    for (int n = 0; n < (int) (0.003 * kSampleRate); ++n) // 3ms in
+    {
+        fast.gainFor(loud);
+        slow.gainFor(loud);
+    }
+
+    REQUIRE(fast.currentGainDb() > slow.currentGainDb());
+}
+
+TEST_CASE("A gate stays finite and bounded on silence", "[engine][pedal]")
+{
+    auto g = makeGate(-40.0f, 60.0f, 2.0f, 20.0f, 150.0f);
+    for (int n = 0; n < 10000; ++n)
+    {
+        const float gain = g.gainFor(0.0f);
+        REQUIRE(std::isfinite(gain));
+        REQUIRE(gain <= 1.0001f);
+    }
+}
+
 TEST_CASE("Tremolo at zero depth is not an effect", "[engine][pedal]")
 {
     // The only reading of a depth control under which turning it down leaves

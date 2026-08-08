@@ -1,4 +1,5 @@
 #include <cmath>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <vector>
@@ -12,6 +13,7 @@
 #include "engine/DelayEffect.h"
 #include "engine/DrumKitNode.h"
 #include "engine/EffectChain.h"
+#include "engine/GenerativeLoop.h"
 #include "engine/GuitarNode.h"
 #include "engine/PluginHost.h"
 #include "engine/PluginNode.h"
@@ -358,6 +360,48 @@ int main(int argc, char** argv)
     const bool drumKitWorks = rmsKick1 > 0.01f && rmsSnare1 > 0.01f
                           && rmsKick2 > 0.01f && rmsSnare2 > 0.01f
                           && rmsGapAndHat < 1.0e-5f;
+
+    // Generative-loop check (see engine/GenerativeLoop.h): a fixed-seed
+    // generateDrumLoop and a fixed-seed generateMelodicLoop, rendered
+    // through the same DrumKitNode/synth paths every other pattern here
+    // goes through, confirming both actually produce sound rather than a
+    // silently-misconfigured pattern (e.g. note numbers that don't match any
+    // pad, or every note landing outside the render window). Exact onset
+    // times aren't asserted beat-by-beat, since pulse counts move with
+    // density/seed — instead this checks the two things euclideanRhythm's
+    // floor-division construction guarantees for *any* seed: a voice with
+    // rotation 0 always onsets on step 0, and generateDrumLoop's snare
+    // (fixed at 2 pulses, rotated a quarter-bar) always lands on beats 1
+    // and 3, exactly like the hand-written pattern above.
+    bool generativeLoopWorks = false;
+    {
+        DrumLoopParams genDrumParams;
+        genDrumParams.seed = 42;
+        const auto genDrumPattern = generateDrumLoop(genDrumParams);
+
+        std::vector<DrumPadAssignment> genPads;
+        genPads.push_back({ genDrumParams.kickNote, std::make_shared<ClipData>(drumHit) });
+        genPads.push_back({ genDrumParams.snareNote, std::make_shared<ClipData>(drumHit) });
+        genPads.push_back({ genDrumParams.hatNote, std::make_shared<ClipData>(drumHit) });
+
+        const auto genDrumBuffer = OfflineRenderer::renderDrumPattern(genPads, genDrumPattern, bpm, sampleRate, 2.0);
+        const float rmsGenKick   = genDrumBuffer.getRMSLevel(0, 0, shortWin);
+        const float rmsGenSnare1 = genDrumBuffer.getRMSLevel(0, (int) (0.5 * sampleRate), shortWin);
+        const float rmsGenSnare2 = genDrumBuffer.getRMSLevel(0, (int) (1.5 * sampleRate), shortWin);
+
+        MelodicLoopParams genMelodicParams;
+        genMelodicParams.scale = Scale { ScaleType::Major, 60 };
+        genMelodicParams.seed  = 42;
+        const auto genMelodicPattern = generateMelodicLoop(genMelodicParams);
+
+        const auto genMelodicBuffer =
+            OfflineRenderer::render({ genMelodicPattern }, std::vector<float> { 0.0f }, bpm, sampleRate, 2.0);
+        const float rmsGenMelodicStart = genMelodicBuffer.getRMSLevel(0, 0, shortWin);
+        const float rmsGenMelodicWhole = genMelodicBuffer.getRMSLevel(0, 0, genMelodicBuffer.getNumSamples());
+
+        generativeLoopWorks = rmsGenKick > 0.01f && rmsGenSnare1 > 0.01f && rmsGenSnare2 > 0.01f
+                           && rmsGenMelodicStart > 0.001f && rmsGenMelodicWhole > 0.001f;
+    }
 
     // Per-pad mix check: the same pattern again, but with the kick pulled
     // down 6dB and panned hard left, and the snare muted. Verifies each of
@@ -944,6 +988,67 @@ int main(int argc, char** argv)
         tremoloModulates = loudWindows > 4 && deepestDip < 0.3f;
     }
 
+    // A gate is only worth having if it actually quiets a noisy tail between
+    // notes rather than merely being wired in — rendered directly through
+    // GateEffect (not a whole track) since the claim is about the DSP node
+    // itself, not about anything upstream of it.
+    bool gateClosesQuiet = false;
+    {
+        const int burstSamples  = (int) (sampleRate * 0.1);  // a loud 100ms note
+        const int tailSamples   = (int) (sampleRate * 1.0);  // then quiet "noise"
+        const int totalSamples  = burstSamples + tailSamples;
+
+        // The gate doesn't slam shut - hold plus release take real time to
+        // bring it down to -rangeDb, so the RMS comparison is taken from the
+        // settled back half of the tail rather than the whole thing, or the
+        // still-closing front half would wash out the difference.
+        const int settleSamples = (int) (sampleRate * 0.5);
+
+        juce::Random rng(1234);
+        auto makeSource = [&]
+        {
+            juce::AudioBuffer<float> buf(2, totalSamples);
+            for (int n = 0; n < totalSamples; ++n)
+            {
+                const float sample = n < burstSamples
+                    ? std::sin(2.0f * juce::MathConstants<float>::pi * 220.0f * (float) n / (float) sampleRate)
+                    : (rng.nextFloat() * 2.0f - 1.0f) * 0.02f; // low-level hiss, well under threshold
+                buf.setSample(0, n, sample);
+                buf.setSample(1, n, sample);
+            }
+            return buf;
+        };
+
+        auto tailRms = [&](const juce::AudioBuffer<float>& buf)
+        {
+            const int start = burstSamples + settleSamples;
+            return buf.getRMSLevel(0, start, totalSamples - start);
+        };
+
+        auto gateOff = makeSource();
+        auto gateOn  = makeSource();
+
+        GateEffect gate;
+        gate.prepare(sampleRate, 512);
+        gate.setEnabled(true);
+        gate.setThresholdDb(-30.0f);
+        gate.setRangeDb(60.0f);
+        gate.setAttackMs(0.5f);
+        gate.setHoldMs(15.0f);
+        gate.setReleaseMs(60.0f);
+
+        for (int pos = 0; pos < totalSamples; pos += 512)
+        {
+            const int n = std::min(512, totalSamples - pos);
+            juce::AudioBuffer<float> block(gateOn.getArrayOfWritePointers(), 2, pos, n);
+            gate.process(block);
+        }
+
+        const float offTailRms = tailRms(gateOff);
+        const float onTailRms  = tailRms(gateOn);
+        gateClosesQuiet = offTailRms > 1.0e-4f && onTailRms < offTailRms * 0.1f;
+    }
+
     // The chorus in a real chain: it must audibly change the sound, and its
     // depth must audibly change it again — a chorus whose sweep did nothing
     // would be a fixed comb filter wearing the name.
@@ -1177,6 +1282,113 @@ int main(int argc, char** argv)
         const auto atBpm       = renderWobbleAt(bpm);
         const auto atDoubleBpm = renderWobbleAt(bpm * 2.0);
         wobbleTracksTempo = worstDifference(atBpm, atDoubleBpm) > 1.0e-3f;
+    }
+
+    // New synth DSP (see engine::SynthVoice / SynthVoiceSettings): the filter
+    // envelope, the sub-oscillator, and unison. Each renders one sustained
+    // note through InstrumentTrack's real synth path with the capability off
+    // vs. on (everything else identical) and asserts the two renders differ -
+    // the same "does the parameter do something" pattern chorusChangesSound/
+    // wobbleChangesSound above already use. Every default (filterEnvAmount 0,
+    // subOscEnabled false, unisonVoices 1) takes SynthVoice's original,
+    // untouched fast path — which is exactly what rmsDry and every other
+    // sentinel above staying unchanged after this feature landed confirms.
+    bool filterEnvChangesSound = false;
+    bool subOscChangesSound    = false;
+    bool unisonChangesSound    = false;
+    {
+        auto renderSustainedNote = [&](const std::function<void(SynthInstrumentNode&)>& configure)
+        {
+            const int totalSamples = (int) (sampleRate * 1.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+            track.synth.setWaveform(1); // saw - real harmonic content to filter/detune
+            track.synth.setAttackMs(2.0f);
+            track.synth.setDecayMs(50.0f);
+            track.synth.setSustain(1.0f);
+            track.synth.setReleaseMs(50.0f);
+            configure(track.synth);
+
+            Pattern single;
+            single.lengthBeats = 4.0;
+            single.notes.push_back({ 0.0, 4.0, 45, 0.9f }); // one long note, well under Nyquist
+
+            ClipSlot slot;
+            slot.pattern     = single;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+            return mix;
+        };
+
+        auto worstDiff = [](const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+        {
+            const int n = std::min(a.getNumSamples(), b.getNumSamples());
+            float worst = 0.0f;
+            for (int i = 0; i < n; ++i)
+                worst = std::max(worst, std::abs(a.getSample(0, i) - b.getSample(0, i)));
+            return worst;
+        };
+
+        const auto filterEnvOff = renderSustainedNote([](SynthInstrumentNode& synth)
+        {
+            synth.setFilterEnabled(true);
+            synth.setFilterCutoff(300.0f);
+        });
+        const auto filterEnvOn = renderSustainedNote([](SynthInstrumentNode& synth)
+        {
+            synth.setFilterEnabled(true);
+            synth.setFilterCutoff(300.0f);
+            synth.setFilterEnvAmount(4000.0f);
+            synth.setFilterEnvAttackMs(1.0f);
+            synth.setFilterEnvDecayMs(200.0f);
+            synth.setFilterEnvSustain(0.1f);
+            synth.setFilterEnvReleaseMs(50.0f);
+        });
+        filterEnvChangesSound = filterEnvOff.getRMSLevel(0, 0, filterEnvOff.getNumSamples()) > 1.0e-4f
+                             && worstDiff(filterEnvOff, filterEnvOn) > 1.0e-3f;
+
+        const auto subOscOff = renderSustainedNote([](SynthInstrumentNode&) {});
+        const auto subOscOn  = renderSustainedNote([](SynthInstrumentNode& synth)
+        {
+            synth.setSubOscEnabled(true);
+            synth.setSubOscLevel(0.5f);
+        });
+        subOscChangesSound = worstDiff(subOscOff, subOscOn) > 1.0e-3f;
+
+        const auto unisonOff = renderSustainedNote([](SynthInstrumentNode&) {});
+        const auto unisonOn  = renderSustainedNote([](SynthInstrumentNode& synth)
+        {
+            synth.setUnisonVoices(5);
+            synth.setUnisonDetuneCents(20.0f);
+        });
+        unisonChangesSound = worstDiff(unisonOff, unisonOn) > 1.0e-3f;
     }
 
     bool effectChainOrderMatters = false;
@@ -1695,6 +1907,7 @@ int main(int argc, char** argv)
               << "  multiClipAudioGates=" << (multiClipAudioGates ? 1 : 0)
               << "  midiRoundTripWorks=" << (midiRoundTripWorks ? 1 : 0)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
+              << "  generativeLoopWorks=" << (generativeLoopWorks ? 1 : 0)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
               << "  drumPadPitchWorks=" << (drumPadPitchWorks ? 1 : 0)
               << "  pluginsScanned=" << pluginsScanned
@@ -1709,8 +1922,12 @@ int main(int argc, char** argv)
               << "  wobbleChangesSound=" << (wobbleChangesSound ? 1 : 0)
               << "  wobbleDepthMatters=" << (wobbleDepthMatters ? 1 : 0)
               << "  wobbleTracksTempo=" << (wobbleTracksTempo ? 1 : 0)
+              << "  filterEnvChangesSound=" << (filterEnvChangesSound ? 1 : 0)
+              << "  subOscChangesSound=" << (subOscChangesSound ? 1 : 0)
+              << "  unisonChangesSound=" << (unisonChangesSound ? 1 : 0)
               << "  compressorSquashes=" << (compressorSquashes ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
+              << "  gateClosesQuiet=" << (gateClosesQuiet ? 1 : 0)
               << "  driveChangesSound=" << (driveChangesSound ? 1 : 0)
               << "  driveCabinetWorks=" << (driveCabinetWorks ? 1 : 0)
               << "  effectChainOrderMatters=" << (effectChainOrderMatters ? 1 : 0)
@@ -1746,10 +1963,12 @@ int main(int argc, char** argv)
                  && perTrackAutomationWorks
                  && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
+                 && generativeLoopWorks
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks
                  && guitarSounds && guitarCutsSameString && guitarPlaysSixAtOnce
                  && guitarPicksLowestFret && guitarHammerOn
+                 && filterEnvChangesSound && subOscChangesSound && unisonChangesSound
                  && effectChainOrderMatters && effectChainRunsAllNodes
                  && sessionLaunchQuantizes && sessionStopWorks
                  && trackPanWorks && panAutomationWorks && trackInsertFilterWorks

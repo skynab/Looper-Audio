@@ -221,6 +221,53 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 >
 > That's every item from the MIDI-import/file-manager/piano-roll/drum-kit plan. See
 > [`docs/PLAN.md`](docs/PLAN.md) for the full history and what might come next.
+>
+> **Generative sound loops — the first slice of the long-planned AI/generative layer (§10) is
+> in.** A new **Generate Loop...** button next to **Add Clip** in the Arrange toolbar opens a
+> small dialog and drops a real, editable MIDI clip onto the selected track: a scale-constrained
+> melody (pick a root note and one of six scales — Major, Natural Minor, Major/Minor Pentatonic,
+> Dorian, Mixolydian) for Instrument/Guitar tracks, or a Euclidean-rhythm drum loop — using
+> whichever samples are actually assigned to that track's kit, not the factory defaults — for
+> Drum tracks. Everything is deterministic and seeded rather than ML-based, per §10's own
+> sequencing ("non-ML first... no model weights"): the same seed always reproduces the same loop,
+> and a fresh seed is picked on every click, so getting a different take is Undo + **Generate
+> Loop...** again — the same candidate workflow **Add Clip** already gives for a blank clip. Two
+> new headless, JUCE-free modules back it — `engine::Scale` (scale membership/snapping/degree
+> math) and `engine::GenerativeLoop` (a Euclidean-rhythm engine plus the drum/melodic generators
+> built on it) — both fully unit-tested, plus a new bounce-tool check verifying the generated
+> patterns actually render to audible sound through the normal synth/drum paths. All 322 headless
+> tests and the bounce tool's full check suite, including `rmsDry=0.149266`, are unchanged. See
+> [`docs/PLAN.md`](docs/PLAN.md) §25 for the design write-up, including why the drum loop's snare
+> stays pinned to the backbeat while its kick and hat vary with the seed.
+>
+> **Generate Loop... now has a Genre picker.** One more combo box — None, House, Techno, Hip-Hop,
+> Trap, Ambient, Lo-Fi — biases the generated pattern's density and swing feel (a genre replaces
+> the Density combo's value outright when one is picked), and for Instrument tracks *also* swaps
+> in a matching, purpose-tuned synth sound (reusing the existing preset-loading machinery, so it's
+> one undo step for both the new clip and the sound change). Guitar tracks get the rhythm bias but
+> keep their own tone (they're not driven by a synth at all — see §21); Drum tracks get the rhythm
+> bias only, keeping whichever kit is already assigned. Swing is now a genuine parameter on both
+> generators, not just a genre side-effect — and writing its own tests caught a real bug before it
+> shipped: a note swung later near a pattern's *end* could claim to sound past the pattern's own
+> length, now clamped. All 334 headless tests pass and the bounce tool's full suite, including
+> `rmsDry=0.149266` and `generativeLoopWorks`, is unchanged. See [`docs/PLAN.md`](docs/PLAN.md)
+> §25 ("Genre selection") for the full write-up.
+>
+> **New synth DSP: a filter envelope, a sub-oscillator, and unison** — the synth engine could only
+> ever produce a static, single-oscillator timbre until now. A second, independent envelope can
+> sweep the filter cutoff over a note (the "pluck"/"sweep" a Moog-style bass or a synthwave lead
+> both depend on), a fixed sub-oscillator adds low-end weight, and up to 7 detuned copies of the
+> main oscillator can stack into a wide unison lead. Every existing project is byte-for-byte
+> unaffected — `SynthVoice` takes a fast path straight to its original, untouched code whenever
+> none of the three new fields are in use, which is every project saved before this landed. Two new
+> factory presets show it off: **"Analog Pluck Bass"** (Presets list) — a filtered-down pluck bass
+> in the vein of Mutemath's analog synth-bass tone — and **"Cyberpunk Stack"**, reachable by picking
+> the new **Synthwave** genre in **Generate Loop...**, a detuned saw-stack lead for
+> cyberpunk/synthwave/retrowave-style tracks. A 7th scale, **Phrygian**, joins the Scale dropdown
+> for the same "dark"/unsettled melodic color. All 334 headless tests pass; the bounce tool's full
+> suite — including `rmsDry=0.149266`, `rmsFiltered=0.103703`, and three new checks proving the new
+> DSP actually changes the sound — is unchanged. See [`docs/PLAN.md`](docs/PLAN.md) §26 for the
+> full write-up, including why a fast path rather than one unified render loop.
 
 ## Tech stack
 

@@ -33,13 +33,25 @@ namespace
 
     /** Every chord-palette button the pane owns, found through the component
         tree rather than through a member — the point is to see what the pane
-        actually presents. */
+        actually presents. Matched by text against the known chord shapes
+        rather than "every TextButton child", since the pane also owns
+        unrelated TextButtons (the tone-template row) that aren't part of
+        the chord palette this helper is about. */
     std::vector<juce::TextButton*> chordButtonsOf(juce::Component& pane)
     {
         std::vector<juce::TextButton*> found;
         for (int i = 0; i < pane.getNumChildComponents(); ++i)
+        {
             if (auto* button = dynamic_cast<juce::TextButton*>(pane.getChildComponent(i)))
-                found.push_back(button);
+            {
+                for (int s = 0; s < engine::kNumChordShapes; ++s)
+                    if (button->getButtonText() == juce::String(engine::kChordShapes[s].name))
+                    {
+                        found.push_back(button);
+                        break;
+                    }
+            }
+        }
         return found;
     }
 }

@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "engine/GuitarChords.h"
+#include "engine/GuitarTone.h"
 #include "engine/MidiNote.h"
 #include "model/GuitarSettings.h"
 #include "model/Track.h"
@@ -56,6 +57,13 @@ public:
         toggle, which is deliberately explicit rather than a modifier key. */
     std::function<void(engine::MovableShape shape, int rootString, int fret,
                        const engine::StrumSettings&, bool writeToClip)> onChordAtFret;
+
+    /** A one-click starting tone: settings plus an effect chain tuned for
+        the picked engine::GuitarTone — see model::presetForGuitarTone,
+        which is what actually knows the values, the same way this pane
+        never has document mutation logic of its own for anything else
+        either. */
+    std::function<void(engine::GuitarTone)> onGuitarToneRequested;
 
     FretboardPane()
     {
@@ -127,6 +135,19 @@ public:
         setupLabel(pickPositionLabel_, "Pick pos");
         setupLabel(pickHardnessLabel_, "Pick");
         setupLabel(muteOnReleaseLabel_, "Damp off");
+
+        // Tone templates: one button per engine::GuitarTone, each applying
+        // its whole GuitarSettings + effect chain in one click. Laid out as
+        // one row, same "divide what's actually there" technique as
+        // chordButtons_ above, rather than stacked - five buttons stacked
+        // would nearly double kToneHeight for no benefit over a row.
+        for (int i = 0; i < engine::kNumGuitarTones; ++i)
+        {
+            const auto tone   = (engine::GuitarTone) i;
+            auto*      button = toneButtons_.add(new juce::TextButton(engine::guitarToneName(tone)));
+            button->onClick   = [this, tone] { if (onGuitarToneRequested) onGuitarToneRequested(tone); };
+            addChildComponent(button);
+        }
 
         // Same guarantee as EffectChainPanel: a control that was never
         // parented lays out and hides perfectly while drawing nothing.
@@ -360,6 +381,15 @@ public:
         }
 
         auto tone = area.removeFromBottom(kToneHeight);
+        {
+            auto toneRow = tone.removeFromTop(22);
+            for (int i = 0; i < toneButtons_.size(); ++i)
+            {
+                const int remaining = toneButtons_.size() - i;
+                const int width     = juce::jmax(1, toneRow.getWidth() / remaining);
+                toneButtons_[i]->setBounds(toneRow.removeFromLeft(width).reduced(1));
+            }
+        }
         auto row  = [&tone](juce::Label& label, juce::Slider& slider)
         {
             auto r = tone.removeFromTop(22);
@@ -376,7 +406,7 @@ public:
 private:
     static constexpr int kNumFrets      = 22; // 0 (open) through 22
     static constexpr int kTuningHeight  = 26;
-    static constexpr int kToneHeight    = 5 * 22;
+    static constexpr int kToneHeight    = 6 * 22; // the tone-template button row + 5 GuitarSettings sliders
     // A row of open-shape buttons, the strum controls, and the chord-mode row.
     static constexpr int kChordHeight   = 26 + 22 + 22;
     static constexpr int kLowestTuning  = 28; // E1, low enough for any drop tuning
@@ -502,6 +532,8 @@ private:
             controls.push_back(&box);
         for (auto* button : chordButtons_)
             controls.push_back(button);
+        for (auto* button : toneButtons_)
+            controls.push_back(button);
 
         return controls;
     }
@@ -531,6 +563,7 @@ private:
     std::array<juce::ComboBox, model::kNumGuitarStrings> tuningBoxes_;
     juce::Label     decayLabel_, brightnessLabel_, pickPositionLabel_, pickHardnessLabel_, muteOnReleaseLabel_;
     juce::Slider    decay_, brightness_, pickPosition_, pickHardness_, muteOnRelease_;
+    juce::OwnedArray<juce::TextButton> toneButtons_;
 
     juce::OwnedArray<juce::TextButton> chordButtons_;
     juce::ComboBox     chordMode_;

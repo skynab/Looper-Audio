@@ -141,7 +141,8 @@ enum class EffectKind
     Compressor = 5,
     Tremolo    = 6,
     Chorus     = 7,
-    Wobble     = 8
+    Wobble     = 8,
+    Gate       = 9
 };
 
 /**
@@ -227,6 +228,23 @@ struct WobbleSettings
     bool operator==(const WobbleSettings&) const = default;
 };
 
+/** A noise gate. Attenuates *below* thresholdDb rather than above it (the
+    mirror of CompressorSettings), down to rangeDb rather than by a ratio —
+    closed means "silent," not "quieter." holdMs is what stops a decaying
+    note from chattering the gate open and closed instead of closing once,
+    cleanly, when the note is actually done. See engine::Gate. */
+struct GateSettings
+{
+    bool  enabled     = false;
+    float thresholdDb = -40.0f;
+    float rangeDb     = 60.0f;
+    float attackMs    = 2.0f;
+    float holdMs      = 20.0f;
+    float releaseMs   = 150.0f;
+
+    bool operator==(const GateSettings&) const = default;
+};
+
 struct EffectSlot
 {
     EffectKind kind    = EffectKind::Filter;
@@ -240,6 +258,7 @@ struct EffectSlot
     TremoloSettings    tremolo;
     ChorusSettings     chorus;
     WobbleSettings     wobble;
+    GateSettings       gate;
     PluginRef          plugin; // meaningful when kind == Plugin
 
     bool operator==(const EffectSlot&) const = default;

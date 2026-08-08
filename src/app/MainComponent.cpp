@@ -8,10 +8,13 @@
 #include "engine/ClipSlot.h"
 #include "engine/DefaultContent.h"
 #include "engine/DrumSynth.h"
+#include "engine/GenerativeLoop.h"
 #include "engine/GuitarChords.h"
 #include "engine/NoteOps.h"
 #include "engine/MidiFileIO.h"
 #include "engine/OfflineRenderer.h"
+#include "model/GenrePresets.h"
+#include "model/GuitarTonePresets.h"
 #include "model/Serialization.h"
 
 #include <algorithm>
@@ -28,6 +31,13 @@ static constexpr int kFirstPanelMenuId = 100;
 /** Colour entries in the per-track gear menu, clear of that menu's own
     fixed items. */
 static constexpr int kFirstColourMenuId = 200;
+
+/** Instrument-type entries in the per-track gear menu, clear of both the
+    fixed items and the colour range above (8 colours today, comfortable
+    headroom either way). Encoded as kFirstTrackTypeMenuId + the
+    model::TrackType enum value, so the callback needs no separate lookup
+    table to get back from a menu id to a type. */
+static constexpr int kFirstTrackTypeMenuId = 300;
 
 /** How close to the edge the playhead gets before the keys grid pages. Small,
     so almost the whole width is travelled before each jump. */
@@ -62,6 +72,30 @@ namespace
         item.shortcutKeyDescription = shortcut.getTextDescriptionWithIcons();
         menu.addItem(std::move(item));
     }
+
+    /** The choices showGenerateLoopDialog's root-note/scale combo boxes
+        offer, and what each selected index maps to. Kept together (rather
+        than as magic indices scattered through the dialog code) so the
+        combo box order and the enum/semitone mapping can't drift apart. */
+    constexpr const char* kGenerateLoopRootNoteNames[12] =
+        { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    constexpr const char* kGenerateLoopScaleNames[7] =
+        { "Major", "Natural Minor", "Major Pentatonic", "Minor Pentatonic", "Dorian", "Mixolydian",
+          "Phrygian" };
+    constexpr engine::ScaleType kGenerateLoopScaleTypes[7] =
+        { engine::ScaleType::Major, engine::ScaleType::NaturalMinor, engine::ScaleType::MajorPentatonic,
+          engine::ScaleType::MinorPentatonic, engine::ScaleType::Dorian, engine::ScaleType::Mixolydian,
+          engine::ScaleType::Phrygian };
+
+    /** The Genre combo's options, index 0 = "None" (today's exact behaviour:
+        Density drives density, no swing, no synth-preset change) followed by
+        one entry per engine::Genre. Index 1..N maps to kGenerateLoopGenres
+        [index - 1], the same offset-by-one scheme everywhere a combo box has
+        a "none of these" option ahead of a fixed enum list. */
+    constexpr engine::Genre kGenerateLoopGenres[7] =
+        { engine::Genre::House, engine::Genre::Techno, engine::Genre::HipHop,
+          engine::Genre::Trap, engine::Genre::Ambient, engine::Genre::LoFi,
+          engine::Genre::Synthwave };
 
     /** "Undo Delete track" rather than a bare "Undo". Every edit already
         records what it was; not showing it left the user to remember what
@@ -760,8 +794,10 @@ MainComponent::MainComponent()
     // drifting from what's on screen.
     pianoRoll_.onPitchZoomChanged = [this] { updateKeysZoomControls(); };
     addClipButton_.onClick = [this] { addClipToSelectedTrack(); };
+    generateLoopButton_.onClick = [this] { showGenerateLoopDialog(); };
 
     arrangeTab_.addAndMakeVisible(addClipButton_);
+    arrangeTab_.addAndMakeVisible(generateLoopButton_);
     arrangeTab_.onResized = [this] { layoutArrangeTab(); };
 
     arrangementView_.onSeek = [this](double beat)
@@ -822,6 +858,11 @@ MainComponent::MainComponent()
         syncEngineTracks(); // pushes every track's whole clip list, including this move
     };
 
+    arrangementView_.onClipMovedToTrack = [this](int srcTrackIndex, int clipIndex, int destTrackIndex, double newStartBeats)
+    {
+        moveClipToTrack(srcTrackIndex, clipIndex, destTrackIndex, newStartBeats);
+    };
+
     synthEditor_.onSettingsChanged   = [this](const model::SynthSettings& s) { setTrackSynthSettings(s); };
     synthEditor_.onSettingsDragStart = [this] { beginSynthSettingsDrag(); };
     synthEditor_.onSettingsDragEnd   = [this] { endSynthSettingsDrag(); };
@@ -863,6 +904,7 @@ MainComponent::MainComponent()
     {
         playChordAtFret(shape, rootString, fret, strum, writeToClip);
     };
+    fretboard_.onGuitarToneRequested = [this](engine::GuitarTone tone) { applyGuitarTone(tone); };
 
     effectChain_.onBuiltInAdded = [this](model::EffectKind kind) { addEffectSlot(kind, {}); };
     effectChain_.onPluginAdded  = [this](const engine::PluginEntry& entry)
@@ -1634,6 +1676,197 @@ void MainComponent::addClipToSelectedTrack()
     updateEditingLabel();
 }
 
+/** Opens a small dialog and, on confirmation, adds a new algorithmically
+    generated loop to the selected track (see engine/GenerativeLoop.h): a
+    scale-constrained melody for Instrument/Guitar tracks, a Euclidean-rhythm
+    drum pattern — using the track's own assigned pad notes, not the factory
+    defaults — for Drum tracks. Audio tracks have no MIDI pattern to generate
+    into, so this is unreachable for one (generateLoopButton_ is disabled;
+    see timerCallback).
+
+    No seed field: a fresh random seed is picked on every "Generate" click.
+    Getting a different take is Undo + click again, the same candidate
+    workflow "Add Clip" already gives for a blank clip — building a
+    multi-candidate preview here would be real scope on its own for a first
+    slice. */
+void MainComponent::showGenerateLoopDialog()
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const auto& track = history_.current().tracks[(size_t) selectedTrackIndex_];
+    if (track.type == model::TrackType::Audio)
+        return;
+
+    const bool isDrum = track.type == model::TrackType::Drum;
+
+    auto* window = new juce::AlertWindow(isDrum ? "Generate Drum Loop" : "Generate Melodic Loop", {},
+                                         juce::MessageBoxIconType::NoIcon, this);
+
+    if (! isDrum)
+    {
+        juce::StringArray roots;
+        for (const char* name : kGenerateLoopRootNoteNames)
+            roots.add(name);
+        window->addComboBox("root", roots, "Root note:");
+        window->getComboBoxComponent("root")->setSelectedItemIndex(0);
+
+        juce::StringArray scales;
+        for (const char* name : kGenerateLoopScaleNames)
+            scales.add(name);
+        window->addComboBox("scale", scales, "Scale:");
+        window->getComboBoxComponent("scale")->setSelectedItemIndex(0);
+    }
+
+    window->addComboBox("density", { "Low", "Medium", "High" }, "Density:");
+    window->getComboBoxComponent("density")->setSelectedItemIndex(1);
+
+    juce::StringArray genres { "None (use Density)" };
+    for (engine::Genre genre : kGenerateLoopGenres)
+        genres.add(engine::genreName(genre));
+    window->addComboBox("genre", genres,
+                        isDrum ? "Genre (overrides Density):"
+                               : "Genre (overrides Density; also sets the synth sound):");
+    window->getComboBoxComponent("genre")->setSelectedItemIndex(0);
+
+    window->addButton("Generate", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    window->enterModalState(true,
+        juce::ModalCallbackFunction::create(
+            [self = juce::Component::SafePointer<MainComponent>(this), window,
+             trackIdx = selectedTrackIndex_, isDrum](int result)
+            {
+                if (self == nullptr || result != 1)
+                    return;
+
+                static const double kDensities[] = { 0.2, 0.5, 0.8 };
+                const int    densityIndex = window->getComboBoxComponent("density")->getSelectedItemIndex();
+                const auto   seed         = (unsigned) juce::Random::getSystemRandom().nextInt();
+
+                // Index 0 is "None": density comes from the Density combo and
+                // swing/preset stay off, i.e. exactly today's behaviour. Any
+                // other index selects a genre, whose rhythm profile replaces
+                // the Density combo's value outright rather than blending
+                // with it - simplest correct behaviour, and it's what the
+                // combo's own label says it does.
+                const int  genreIndex = window->getComboBoxComponent("genre")->getSelectedItemIndex();
+                const bool hasGenre   = genreIndex > 0;
+                const engine::Genre genre = hasGenre
+                    ? kGenerateLoopGenres[(size_t) juce::jlimit(1, (int) std::size(kGenerateLoopGenres), genreIndex) - 1]
+                    : engine::Genre::House; // unused when hasGenre is false
+
+                double density = kDensities[(size_t) juce::jlimit(0, 2, densityIndex)];
+                double swing   = 0.0;
+                if (hasGenre)
+                {
+                    const auto profile = engine::rhythmProfileForGenre(genre);
+                    density = profile.density;
+                    swing   = profile.swing;
+                }
+
+                engine::Pattern generated;
+                if (isDrum)
+                {
+                    const auto& s = self->history_.current();
+                    if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+                        return;
+                    const auto& pads = s.tracks[(size_t) trackIdx].drumKit.pads;
+
+                    // Named pads win; a kit whose pads were reordered but not
+                    // renamed falls back to the default Kick/Snare/Hat slots.
+                    auto noteForLabel = [&](const char* label, size_t fallbackIndex, int fallbackNote)
+                    {
+                        for (const auto& pad : pads)
+                            if (pad.label == label)
+                                return pad.noteNumber;
+                        return fallbackIndex < pads.size() ? pads[fallbackIndex].noteNumber : fallbackNote;
+                    };
+
+                    engine::DrumLoopParams params;
+                    params.density   = density;
+                    params.swing     = swing;
+                    params.seed      = seed;
+                    params.kickNote  = noteForLabel("Kick", 0, engine::kDefaultKickNote);
+                    params.snareNote = noteForLabel("Snare", 1, engine::kDefaultSnareNote);
+                    params.hatNote   = noteForLabel("Hat", 2, engine::kDefaultHatNote);
+                    generated        = engine::generateDrumLoop(params);
+                }
+                else
+                {
+                    const int rootIndex  = window->getComboBoxComponent("root")->getSelectedItemIndex();
+                    const int scaleIndex = window->getComboBoxComponent("scale")->getSelectedItemIndex();
+
+                    engine::MelodicLoopParams params;
+                    params.density     = density;
+                    params.swing       = swing;
+                    params.seed        = seed;
+                    params.scale.type  = kGenerateLoopScaleTypes[(size_t) juce::jlimit(
+                                             0, (int) std::size(kGenerateLoopScaleTypes) - 1, scaleIndex)];
+                    params.scale.rootNote = 60 + juce::jlimit(0, 11, rootIndex); // octave 4, this project's convention
+                    generated          = engine::generateMelodicLoop(params);
+                }
+
+                // Computed once, outside the edit lambda: applying it is
+                // free (a struct copy), so there's no reason to build it
+                // twice or defer it into the lambda body.
+                const model::SynthPreset genrePreset = hasGenre ? model::presetForGenre(genre) : model::SynthPreset {};
+
+                int newClipIndex = -1;
+                self->history_.edit(isDrum ? "Generate drum loop" : "Generate melodic loop",
+                    [trackIdx, &newClipIndex, &generated, hasGenre, &genrePreset](model::Song& s)
+                    {
+                        if (trackIdx < 0 || trackIdx >= (int) s.tracks.size())
+                            return;
+                        auto& targetTrack = s.tracks[(size_t) trackIdx];
+
+                        double nextStart = 0.0;
+                        for (const auto& c : targetTrack.clips)
+                            nextStart = juce::jmax(nextStart, c.startBeats + c.lengthBeats);
+                        if (! targetTrack.clips.empty())
+                            nextStart += 2.0; // a small gap after the last clip, matching Add Clip
+
+                        model::Clip clip;
+                        clip.id          = model::allocateId(s);
+                        clip.type        = model::ClipType::Instrument;
+                        clip.startBeats  = nextStart;
+                        clip.lengthBeats = generated.lengthBeats;
+                        clip.pattern     = generated;
+                        targetTrack.clips.push_back(clip);
+                        newClipIndex = (int) targetTrack.clips.size() - 1;
+
+                        // The genre's synth sound is Instrument-only: Guitar
+                        // tracks are driven by GuitarSettings, not
+                        // SynthSettings, at all (see §21), and Drum tracks
+                        // have no synth voice to retune. One undo step covers
+                        // both the new clip and this, matching how loading a
+                        // saved preset is already "one thing, not two" (see
+                        // applyPreset).
+                        if (hasGenre && targetTrack.type == model::TrackType::Instrument)
+                        {
+                            targetTrack.synthSettings = genrePreset.synth;
+                            targetTrack.effectChain   = genrePreset.effectChain;
+                        }
+                    });
+
+                if (newClipIndex < 0)
+                    return;
+
+                self->selectedClipIndex_ = newClipIndex;
+                self->syncEngineTracks();
+                self->refreshPianoRollForSelected();
+                self->refreshSynthEditorForSelected();
+                self->refreshDrumsPaneForSelected();
+                self->refreshEffectChainForSelected();
+                self->refreshFretboardForSelected();
+                self->refreshSessionView();
+                self->arrangementView_.setSong(self->history_.current());
+                self->arrangementView_.setSelectedClip(self->selectedTrackIndex_, self->selectedClipIndex_);
+                self->updateEditingLabel();
+            }),
+        true);
+}
+
 /** Redraws the session grid from the document. Which cells are *playing* is
     pushed separately from the engine each timer tick — see timerCallback —
     because a launch stays pending until the next bar line and the grid would
@@ -1763,6 +1996,11 @@ static engine::EffectSlotParams toSlotParams(const model::EffectSlot& slot)
     params.wobbleBaseCutoffHz = slot.wobble.baseCutoffHz;
     params.wobbleResonance    = slot.wobble.resonance;
     params.wobbleMix          = slot.wobble.mix;
+    params.gateThresholdDb = slot.gate.thresholdDb;
+    params.gateRangeDb     = slot.gate.rangeDb;
+    params.gateAttackMs    = slot.gate.attackMs;
+    params.gateHoldMs      = slot.gate.holdMs;
+    params.gateReleaseMs   = slot.gate.releaseMs;
     return params;
 }
 
@@ -2037,6 +2275,20 @@ void MainComponent::pasteClip()
 
 /** Copy + paste in one step, landing the copy immediately after the original
     — the usual way to extend a part by a bar. */
+/** Whether selectedClipIndex_ currently names a real clip on the selected
+    track — the same bounds check deleteSelectedClip() itself needs, pulled
+    out so the bare-delete-key dispatcher (see keyPressed) can ask "is there
+    a clip to act on" without duplicating it. */
+bool MainComponent::hasSelectedClip() const
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+        return false;
+
+    const auto& track = song.tracks[(size_t) selectedTrackIndex_];
+    return selectedClipIndex_ >= 0 && selectedClipIndex_ < (int) track.clips.size();
+}
+
 /** Deletes the selected arrangement clip. No confirmation: undo is the safety
     net for editing actions, and a prompt on every delete is friction the user
     pays for on the many times they meant it. */
@@ -2234,10 +2486,26 @@ void MainComponent::showTrackSettingsMenu(int trackIndex)
         colours.addItem(kFirstColourMenuId + i, option.name, true, chosen);
     }
 
+    // Audio isn't offered here: it's a different authoring mode (a file-backed
+    // clip, not a MIDI pattern) rather than another instrument the same clip
+    // content could play through, so it doesn't belong in a "change which
+    // instrument plays these notes" picker the way Instrument/Drum/Guitar do.
+    struct TypeOption { model::TrackType type; const char* name; };
+    static constexpr TypeOption kTypeOptions[] = {
+        { model::TrackType::Instrument, "Instrument (Synth)" },
+        { model::TrackType::Drum,       "Drum Kit" },
+        { model::TrackType::Guitar,     "Guitar" },
+    };
+    juce::PopupMenu instrumentTypes;
+    for (const auto& option : kTypeOptions)
+        instrumentTypes.addItem(kFirstTrackTypeMenuId + (int) option.type, option.name,
+                                true, track.type == option.type);
+
     juce::PopupMenu menu;
     menu.addSectionHeader(track.name.empty() ? ("Track " + juce::String(trackIndex + 1))
                                              : juce::String(track.name));
     menu.addSubMenu("Colour", colours);
+    menu.addSubMenu("Instrument Type", instrumentTypes);
     menu.addItem(1, "Rename...");
     menu.addSeparator();
 
@@ -2264,7 +2532,13 @@ void MainComponent::showTrackSettingsMenu(int trackIndex)
         }
 
         if (const int index = result - kFirstColourMenuId; index >= 0 && index < kNumTrackColours)
+        {
             self->setTrackColour(trackIndex, kTrackColours[index].argb);
+            return;
+        }
+
+        if (result >= kFirstTrackTypeMenuId)
+            self->setTrackType(trackIndex, (model::TrackType) (result - kFirstTrackTypeMenuId));
     });
 }
 
@@ -2287,6 +2561,153 @@ void MainComponent::setTrackColour(int trackIndex, unsigned int argb)
 
     arrangementView_.setSong(history_.current());
     updateMixerStrips();
+}
+
+/** Changes which instrument a track's MIDI clips play through — Instrument
+    (synth), Drum Kit, or Guitar. A track's clips already hold the same thing
+    regardless of type (a Pattern of notes; see model::Clip) and every
+    per-type settings struct (drumKit, guitarSettings) is kept regardless of
+    which type is active, the same "don't lose the others" trade EffectSlot
+    already makes for its built-in-vs-plugin choice — so switching type never
+    loses anything and is fully reversible.
+
+    The one first-use gap: a track that has never been a Drum track has an
+    empty drumKit.pads (see Track.h), which would route its notes to a
+    kit with nothing assigned to any pad — silence, not an error, but not
+    useful either. Populated with the same starting kit a brand-new Drum
+    track gets, and only if it's still empty, so flipping back and forth
+    doesn't clobber pads someone already assigned. */
+void MainComponent::setTrackType(int trackIndex, model::TrackType newType)
+{
+    const auto& song = history_.current();
+    if (trackIndex < 0 || trackIndex >= (int) song.tracks.size())
+        return;
+
+    const int trackId = song.tracks[(size_t) trackIndex].id;
+
+    // Computed outside the edit lambda: it's a const member function (needs
+    // access to factoryDrumKitDirectory()), which a history_.edit lambda
+    // capturing only plain values can't reach. Matches Add Drum and the
+    // starter song, which both already use this over the bare
+    // model::makeDefaultDrumKit() for exactly this reason — its pads come
+    // with real synthesized samples already assigned, so a track switched
+    // to Drum Kit is audible immediately instead of silent until someone
+    // manually loads four samples.
+    const model::DrumKit factoryKit = defaultDrumKitWithFactorySamples();
+
+    history_.edit("Change instrument type", [trackId, newType, factoryKit](model::Song& s)
+    {
+        auto* track = model::findTrack(s, trackId);
+        if (track == nullptr)
+            return;
+
+        track->type = newType;
+        if (newType == model::TrackType::Drum && track->drumKit.pads.empty())
+            track->drumKit = factoryKit;
+    });
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
+    refreshEffectChainForSelected();
+    refreshFretboardForSelected();
+    refreshSessionView();
+    arrangementView_.setSong(history_.current());
+    updateMixerStrips();
+    updateEditingLabel();
+}
+
+/** One-click tone templates: overwrites the selected Guitar track's
+    GuitarSettings and effect chain with the hand-tuned values for @p tone
+    (see model::presetForGuitarTone, which is what actually knows them). One
+    undo step, same shape as applyPreset/setTrackType. */
+void MainComponent::applyGuitarTone(engine::GuitarTone tone)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+    if (history_.current().tracks[(size_t) selectedTrackIndex_].type != model::TrackType::Guitar)
+        return;
+
+    const int trackIndex = selectedTrackIndex_;
+    const auto preset     = model::presetForGuitarTone(tone);
+    history_.edit(std::string(engine::guitarToneName(tone)) + " Tone", [trackIndex, preset](model::Song& s)
+    {
+        auto& track = s.tracks[(size_t) trackIndex];
+        track.guitarSettings = preset.guitar;
+        track.effectChain    = preset.effectChain;
+    });
+
+    syncEngineTracks();
+    refreshEffectChainForSelected();
+    refreshFretboardForSelected();
+    updateMixerStrips();
+    updateEditingLabel();
+}
+
+/** Moves an arrangement clip from one track to another, in place of a
+    same-track reposition (see ArrangementView::onClipMovedToTrack — this
+    only ever fires when the drop landed on a track the view already
+    confirmed is compatible, but the check is repeated here rather than
+    trusted, since the model layer shouldn't rely on a UI-side gate alone).
+
+    Composed from the same two model primitives every other clip edit uses —
+    erase from the source track's clips, model::addClip into the
+    destination (which reissues the id) — as one history_.edit, so a
+    cross-track drag is one undo step just like a same-track one. */
+void MainComponent::moveClipToTrack(int srcTrackIndex, int clipIndex, int destTrackIndex, double newStartBeats)
+{
+    const auto& song = history_.current();
+    if (srcTrackIndex < 0 || srcTrackIndex >= (int) song.tracks.size())
+        return;
+    if (destTrackIndex < 0 || destTrackIndex >= (int) song.tracks.size())
+        return;
+
+    const auto& srcTrack = song.tracks[(size_t) srcTrackIndex];
+    if (clipIndex < 0 || clipIndex >= (int) srcTrack.clips.size())
+        return;
+
+    const auto& destTrack = song.tracks[(size_t) destTrackIndex];
+    if (srcTrack.type != destTrack.type || srcTrack.type == model::TrackType::Audio)
+        return;
+
+    const int srcTrackId  = srcTrack.id;
+    const int destTrackId = destTrack.id;
+    int       newClipIndex = -1;
+
+    history_.edit("Move clip to track", [srcTrackId, destTrackId, clipIndex, newStartBeats, &newClipIndex](model::Song& s)
+    {
+        auto* source = model::findTrack(s, srcTrackId);
+        if (source == nullptr || clipIndex < 0 || clipIndex >= (int) source->clips.size())
+            return;
+
+        model::Clip clip = source->clips[(size_t) clipIndex]; // copied before erase invalidates the reference
+        source->clips.erase(source->clips.begin() + clipIndex);
+        clip.startBeats = juce::jmax(0.0, newStartBeats);
+
+        if (model::addClip(s, destTrackId, clip) != nullptr)
+        {
+            if (auto* dest = model::findTrack(s, destTrackId))
+                newClipIndex = (int) dest->clips.size() - 1;
+        }
+    });
+
+    if (newClipIndex < 0)
+        return; // the edit above bailed out (a stale index) - nothing to select or refresh
+
+    selectedTrackIndex_ = destTrackIndex;
+    selectedClipIndex_  = newClipIndex;
+
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
+    refreshEffectChainForSelected();
+    refreshFretboardForSelected();
+    refreshSessionView();
+    arrangementView_.setSong(history_.current());
+    arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
+    updateEditingLabel();
 }
 
 void MainComponent::renameTrackAt(int trackIndex)
@@ -2664,6 +3085,15 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackSynthFilterCutoff(i, synth.filterCutoff);
         engine_.setTrackSynthFilterResonance(i, synth.filterResonance);
         engine_.setTrackSynthGainDb(i, synth.gainDb);
+        engine_.setTrackSynthFilterEnvAmount(i, synth.filterEnvAmount);
+        engine_.setTrackSynthFilterEnvAttackMs(i, synth.filterEnvAttackMs);
+        engine_.setTrackSynthFilterEnvDecayMs(i, synth.filterEnvDecayMs);
+        engine_.setTrackSynthFilterEnvSustain(i, synth.filterEnvSustain);
+        engine_.setTrackSynthFilterEnvReleaseMs(i, synth.filterEnvReleaseMs);
+        engine_.setTrackSynthSubOscEnabled(i, synth.subOscEnabled);
+        engine_.setTrackSynthSubOscLevel(i, synth.subOscLevel);
+        engine_.setTrackSynthUnisonVoices(i, synth.unisonVoices);
+        engine_.setTrackSynthUnisonDetuneCents(i, synth.unisonDetuneCents);
 
         // The chain's shape, in order. Only pushed when it actually changed —
         // rebuilding resets every tail in the chain, so an unrelated edit must
@@ -2683,6 +3113,7 @@ void MainComponent::syncEngineTracks()
                 case model::EffectKind::Tremolo:    spec.kind = engine::EffectNodeKind::Tremolo;    break;
                 case model::EffectKind::Chorus:     spec.kind = engine::EffectNodeKind::Chorus;     break;
                 case model::EffectKind::Wobble:     spec.kind = engine::EffectNodeKind::Wobble;     break;
+                case model::EffectKind::Gate:       spec.kind = engine::EffectNodeKind::Gate;       break;
                 case model::EffectKind::Plugin:
                     spec.kind             = engine::EffectNodeKind::Plugin;
                     spec.pluginFormat     = pluginFormatName(slot.plugin.format);
@@ -2898,6 +3329,15 @@ void MainComponent::setTrackSynthSettings(const model::SynthSettings& settings)
     engine_.setTrackSynthFilterCutoff(index, settings.filterCutoff);
     engine_.setTrackSynthFilterResonance(index, settings.filterResonance);
     engine_.setTrackSynthGainDb(index, settings.gainDb);
+    engine_.setTrackSynthFilterEnvAmount(index, settings.filterEnvAmount);
+    engine_.setTrackSynthFilterEnvAttackMs(index, settings.filterEnvAttackMs);
+    engine_.setTrackSynthFilterEnvDecayMs(index, settings.filterEnvDecayMs);
+    engine_.setTrackSynthFilterEnvSustain(index, settings.filterEnvSustain);
+    engine_.setTrackSynthFilterEnvReleaseMs(index, settings.filterEnvReleaseMs);
+    engine_.setTrackSynthSubOscEnabled(index, settings.subOscEnabled);
+    engine_.setTrackSynthSubOscLevel(index, settings.subOscLevel);
+    engine_.setTrackSynthUnisonVoices(index, settings.unisonVoices);
+    engine_.setTrackSynthUnisonDetuneCents(index, settings.unisonDetuneCents);
 }
 
 /** Briefly sounds @p noteNumber through whichever track is currently armed —
@@ -3527,10 +3967,18 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     if (key == keys::duplicateTrack) { duplicateTrackAt(selectedTrackIndex_); return true; }
 
     // Unmodified, so a focused text field consumes it first and this can't
-    // interrupt typing.
+    // interrupt typing. Bound to "delete track" (see Shortcuts.h), but a
+    // selected clip is the more specific target: every other DAW's bare
+    // delete key acts on the clip first, and firing track deletion out from
+    // under a clip the user was just editing is destructive and surprising.
+    // keys::deleteClip (cmd+backspace) still works as an explicit,
+    // clip-only alternative.
     if (key == keys::deleteTrack || key == keys::deleteTrackAlt)
     {
-        deleteSelectedTrack();
+        if (hasSelectedClip())
+            deleteSelectedClip();
+        else
+            deleteSelectedTrack();
         return true;
     }
 
@@ -4183,6 +4631,33 @@ void MainComponent::seedFactoryPresets()
         p.effectChain = { tremolo };
         factory.push_back(std::move(p));
     }
+    {
+        // A punchy, filtered-down bass pluck — a low base cutoff swept open
+        // by a fast, short filter envelope (the "pluck" is the sweep, not
+        // the amp envelope) plus a sub-oscillator for low-end weight, in the
+        // spirit of the analog-synth-bass tone Paul Meany plays in Mutemath.
+        model::SynthPreset p;
+        p.name             = "Analog Pluck Bass";
+        p.synth.waveform   = 1; // saw
+        p.synth.attackMs   = 1.0f;
+        p.synth.decayMs    = 200.0f;
+        p.synth.sustain    = 0.3f;
+        p.synth.releaseMs  = 100.0f;
+        p.synth.filterEnabled   = true;
+        p.synth.filterMode      = 0;
+        p.synth.filterCutoff    = 300.0f;
+        p.synth.filterResonance = 1.2f;
+        p.synth.filterEnvAmount    = 4000.0f;
+        p.synth.filterEnvAttackMs  = 1.0f;
+        p.synth.filterEnvDecayMs   = 180.0f;
+        p.synth.filterEnvSustain   = 0.1f;
+        p.synth.filterEnvReleaseMs = 60.0f;
+        p.synth.subOscEnabled = true;
+        p.synth.subOscLevel   = 0.4f;
+
+        p.effectChain = { drive(10.0f, 0.4f, 0.75f, false) };
+        factory.push_back(std::move(p));
+    }
 
     for (const auto& preset : factory)
     {
@@ -4723,6 +5198,9 @@ void MainComponent::timerCallback()
     addDrumTrackButton_.setEnabled(trackCount() < engine_.maxTracks());
     addGuitarTrackButton_.setEnabled(trackCount() < engine_.maxTracks());
     addClipButton_.setEnabled(selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount());
+    // Audio tracks have no MIDI pattern to generate into.
+    generateLoopButton_.setEnabled(selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount()
+        && history_.current().tracks[(size_t) selectedTrackIndex_].type != model::TrackType::Audio);
 
     const double sampleRate = engine_.sampleRate();
     uiTempoMap_.setSampleRate(sampleRate > 0.0 ? sampleRate : 48000.0);
@@ -5165,6 +5643,8 @@ void MainComponent::layoutArrangeTab()
     zoomBox_.setBounds(toolbar.removeFromLeft(56));
     toolbar.removeFromLeft(12);
     addClipButton_.setBounds(toolbar.removeFromLeft(90));
+    toolbar.removeFromLeft(6);
+    generateLoopButton_.setBounds(toolbar.removeFromLeft(120));
 
     arrangementViewport_.setBounds(area);
 }

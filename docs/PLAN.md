@@ -1472,3 +1472,266 @@ fret 3 is G, D, G. The same shape crossing the G–B pair must still be a fifth
 and an octave — the case a hardcoded fingering gets wrong. In drop D, a power
 chord at the same fret must move with the tuning. Fret bounds are asserted at
 both ends of the neck.
+
+---
+
+## 25. Generative sound loops, first slice (implemented)
+
+§10 ("The AI / generative subsystem") and Phase 7 of the roadmap have named a
+generative layer since this document's first draft, but nothing in it had
+been built — no `src/ai/`, and (checked by grep before starting) no
+scale/key/Markov infrastructure anywhere in the codebase. §10 is explicit
+about sequencing: **"Non-ML first... deterministic, instant, no model
+weights, genuinely useful"** before any ML runtime. This is that first
+slice: a one-click **Generate Loop...** that produces a real, editable MIDI
+clip — a scale-constrained melodic loop for Instrument/Guitar tracks, a
+Euclidean-rhythm drum loop for Drum tracks.
+
+### What was built
+
+- **`src/engine/Scale.h`** — a `Scale{type, rootNote}` over six scales
+  (Major, Natural Minor, Major/Minor Pentatonic, Dorian, Mixolydian), with
+  `isInScale`/`snapToScale`/`degreeToNote`. Mirrors `GuitarChords.h`'s
+  "shape = array of semitone offsets from a root" representation rather than
+  inventing a different one for the same idea.
+- **`src/engine/GenerativeLoop.h`** — `euclideanRhythm(steps, pulses,
+  rotation)`, the maximally-even onset distribution (the partition
+  Bjorklund's algorithm produces), computed via integer floor division
+  rather than its recursive bucket merge — simpler to get right than
+  reimplementing Bjorklund from memory, and checked against a hand-verified
+  tresillo (`E(3,8)`) as well as invariants (exact pulse count, determinism,
+  rotation as a cyclic shift). `generateDrumLoop` builds three Euclidean
+  voices (kick, snare, hat) using the caller-supplied note numbers, not
+  hardcoded ones; `generateMelodicLoop` walks scale degrees (seeded, ±2 per
+  onset, clamped to about an octave either side of the root) over a
+  Euclidean onset rhythm. Both take a `seed`, so a given seed always
+  reproduces the same loop — the same determinism discipline `DrumSynth.h`
+  already established for procedural audio, applied here to procedural MIDI.
+- **A bounce-tool check** (`generativeLoopWorks`), alongside `drumKitWorks`:
+  a fixed-seed drum loop and fixed-seed melodic loop rendered through the
+  normal `DrumKitNode`/synth paths, asserting real sound at the positions
+  `euclideanRhythm`'s construction guarantees for *any* seed (rotation-0
+  voices always onset on step 0; the snare's fixed backbeat always lands on
+  beats 1 and 3) — `rmsDry=0.149266` and every existing check unchanged.
+- **UI**: a **Generate Loop...** button next to **Add Clip** in the Arrange
+  toolbar, enabled for every track type except Audio (no MIDI pattern to
+  generate into). A small `AlertWindow` dialog — root note + scale + density
+  for Instrument/Guitar tracks, density alone for Drum tracks — commits
+  through `history_.edit(...)` exactly like `addClipToSelectedTrack`, and
+  for Drum tracks reads the *track's own* pad note numbers (matched by
+  label, falling back to pad order) rather than assuming the factory kit.
+
+### The decisions worth recording
+
+- **Deterministic + seeded, not ML.** Euclidean rhythms give musical-sounding
+  onset patterns from zero training data — exactly the "no model weights,
+  genuinely useful" bar §10 sets. A seeded RNG handles pitch-walk and
+  velocity variation on top.
+- **One-shot generate, not a live candidate carousel.** §10's UX notes say
+  "always return multiple candidates"; building a preview/candidate-browser
+  UI is real scope on its own. Here, **Generate Loop...** commits directly
+  as a new clip — a different take is Undo + click again, which the
+  existing undo stack already gives for free. A multi-candidate picker is a
+  natural, separable follow-up.
+- **The snare's rotation is fixed, not seed-derived, and the kick always
+  starts on beat 1.** The original plan for this section assumed rotation
+  itself would vary with the seed; while implementing `generateDrumLoop` it
+  became clear that's the wrong knob — a random rotation regularly put the
+  snare off the backbeat, which reads as broken rather than as variety.
+  `euclideanRhythm(2, 16, rotation=stepsPerBar/4)` deterministically lands
+  the snare on beats 2 and 4 in any 4/4 loop; the *seed* instead perturbs
+  the kick/hat pulse counts (±1) and every voice's velocity, which is where
+  "regenerate for a different take" actually should live musically.
+- **A small, fixed scale set**, not a fully general theory engine — enough
+  to deliver "generate a melody in this key/scale" without an open-ended
+  taxonomy. More scales are a pure addition to `intervalsForScale` later.
+- **Generated into the arrangement, not a Session slot.** Reuses
+  `addClipToSelectedTrack`'s existing "append after the last clip"
+  placement as-is. Session-slot generation (§19) is a natural next step but
+  adds launch-quantum questions this slice doesn't need.
+- **No `src/ai/` yet.** Every other JUCE-free helper in this codebase lives
+  directly in `engine/`; `src/ai/` per §13 is reserved for when an actual ML
+  runtime abstraction exists to justify its own layer. Symbolic ML
+  generation (transformer melody/drum models, per §10) is the natural
+  trigger for that graduation.
+
+### Verification
+
+`ScaleTests.cpp` and `GenerativeLoopTests.cpp` (headless, Catch2): scale
+membership/snapping/degree math, Euclidean pulse-count/determinism/rotation
+invariants plus the hand-verified tresillo case, and both generators'
+seed-determinism, scale-membership, in-bounds, and density-scales-note-count
+properties. All 322 tests pass; the bounce tool's full check suite,
+including `rmsDry=0.149266`, is unchanged, plus the new
+`generativeLoopWorks` check passes. The app builds warning-clean and starts
+up without a crash. What can't be verified headlessly: the dialog's actual
+appearance/layout, and whether a generated loop sounds *good* rather than
+merely present and in-scale — try **Generate Loop...** on an Instrument
+track and a Drum track and listen.
+
+### Genre selection (implemented)
+
+A follow-up request: let a **Genre** be chosen alongside root/scale/density,
+where a genre both biases the generated pattern's rhythm feel *and*, for
+Instrument tracks, swaps in a matching synth sound — reusing the existing
+`model::SynthPreset` system (`MainComponent::applyPreset()`) rather than
+inventing a second one.
+
+**What was built:**
+
+- **`src/engine/Genre.h`** — a six-way `Genre` enum (House, Techno, Hip-Hop,
+  Trap, Ambient, Lo-Fi — the same "small, fixed set" scoping call already
+  made for Scale) plus `rhythmProfileForGenre()`, hand-picked
+  `{density, swing}` pairs per genre (e.g. Techno: busy and dead straight;
+  Hip-Hop: sparse with heavy boom-bap swing).
+- **`GenerativeLoop.h` gained a real `swing` parameter.** Both
+  `DrumLoopParams`/`MelodicLoopParams` now carry `double swing = 0.0`,
+  applied via the existing `NoteOps::quantizeNotes` — no new swing math, and
+  the `0.0` default is behavior-preserving (the bounce tool's
+  `generativeLoopWorks` check, which predates this, is bit-for-bit
+  unchanged). **A real bug surfaced while writing this feature's own
+  tests, not found by inspection:** a note near the *end* of a pattern,
+  once swung later, could claim to sound past the pattern's own length —
+  its `lengthBeats` had been sized against its original, unswung position.
+  Both generators now clamp `lengthBeats` to what's actually left in the
+  pattern after quantizing, right before returning.
+- **`src/model/GenrePresets.h`** — `presetForGenre()`, six literal
+  `SynthPreset`s built the exact way `seedFactoryPresets()` builds its four
+  factory presets (same fields, same units), constructed in memory rather
+  than written to the presets directory — there's no reason to clutter a
+  user's saved-presets folder with six files nobody asked to save, when
+  applying one is exactly as cheap as loading a file, minus the file I/O.
+- **UI**: one more combo box, "Genre (overrides Density...)", in both the
+  drum and melodic dialog branches, index 0 = "None" (today's exact
+  behavior — untouched by this change). Picking a genre replaces the
+  Density combo's value with that genre's rhythm profile and, for
+  Instrument tracks only, folds a `synthSettings`/`effectChain` swap into
+  the *same* `history_.edit(...)` call that adds the clip — one undo step
+  for both, matching `applyPreset`'s own "a preset is one thing, not two
+  separate edits" reasoning.
+
+**The decisions worth recording:**
+
+- **Genre overrides Density, doesn't blend with it.** Avoids adding
+  show/hide interactivity to an `AlertWindow` — every dialog in this file is
+  a static field list once shown (New Folder, Rename, Save Preset, and this
+  one); a genre-aware live-updating Density field would be the first
+  exception, for no real benefit over "the combo you picked wins."
+- **The synth-preset swap is Instrument-only, not Guitar.** Guitar tracks
+  are driven by `GuitarSettings`/`GuitarNode`, not `SynthSettings`, at all
+  (§21) — there's nothing for a genre synth sound to apply *to* on a Guitar
+  track. Genre still shapes a Guitar track's rhythm. A genre-appropriate
+  amp/pedal choice for guitar is a real, separate feature this doesn't
+  attempt.
+- **Drum tracks: rhythm only, no sample swap.** Changing which *samples*
+  a kit uses per genre is kit content, not kit-agnostic pattern generation
+  — a distinct, larger feature than this slice.
+- **Two separate lookups, not one combined table.** `rhythmProfileForGenre`
+  (engine layer, pure numbers) and `presetForGenre` (model layer,
+  referencing `engine::Genre` — consistent with the existing model→engine
+  dependency direction, e.g. `Clip.h` already holds an `engine::Pattern`)
+  stay independent, so the rhythm engine never needs to know what a
+  `SynthPreset` is.
+
+**Verification:** new `GenreTests.cpp` (rhythm-profile ranges, genres
+actually differ, names distinct) and `GenrePresetsTests.cpp` (every genre
+preset has a name, names are distinct, waveform in range, every effect
+slot's `enabled` matches its own kind's `enabled` — the same invariant
+`seedFactoryPresets()` maintains), plus new swing test cases in
+`GenerativeLoopTests.cpp` (swing changes the pattern; the first/downbeat
+onset — always an even grid step — is swing-invariant; every note still
+fits inside the pattern after swinging, the regression test that caught the
+length-clamp bug above). All 334 headless tests pass; the bounce tool's
+full suite, including `rmsDry=0.149266` and `generativeLoopWorks`, is
+unchanged. The app builds warning-clean. What can't be verified headlessly:
+the dialog's actual layout with the new combo box, and whether each genre's
+hand-tuned synth sound and rhythm feel actually reads as that genre by
+ear — try a few genres on an Instrument track and a Drum track and listen.
+
+---
+
+## 26. New synth sounds: filter envelope, sub-oscillator, unison (implemented)
+
+Two requests in one session pointed at the same gap: "make other sounds available to
+the engine, starting with something that mimics Mutemath's sound," and "make
+synthesizers and auto-generators that mimic the dark synth sound" of a linked
+playlist (page metadata only — cyberpunk/synthwave/retrowave tags, not one song by
+one artist; nothing here listens to audio). Both turned out to want the same missing
+DSP: `engine::SynthVoice` had one oscillator, amplitude ADSR, and a **static** filter —
+`StateVariableFilter::setCutoff()` was only ever called once per block, from fixed
+`model::SynthSettings` fields, with no modulation input. A Moog-style bass's "pluck"
+*is* a filter cutoff sweeping down over the note (a filter envelope); a synthwave
+lead's size *is* several detuned oscillators stacked together (unison). Neither
+existed. Both are genuinely reusable DSP once built — not one-off hacks for two
+presets — so they were built as real synth capabilities, with two new factory
+presets demonstrating them.
+
+### What was built
+
+- **A second, independent ADSR drives the filter cutoff.** `SynthVoiceSettings`
+  (`src/engine/SynthVoice.h`) gained `filterEnvAmount` (Hz, bipolar) and its own
+  `juce::ADSR::Parameters` — reusing `StateVariableFilter::setCutoff()`'s existing
+  pure-function coefficient recompute (it's a TPT/Cytomic design specifically meant
+  for time-varying coefficients, so calling it every sample is the *intended* usage,
+  not a workaround) rather than adding new envelope math.
+- **A sub-oscillator**: a fixed sine one octave down, mixed in for low-end weight
+  (`subOscEnabled`/`subOscLevel`) — not a second selectable waveform, since a sine
+  adds no harmonic content of its own to alias or clash against the main oscillator.
+- **Unison**: up to `kMaxUnisonVoices = 7` copies of the main oscillator, detuned
+  symmetrically across `unisonDetuneCents` and summed (`Oscillator::sample` called N
+  times with N independently-advancing phases instead of once). Detunes pitch only —
+  every voice already renders one mono sample duplicated to all output channels, so
+  true stereo spread would be a separate change to how `SynthVoice` writes its
+  output, not just how it generates a sample.
+- **`applySettings` takes one `SynthVoiceSettings` struct**, not positional
+  parameters — it was already at 7; adding 9 more would have made call sites an
+  unreadable, error-prone wall of same-typed arguments.
+- **`model::SynthSettings` gained the same 9 fields**, threaded through both
+  serializers (`Serialization.h` `kFormatVersion` 25→26, `PresetSerialization.h`
+  `kPresetFormatVersion` 1→2) the same tolerant-append way every prior field addition
+  was — each reader variable pre-set to the real struct default (not 0) before the
+  `>>` chain, so an old file simply stops filling them in at whichever field it
+  predates.
+- **`ScaleType::Phrygian`** — the quintessential "dark"/unsettled melodic color (the
+  half-step above the root), one more `intervalsForScale` case.
+- **`Genre::Synthwave`** — driving, straight rhythm profile (`{0.65, 0.0}`), wired to
+  a new preset in `GenrePresets.h`.
+- **Two new factory presets**: **"Analog Pluck Bass"** (`seedFactoryPresets()`) — a
+  low base cutoff swept open by a fast, short filter envelope (the pluck *is* the
+  sweep, not the amp envelope) plus a sub-oscillator, in the spirit of the
+  analog-synth-bass tone Paul Meany plays in Mutemath — and **"Cyberpunk Stack"**
+  (`GenrePresets.h`'s `Synthwave` case) — a 5-voice detuned saw stack under a slower
+  filter sweep and drive, general cyberpunk/synthwave/retrowave character. Both names
+  are descriptive; the actual creative reference lives in a code comment, not the
+  product-facing name, so it's accurate about the inspiration without implying an
+  official or licensed connection.
+
+### The decision that mattered most: a fast path, not one unified render loop
+
+This project treats several bounce-tool renders (`rmsDry=0.149266`, `rmsFiltered=
+0.103703`, ...) as exact regression sentinels. Rather than writing one generalized
+N-voice render loop that happens to reduce to the old behavior at `unisonVoices=1`,
+`SynthVoice::renderNextBlock` keeps the **original single-oscillator code path
+completely untouched** and branches to it whenever `unisonVoices <= 1 &&
+!subOscEnabled && filterEnvAmount == 0` — the defaults, and therefore every existing
+project and preset. The new general path (unison sum, sub-osc mix, per-sample filter
+cutoff) is only reached once a preset actually opts in. Confirmed, not assumed: every
+existing bounce-tool value printed bit-identical after this landed.
+
+### Verification
+
+Three new bounce-tool checks (`filterEnvChangesSound`, `subOscChangesSound`,
+`unisonChangesSound`), matching the existing `chorusChangesSound`/
+`driveChangesSound` "capability off vs. on, assert the renders differ" pattern —
+`SynthVoice` is JUCE-dependent (`juce::SynthesiserVoice`, `juce::ADSR`) so this can't
+be a headless Catch2 test, the same reason none of the other per-voice DSP in this
+file is. No dedicated bounce check per *preset* — consistent with the four
+pre-existing factory presets, none of which has one either; a preset is a data
+combination of already-individually-verified capabilities. All 334 headless tests
+pass (Scale/Genre/GenrePresets tests extended to cover Phrygian/Synthwave); the
+bounce tool's full suite — including `rmsDry=0.149266` and `rmsFiltered=0.103703`,
+proving the fast path really does preserve default behavior exactly — plus all three
+new checks pass. The app builds warning-clean. What can't be verified headlessly:
+whether "Analog Pluck Bass" and "Cyberpunk Stack" actually sound like what they're
+going for — load them on an Instrument track and listen; also worth a project
+save/reload to confirm the new fields round-trip.

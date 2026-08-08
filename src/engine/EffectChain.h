@@ -28,7 +28,8 @@ enum class EffectNodeKind
     Compressor = 5,
     Tremolo    = 6,
     Chorus     = 7,
-    Wobble     = 8
+    Wobble     = 8,
+    Gate       = 9
 };
 
 /** What a chain slot should be. Carries plugin identity as plain strings —
@@ -95,6 +96,12 @@ struct EffectSlotParams
     float wobbleBaseCutoffHz = 200.0f;
     float wobbleResonance    = 0.9f;
     float wobbleMix          = 1.0f;
+
+    float gateThresholdDb = -40.0f;
+    float gateRangeDb     = 60.0f;
+    float gateAttackMs    = 2.0f;
+    float gateHoldMs      = 20.0f;
+    float gateReleaseMs   = 150.0f;
 };
 
 /** One effect in a track's chain. Virtual dispatch costs one indirect call
@@ -191,6 +198,16 @@ struct WobbleNode final : EffectProcessor
     void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
     void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
     void setBpm(double bpm) override { effect.setBpm(bpm); }
+};
+
+struct GateNode final : EffectProcessor
+{
+    GateEffect effect;
+
+    EffectNodeKind kind() const noexcept override { return EffectNodeKind::Gate; }
+    void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
+    void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
 };
 
 struct ReverbNode final : EffectProcessor
@@ -312,6 +329,14 @@ public:
             drive->effect.setLevel(params.driveLevel);
             drive->effect.setHardClip(params.driveHardClip);
             drive->effect.setCabinet(params.driveCabinet);
+        }
+        else if (auto* gate = dynamic_cast<GateNode*>(&node))
+        {
+            gate->effect.setThresholdDb(params.gateThresholdDb);
+            gate->effect.setRangeDb(params.gateRangeDb);
+            gate->effect.setAttackMs(params.gateAttackMs);
+            gate->effect.setHoldMs(params.gateHoldMs);
+            gate->effect.setReleaseMs(params.gateReleaseMs);
         }
     }
 

@@ -357,6 +357,60 @@ void AudioEngine::setTrackSynthGainDb(int index, float db)
         tracks_[(size_t) index].synth.setGainDb(db);
 }
 
+void AudioEngine::setTrackSynthFilterEnvAmount(int index, float hz)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setFilterEnvAmount(hz);
+}
+
+void AudioEngine::setTrackSynthFilterEnvAttackMs(int index, float ms)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setFilterEnvAttackMs(ms);
+}
+
+void AudioEngine::setTrackSynthFilterEnvDecayMs(int index, float ms)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setFilterEnvDecayMs(ms);
+}
+
+void AudioEngine::setTrackSynthFilterEnvSustain(int index, float level)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setFilterEnvSustain(level);
+}
+
+void AudioEngine::setTrackSynthFilterEnvReleaseMs(int index, float ms)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setFilterEnvReleaseMs(ms);
+}
+
+void AudioEngine::setTrackSynthSubOscEnabled(int index, bool enabled)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setSubOscEnabled(enabled);
+}
+
+void AudioEngine::setTrackSynthSubOscLevel(int index, float level)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setSubOscLevel(level);
+}
+
+void AudioEngine::setTrackSynthUnisonVoices(int index, int voices)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setUnisonVoices(voices);
+}
+
+void AudioEngine::setTrackSynthUnisonDetuneCents(int index, float cents)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].synth.setUnisonDetuneCents(cents);
+}
+
 void AudioEngine::rebuildTrackEffectChain(int index)
 {
     if (index < 0 || index >= kMaxTracks)
@@ -377,6 +431,7 @@ void AudioEngine::rebuildTrackEffectChain(int index)
             case EffectNodeKind::Tremolo:    chain->add(std::make_unique<TremoloNode>());    break;
             case EffectNodeKind::Chorus:     chain->add(std::make_unique<ChorusNode>());     break;
             case EffectNodeKind::Wobble:     chain->add(std::make_unique<WobbleNode>());     break;
+            case EffectNodeKind::Gate:       chain->add(std::make_unique<GateNode>());       break;
 
             case EffectNodeKind::Plugin:
             {

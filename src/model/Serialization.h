@@ -52,8 +52,13 @@ namespace looper::model
       23  + three more FXSLOT fields: the chorus pedal, read the same
           tolerant way as 20's and 21's.
       24  + five more FXSLOT fields: the wobble pedal, read the same
-          tolerant way as 20's, 21's, and 23's. */
-inline constexpr int kFormatVersion = 25;
+          tolerant way as 20's, 21's, and 23's.
+      26  SYNTH gains nine more fields: the filter envelope (amount +
+          its own ADSR), the sub-oscillator, and unison — read the same
+          tolerant way as every prior SYNTH/FXSLOT extension.
+      27  + five more FXSLOT fields: the gate pedal, read the same
+          tolerant way as 20's, 21's, 23's, and 24's. */
+inline constexpr int kFormatVersion = 27;
 namespace detail
 {
     inline std::string num(double v)
@@ -169,7 +174,16 @@ inline std::string serialize(const Song& song)
             << detail::num((double) synth.sustain) << " " << detail::num((double) synth.releaseMs) << " "
             << (synth.filterEnabled ? 1 : 0) << " " << synth.filterMode << " "
             << detail::num((double) synth.filterCutoff) << " " << detail::num((double) synth.filterResonance) << " "
-            << detail::num((double) synth.gainDb) << "\n";
+            << detail::num((double) synth.gainDb) << " "
+            << detail::num((double) synth.filterEnvAmount) << " "
+            << detail::num((double) synth.filterEnvAttackMs) << " "
+            << detail::num((double) synth.filterEnvDecayMs) << " "
+            << detail::num((double) synth.filterEnvSustain) << " "
+            << detail::num((double) synth.filterEnvReleaseMs) << " "
+            << (synth.subOscEnabled ? 1 : 0) << " "
+            << detail::num((double) synth.subOscLevel) << " "
+            << synth.unisonVoices << " "
+            << detail::num((double) synth.unisonDetuneCents) << "\n";
 
         const auto& guitar = track.guitarSettings;
         out << "GUITAR";
@@ -215,7 +229,12 @@ inline std::string serialize(const Song& song)
                 << detail::num((double) slot.wobble.depth) << " "
                 << detail::num((double) slot.wobble.baseCutoffHz) << " "
                 << detail::num((double) slot.wobble.resonance) << " "
-                << detail::num((double) slot.wobble.mix) << "\n";
+                << detail::num((double) slot.wobble.mix) << " "
+                << detail::num((double) slot.gate.thresholdDb) << " "
+                << detail::num((double) slot.gate.rangeDb) << " "
+                << detail::num((double) slot.gate.attackMs) << " "
+                << detail::num((double) slot.gate.holdMs) << " "
+                << detail::num((double) slot.gate.releaseMs) << "\n";
 
             if (slot.kind == EffectKind::Plugin)
             {
@@ -565,8 +584,20 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             int    waveform = 0, filterEnabled = 0, filterMode = 0;
             double attackMs = 0.0, decayMs = 0.0, sustain = 0.0, releaseMs = 0.0;
             double filterCutoff = 0.0, filterResonance = 0.0, gainDb = 0.0;
+            // Pre-set to model::SynthSettings' real defaults (not 0), since a
+            // file written before v26 has no tokens for these at all - the
+            // stream simply stops filling them in, same tolerant-read
+            // mechanism the whole SYNTH line already relies on.
+            double filterEnvAmount = 0.0, filterEnvAttackMs = 0.0, filterEnvDecayMs = 0.0;
+            double filterEnvSustain = 1.0, filterEnvReleaseMs = 0.0;
+            int    subOscEnabled = 0;
+            double subOscLevel = 0.3;
+            int    unisonVoices = 1;
+            double unisonDetuneCents = 12.0;
             ss >> waveform >> attackMs >> decayMs >> sustain >> releaseMs
-               >> filterEnabled >> filterMode >> filterCutoff >> filterResonance >> gainDb;
+               >> filterEnabled >> filterMode >> filterCutoff >> filterResonance >> gainDb
+               >> filterEnvAmount >> filterEnvAttackMs >> filterEnvDecayMs >> filterEnvSustain >> filterEnvReleaseMs
+               >> subOscEnabled >> subOscLevel >> unisonVoices >> unisonDetuneCents;
             track.synthSettings.waveform        = waveform;
             track.synthSettings.attackMs        = (float) attackMs;
             track.synthSettings.decayMs         = (float) decayMs;
@@ -577,6 +608,15 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             track.synthSettings.filterCutoff    = (float) filterCutoff;
             track.synthSettings.filterResonance = (float) filterResonance;
             track.synthSettings.gainDb          = (float) gainDb;
+            track.synthSettings.filterEnvAmount    = (float) filterEnvAmount;
+            track.synthSettings.filterEnvAttackMs  = (float) filterEnvAttackMs;
+            track.synthSettings.filterEnvDecayMs   = (float) filterEnvDecayMs;
+            track.synthSettings.filterEnvSustain   = (float) filterEnvSustain;
+            track.synthSettings.filterEnvReleaseMs = (float) filterEnvReleaseMs;
+            track.synthSettings.subOscEnabled      = subOscEnabled != 0;
+            track.synthSettings.subOscLevel        = (float) subOscLevel;
+            track.synthSettings.unisonVoices       = unisonVoices;
+            track.synthSettings.unisonDetuneCents  = (float) unisonDetuneCents;
         }
 
         if (readTagged("GUITAR", rest)) // added in v19; older files keep the defaults
@@ -660,6 +700,8 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 double chorusRate = 0.6, chorusDepth = 0.5, chorusMix = 0.5;
                 double wobbleRateBeats = 0.25, wobbleDepth = 0.7, wobbleBaseCutoffHz = 200.0;
                 double wobbleResonance = 0.9, wobbleMix = 1.0;
+                double gateThreshold = -40.0, gateRange = 60.0, gateAttack = 2.0;
+                double gateHold = 20.0, gateRelease = 150.0;
 
                 ss >> kind >> enabled >> filterMode >> cutoff >> resonance
                    >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix
@@ -667,7 +709,8 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                    >> compThreshold >> compRatio >> compAttack >> compRelease >> compMakeUp
                    >> tremRate >> tremDepth
                    >> chorusRate >> chorusDepth >> chorusMix
-                   >> wobbleRateBeats >> wobbleDepth >> wobbleBaseCutoffHz >> wobbleResonance >> wobbleMix;
+                   >> wobbleRateBeats >> wobbleDepth >> wobbleBaseCutoffHz >> wobbleResonance >> wobbleMix
+                   >> gateThreshold >> gateRange >> gateAttack >> gateHold >> gateRelease;
 
                 EffectSlot slot;
                 slot.kind              = (EffectKind) kind;
@@ -709,6 +752,12 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 slot.wobble.baseCutoffHz    = (float) wobbleBaseCutoffHz;
                 slot.wobble.resonance       = (float) wobbleResonance;
                 slot.wobble.mix             = (float) wobbleMix;
+                slot.gate.enabled           = slot.enabled && slot.kind == EffectKind::Gate;
+                slot.gate.thresholdDb       = (float) gateThreshold;
+                slot.gate.rangeDb           = (float) gateRange;
+                slot.gate.attackMs          = (float) gateAttack;
+                slot.gate.holdMs            = (float) gateHold;
+                slot.gate.releaseMs         = (float) gateRelease;
 
                 if (slot.kind == EffectKind::Plugin)
                 {

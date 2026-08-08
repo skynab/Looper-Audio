@@ -126,6 +126,12 @@ public:
         setupSlider(wobbleResonance_, 0.1, 5.0, 0.01, " Q", [this] { pushParams(); });
         setupSlider(wobbleMix_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
 
+        setupSlider(gateThreshold_, -80.0, 0.0, 0.5, " dB", [this] { pushParams(); });
+        setupSlider(gateRange_, 0.0, 90.0, 1.0, " dB", [this] { pushParams(); });
+        setupSlider(gateAttack_, 0.1, 50.0, 0.1, " ms", [this] { pushParams(); });
+        setupSlider(gateHold_, 0.0, 500.0, 1.0, " ms", [this] { pushParams(); });
+        setupSlider(gateRelease_, 1.0, 2000.0, 1.0, " ms", [this] { pushParams(); });
+
         filterMode_.addItem("Low-pass", 1);
         filterMode_.addItem("High-pass", 2);
         filterMode_.addItem("Band-pass", 3);
@@ -300,6 +306,10 @@ public:
         {
             row(wobbleRate_); row(wobbleDepth_); row(wobbleCutoff_); row(wobbleResonance_); row(wobbleMix_);
         }
+        else if (kind == model::EffectKind::Gate)
+        {
+            row(gateThreshold_); row(gateRange_); row(gateAttack_); row(gateHold_); row(gateRelease_);
+        }
     }
 
 private:
@@ -341,6 +351,7 @@ private:
             case model::EffectKind::Tremolo:    return "Tremolo";
             case model::EffectKind::Chorus:     return "Chorus";
             case model::EffectKind::Wobble:     return "Wobble";
+            case model::EffectKind::Gate:       return "Gate";
             case model::EffectKind::Plugin:
                 // A plugin the machine no longer has still names itself, which
                 // is the whole reason the document stores the name.
@@ -369,6 +380,7 @@ private:
         pedals.addItem(7, "Tremolo");
         pedals.addItem(8, "Chorus");
         pedals.addItem(9, "Wobble");
+        pedals.addItem(10, "Gate");
         menu.addSubMenu("Pedals", pedals);
         menu.addSeparator();
 
@@ -399,6 +411,7 @@ private:
             else if (result == 7 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Tremolo);
             else if (result == 8 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Chorus);
             else if (result == 9 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Wobble);
+            else if (result == 10 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Gate);
             else if (result == 5 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Drive);
             else if (result == 4 && onScanRequested) onScanRequested();
             else if (result >= 100)
@@ -430,7 +443,8 @@ private:
                  &compThreshold_, &compRatio_, &compAttack_,
                  &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_,
                  &chorusRate_, &chorusDepth_, &chorusMix_,
-                 &wobbleRate_, &wobbleDepth_, &wobbleCutoff_, &wobbleResonance_, &wobbleMix_ };
+                 &wobbleRate_, &wobbleDepth_, &wobbleCutoff_, &wobbleResonance_, &wobbleMix_,
+                 &gateThreshold_, &gateRange_, &gateAttack_, &gateHold_, &gateRelease_ };
     }
 
     void setupSlider(juce::Slider& slider, double lo, double hi, double step,
@@ -539,6 +553,17 @@ private:
                 wobbleMix_.setVisible(true);
                 break;
 
+            case model::EffectKind::Gate:
+                gateThreshold_.setValue(slot.gate.thresholdDb, juce::dontSendNotification);
+                gateRange_.setValue(slot.gate.rangeDb, juce::dontSendNotification);
+                gateAttack_.setValue(slot.gate.attackMs, juce::dontSendNotification);
+                gateHold_.setValue(slot.gate.holdMs, juce::dontSendNotification);
+                gateRelease_.setValue(slot.gate.releaseMs, juce::dontSendNotification);
+                gateThreshold_.setVisible(true); gateRange_.setVisible(true);
+                gateAttack_.setVisible(true); gateHold_.setVisible(true);
+                gateRelease_.setVisible(true);
+                break;
+
             case model::EffectKind::Plugin:
                 editorButton_.setVisible(true);
                 break;
@@ -604,6 +629,13 @@ private:
                 slot.wobble.resonance    = (float) wobbleResonance_.getValue();
                 slot.wobble.mix          = (float) (wobbleMix_.getValue() / 100.0);
                 break;
+            case model::EffectKind::Gate:
+                slot.gate.thresholdDb = (float) gateThreshold_.getValue();
+                slot.gate.rangeDb     = (float) gateRange_.getValue();
+                slot.gate.attackMs    = (float) gateAttack_.getValue();
+                slot.gate.holdMs      = (float) gateHold_.getValue();
+                slot.gate.releaseMs   = (float) gateRelease_.getValue();
+                break;
             case model::EffectKind::Plugin:
                 return; // a plugin's parameters live in its own editor
         }
@@ -645,6 +677,7 @@ private:
     juce::Slider       tremRate_, tremDepth_;
     juce::Slider       chorusRate_, chorusDepth_, chorusMix_;
     juce::Slider       wobbleRate_, wobbleDepth_, wobbleCutoff_, wobbleResonance_, wobbleMix_;
+    juce::Slider       gateThreshold_, gateRange_, gateAttack_, gateHold_, gateRelease_;
     juce::ToggleButton driveHardClip_, driveCabinet_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EffectChainPanel)

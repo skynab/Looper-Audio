@@ -10,6 +10,9 @@ add_executable(looper_tests
   engine/SequencerMathTests.cpp
   engine/DefaultContentTests.cpp
   engine/DrumSynthTests.cpp
+  engine/ScaleTests.cpp
+  engine/GenerativeLoopTests.cpp
+  engine/GenreTests.cpp
   engine/MetronomeMathTests.cpp
   engine/NoteOpsTests.cpp
   engine/OscillatorTests.cpp
@@ -28,6 +31,7 @@ add_executable(looper_tests
   model/SongTests.cpp
   model/SerializationTests.cpp
   model/PresetSerializationTests.cpp
+  model/GenrePresetsTests.cpp
   model/AutomationLaneTests.cpp
   app/TimelineGeometryTests.cpp
   app/PianoRollGeometryTests.cpp

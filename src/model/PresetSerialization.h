@@ -23,7 +23,11 @@ namespace looper::model
     change has to consider the other's constraints. JUCE-free for the same
     reason Serialization.h is: headless round-trip tests.
 */
-inline constexpr int kPresetFormatVersion = 1;
+inline constexpr int kPresetFormatVersion = 3; // v2: SYNTH gains the filter-envelope,
+                                                // sub-oscillator, and unison fields
+                                                // (see Serialization.h's matching v26)
+                                                // v3: FXSLOT gains the gate pedal
+                                                // (see Serialization.h's matching v27)
 
 namespace preset_detail
 {
@@ -60,7 +64,16 @@ inline std::string serializePreset(const SynthPreset& preset)
         << synth.filterMode << " "
         << num((double) synth.filterCutoff) << " "
         << num((double) synth.filterResonance) << " "
-        << num((double) synth.gainDb) << "\n";
+        << num((double) synth.gainDb) << " "
+        << num((double) synth.filterEnvAmount) << " "
+        << num((double) synth.filterEnvAttackMs) << " "
+        << num((double) synth.filterEnvDecayMs) << " "
+        << num((double) synth.filterEnvSustain) << " "
+        << num((double) synth.filterEnvReleaseMs) << " "
+        << (synth.subOscEnabled ? 1 : 0) << " "
+        << num((double) synth.subOscLevel) << " "
+        << synth.unisonVoices << " "
+        << num((double) synth.unisonDetuneCents) << "\n";
 
     out << "FXCHAIN " << preset.effectChain.size() << "\n";
     for (const auto& slot : preset.effectChain)
@@ -94,7 +107,12 @@ inline std::string serializePreset(const SynthPreset& preset)
             << num((double) slot.wobble.depth) << " "
             << num((double) slot.wobble.baseCutoffHz) << " "
             << num((double) slot.wobble.resonance) << " "
-            << num((double) slot.wobble.mix) << "\n";
+            << num((double) slot.wobble.mix) << " "
+            << num((double) slot.gate.thresholdDb) << " "
+            << num((double) slot.gate.rangeDb) << " "
+            << num((double) slot.gate.attackMs) << " "
+            << num((double) slot.gate.holdMs) << " "
+            << num((double) slot.gate.releaseMs) << "\n";
 
         if (slot.kind == EffectKind::Plugin)
         {
@@ -164,9 +182,20 @@ inline bool deserializePreset(const std::string& text, SynthPreset& result, std:
         int    waveform = 0, filterEnabled = 0, filterMode = 0;
         double attackMs = 5.0, decayMs = 120.0, sustain = 0.7, releaseMs = 250.0;
         double filterCutoff = 1000.0, filterResonance = 0.707, gainDb = 0.0;
+        // A preset saved before v2 has no tokens for these; pre-set to
+        // model::SynthSettings' real defaults so the tolerant >> chain
+        // leaves them there rather than at 0.
+        double filterEnvAmount = 0.0, filterEnvAttackMs = 0.0, filterEnvDecayMs = 0.0;
+        double filterEnvSustain = 1.0, filterEnvReleaseMs = 0.0;
+        int    subOscEnabled = 0;
+        double subOscLevel = 0.3;
+        int    unisonVoices = 1;
+        double unisonDetuneCents = 12.0;
 
         ss >> waveform >> attackMs >> decayMs >> sustain >> releaseMs
-           >> filterEnabled >> filterMode >> filterCutoff >> filterResonance >> gainDb;
+           >> filterEnabled >> filterMode >> filterCutoff >> filterResonance >> gainDb
+           >> filterEnvAmount >> filterEnvAttackMs >> filterEnvDecayMs >> filterEnvSustain >> filterEnvReleaseMs
+           >> subOscEnabled >> subOscLevel >> unisonVoices >> unisonDetuneCents;
 
         preset.synth.waveform        = waveform;
         preset.synth.attackMs        = (float) attackMs;
@@ -178,6 +207,15 @@ inline bool deserializePreset(const std::string& text, SynthPreset& result, std:
         preset.synth.filterCutoff    = (float) filterCutoff;
         preset.synth.filterResonance = (float) filterResonance;
         preset.synth.gainDb          = (float) gainDb;
+        preset.synth.filterEnvAmount    = (float) filterEnvAmount;
+        preset.synth.filterEnvAttackMs  = (float) filterEnvAttackMs;
+        preset.synth.filterEnvDecayMs   = (float) filterEnvDecayMs;
+        preset.synth.filterEnvSustain   = (float) filterEnvSustain;
+        preset.synth.filterEnvReleaseMs = (float) filterEnvReleaseMs;
+        preset.synth.subOscEnabled      = subOscEnabled != 0;
+        preset.synth.subOscLevel        = (float) subOscLevel;
+        preset.synth.unisonVoices       = unisonVoices;
+        preset.synth.unisonDetuneCents  = (float) unisonDetuneCents;
     }
 
     if (! readTagged("FXCHAIN", rest))
@@ -202,6 +240,8 @@ inline bool deserializePreset(const std::string& text, SynthPreset& result, std:
         double chorusRate = 0.6, chorusDepth = 0.5, chorusMix = 0.5;
         double wobbleRateBeats = 0.25, wobbleDepth = 0.7, wobbleBaseCutoffHz = 200.0;
         double wobbleResonance = 0.9, wobbleMix = 1.0;
+        double gateThreshold = -40.0, gateRange = 60.0, gateAttack = 2.0;
+        double gateHold = 20.0, gateRelease = 150.0;
 
         ss >> kind >> enabled >> filterMode >> cutoff >> resonance
            >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix
@@ -209,7 +249,8 @@ inline bool deserializePreset(const std::string& text, SynthPreset& result, std:
            >> compThreshold >> compRatio >> compAttack >> compRelease >> compMakeUp
            >> tremRate >> tremDepth
            >> chorusRate >> chorusDepth >> chorusMix
-           >> wobbleRateBeats >> wobbleDepth >> wobbleBaseCutoffHz >> wobbleResonance >> wobbleMix;
+           >> wobbleRateBeats >> wobbleDepth >> wobbleBaseCutoffHz >> wobbleResonance >> wobbleMix
+           >> gateThreshold >> gateRange >> gateAttack >> gateHold >> gateRelease;
 
         EffectSlot slot;
         slot.kind              = (EffectKind) kind;
@@ -251,6 +292,12 @@ inline bool deserializePreset(const std::string& text, SynthPreset& result, std:
         slot.wobble.baseCutoffHz    = (float) wobbleBaseCutoffHz;
         slot.wobble.resonance       = (float) wobbleResonance;
         slot.wobble.mix             = (float) wobbleMix;
+        slot.gate.enabled           = slot.enabled && slot.kind == EffectKind::Gate;
+        slot.gate.thresholdDb       = (float) gateThreshold;
+        slot.gate.rangeDb           = (float) gateRange;
+        slot.gate.attackMs          = (float) gateAttack;
+        slot.gate.holdMs            = (float) gateHold;
+        slot.gate.releaseMs         = (float) gateRelease;
 
         if (slot.kind == EffectKind::Plugin)
         {

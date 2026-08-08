@@ -31,6 +31,25 @@ struct SynthSettings
 
     float gainDb = 0.0f; // additional per-track output trim, on top of the track fader
 
+    // Filter envelope: sweeps filterCutoff over the note by filterEnvAmount
+    // (Hz, bipolar) under its own ADSR, independent of the amp envelope
+    // above — see engine::SynthVoice. Amount 0 (the default) is a no-op.
+    float filterEnvAmount     = 0.0f;
+    float filterEnvAttackMs   = 0.0f;
+    float filterEnvDecayMs    = 0.0f;
+    float filterEnvSustain    = 1.0f;
+    float filterEnvReleaseMs  = 0.0f;
+
+    // A sub-oscillator: a fixed sine one octave down, mixed in for low-end
+    // weight (see engine::SynthVoice).
+    bool  subOscEnabled = false;
+    float subOscLevel   = 0.3f; // 0..1
+
+    // unisonVoices copies of the main oscillator, detuned symmetrically
+    // across unisonDetuneCents and summed (see engine::SynthVoice). 1 = off.
+    int   unisonVoices      = 1;
+    float unisonDetuneCents = 12.0f;
+
     bool operator==(const SynthSettings&) const = default;
 };
 
