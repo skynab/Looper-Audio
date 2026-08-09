@@ -53,6 +53,31 @@ namespace audiofiles
         return files;
     }
 
+    /** The drag description a file dragged from the Files pane carries.
+
+        Prefixed and path-carrying so any target can identify the drag and
+        recover the file from the description alone. The alternative — the
+        target reaching back into the source component and asking it what was
+        selected — only works for the one source type it knows about, which
+        is exactly why dragging from the file *grid* did nothing while
+        dragging from the directory tree worked. */
+    inline juce::String dragDescriptionFor(const juce::File& file)
+    {
+        return "looper:file:" + file.getFullPathName();
+    }
+
+    /** The file a drag description names, or an invalid File if it isn't
+        one of ours. */
+    inline juce::File fileFromDragDescription(const juce::var& description)
+    {
+        const auto text = description.toString();
+        if (! text.startsWith("looper:file:"))
+            return {};
+
+        const juce::File file(text.fromFirstOccurrenceOf("looper:file:", false, false));
+        return file.existsAsFile() ? file : juce::File{};
+    }
+
     /** True if @p paths contains anything worth accepting — what a drop
         target answers during the drag, so the cursor shows whether the drop
         will do something. */

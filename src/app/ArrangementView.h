@@ -803,7 +803,13 @@ private:
     // juce::DragAndDropTarget
     bool isInterestedInDragSource(const SourceDetails& details) override
     {
-        return dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get()) != nullptr;
+        // Either kind of source in the Files pane: the directory tree, which
+        // hands its selection back through the component, and the file grid,
+        // which names the file in the description. Recognising only the first
+        // is why dragging from the grid — where the files actually are — did
+        // nothing at all.
+        return dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get()) != nullptr
+            || audiofiles::fileFromDragDescription(details.description) != juce::File{};
     }
 
     void itemDragEnter(const SourceDetails& details) override
@@ -830,11 +836,16 @@ private:
         fileDragActive_ = false;
         repaint();
 
-        auto* fileTree = dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get());
-        if (fileTree == nullptr || fileTree->getNumSelectedFiles() == 0)
-            return;
+        auto file = audiofiles::fileFromDragDescription(details.description);
 
-        const auto file = fileTree->getSelectedFile(0);
+        if (file == juce::File{})
+        {
+            auto* fileTree = dynamic_cast<juce::FileTreeComponent*>(details.sourceComponent.get());
+            if (fileTree == nullptr || fileTree->getNumSelectedFiles() == 0)
+                return;
+            file = fileTree->getSelectedFile(0);
+        }
+
         if (file != juce::File{} && onFileDropped)
             onFileDropped(file, geometry_.beatForX((float) details.localPosition.x),
                          trackIndexForY((float) details.localPosition.y));

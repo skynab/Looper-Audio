@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "FileTypeColors.h"
+#include "AudioFileTypes.h"
 #include "Icons.h"
 
 namespace looper
@@ -24,10 +25,13 @@ namespace looper
     AudioEngine::probeDurationSeconds already uses) and only for files
     classified as audio, and cached per path so re-sorting never re-probes.
 
-    Deliberately not a drag source in this pass — the existing
-    FileBrowserPanel tree already covers drag-into-arrangement, and building
-    a second, independent drag mechanism for TableListBox rows was cut to
-    keep this addition contained; see docs/PLAN.md.
+    A drag source: rows can be dragged onto the timeline or the audio editor.
+    It was left out originally on the grounds that the directory tree above
+    already covered dragging — but the tree is the *navigator* and the grid is
+    where the files actually are, so in practice dragging a file appeared not
+    to work at all. The description carries the path (see
+    audiofiles::dragDescriptionFor), so a target identifies the drag without
+    having to know what kind of component it came from.
 */
 class FileGrid final : public juce::Component,
                        private juce::TableListBoxModel
@@ -168,6 +172,27 @@ private:
 
     // juce::TableListBoxModel
     int getNumRows() override { return (int) entries_.size(); }
+
+    /** Returning a description is what makes TableListBox start a drag at
+        all — without it a press-and-move on a row is just a click. */
+    juce::var getDragSourceDescription(const juce::SparseSet<int>& selectedRows) override
+    {
+        if (selectedRows.isEmpty())
+            return {};
+
+        const int row = selectedRows[0];
+        if (row < 0 || row >= (int) entries_.size())
+            return {};
+
+        const auto& file = entries_[(size_t) row];
+
+        // Directories aren't draggable: dropping one on a track has no
+        // meaning, and offering the gesture would just fail silently.
+        if (file.isDirectory())
+            return {};
+
+        return audiofiles::dragDescriptionFor(file);
+    }
 
     void paintRowBackground(juce::Graphics& g, int rowNumber, int, int, bool rowIsSelected) override
     {

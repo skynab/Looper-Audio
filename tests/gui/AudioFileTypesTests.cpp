@@ -261,3 +261,68 @@ TEST_CASE("Dropping files on the audio editor reports the audio ones", "[gui][fi
 
     directory.deleteRecursively();
 }
+
+// --- drags from the app's own Files pane -----------------------------------
+
+TEST_CASE("A drag description round-trips to its file", "[gui][filedrop]")
+{
+    auto directory = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                         .getChildFile("looper-dragdesc");
+    directory.deleteRecursively();
+    directory.createDirectory();
+
+    const auto file = directory.getChildFile("take one.wav"); // a space, deliberately
+    file.replaceWithText("x");
+
+    const auto description = audiofiles::dragDescriptionFor(file);
+    REQUIRE(audiofiles::fileFromDragDescription(description) == file);
+
+    directory.deleteRecursively();
+}
+
+TEST_CASE("A foreign drag description is not mistaken for a file", "[gui][filedrop]")
+{
+    // The dock uses description strings for its own panel-regrouping drags,
+    // so a target must not treat every drag as a file drop.
+    REQUIRE(audiofiles::fileFromDragDescription(juce::var("Mixer")) == juce::File{});
+    REQUIRE(audiofiles::fileFromDragDescription(juce::var()) == juce::File{});
+    REQUIRE(audiofiles::fileFromDragDescription(juce::var("looper:file:/definitely/not/here.wav"))
+            == juce::File{});
+}
+
+TEST_CASE("The timeline accepts a drag from the Files pane", "[gui][filedrop]")
+{
+    // The bug this covers: ArrangementView only recognised drags whose source
+    // component was a FileTreeComponent, so dragging from the file *grid* —
+    // where the files actually are — was silently ignored.
+    JuceFixture fixture;
+
+    auto directory = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                         .getChildFile("looper-gridsource");
+    directory.deleteRecursively();
+    directory.createDirectory();
+    const auto file = directory.getChildFile("take.wav");
+    file.replaceWithText("x");
+
+    ArrangementView view;
+    view.setVisible(true);
+    view.setSize(900, 400);
+    view.setSong(songWithOneTrack());
+
+    // A source component that is *not* a FileTreeComponent, which is exactly
+    // the case that used to be refused.
+    juce::Component someOtherSource;
+    const juce::DragAndDropTarget::SourceDetails details(
+        audiofiles::dragDescriptionFor(file), &someOtherSource, { 300, 60 });
+
+    auto& target = static_cast<juce::DragAndDropTarget&>(view);
+    REQUIRE(target.isInterestedInDragSource(details));
+
+    juce::File dropped;
+    view.onFileDropped = [&](const juce::File& f, double, int) { dropped = f; };
+    target.itemDropped(details);
+
+    REQUIRE(dropped == file);
+
+    directory.deleteRecursively();
+}

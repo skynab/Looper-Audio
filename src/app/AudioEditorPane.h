@@ -35,7 +35,8 @@ namespace looper
     in MainComponent, the same separation every other pane here keeps.
 */
 class AudioEditorPane final : public juce::Component,
-                              public juce::FileDragAndDropTarget
+                              public juce::FileDragAndDropTarget,
+                              public juce::DragAndDropTarget
 {
 public:
     /** The selected range, in seconds into the file. An empty range means the
@@ -430,6 +431,26 @@ public:
         g.drawRect(getLocalBounds(), 2);
         g.setFont(juce::FontOptions(15.0f));
         g.drawText("Drop audio to open it here", getLocalBounds(), juce::Justification::centred);
+    }
+
+    // juce::DragAndDropTarget — drags from the app's own Files pane, which
+    // are a different JUCE mechanism from drags out of the OS below.
+    bool isInterestedInDragSource(const SourceDetails& details) override
+    {
+        return audiofiles::fileFromDragDescription(details.description) != juce::File{};
+    }
+
+    void itemDragEnter(const SourceDetails&) override { fileDragActive_ = true;  repaint(); }
+    void itemDragExit(const SourceDetails&) override  { fileDragActive_ = false; repaint(); }
+
+    void itemDropped(const SourceDetails& details) override
+    {
+        fileDragActive_ = false;
+        repaint();
+
+        const auto file = audiofiles::fileFromDragDescription(details.description);
+        if (file != juce::File{} && onFilesDropped)
+            onFilesDropped({ file });
     }
 
     // juce::FileDragAndDropTarget

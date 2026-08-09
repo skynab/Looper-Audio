@@ -36,7 +36,8 @@ namespace looper
     undo step.
 */
 class MasteringPane final : public juce::Component,
-                            public juce::FileDragAndDropTarget
+                            public juce::FileDragAndDropTarget,
+                            public juce::DragAndDropTarget
 {
 public:
     std::function<void(const model::MasteringSettings&)> onSettingsChanged;
@@ -174,6 +175,26 @@ public:
         g.setFont(juce::FontOptions(15.0f));
         g.drawText("Drop audio to add it to the project",
                    getLocalBounds(), juce::Justification::centred);
+    }
+
+    // juce::DragAndDropTarget — drags from the app's own Files pane, which
+    // are a different JUCE mechanism from drags out of the OS below.
+    bool isInterestedInDragSource(const SourceDetails& details) override
+    {
+        return audiofiles::fileFromDragDescription(details.description) != juce::File{};
+    }
+
+    void itemDragEnter(const SourceDetails&) override { fileDragActive_ = true;  repaint(); }
+    void itemDragExit(const SourceDetails&) override  { fileDragActive_ = false; repaint(); }
+
+    void itemDropped(const SourceDetails& details) override
+    {
+        fileDragActive_ = false;
+        repaint();
+
+        const auto file = audiofiles::fileFromDragDescription(details.description);
+        if (file != juce::File{} && onFilesDropped)
+            onFilesDropped({ file });
     }
 
     // juce::FileDragAndDropTarget

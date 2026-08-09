@@ -1042,7 +1042,19 @@ MainComponent::MainComponent()
 
     fileBrowser_.setRecordingsDirectory(recordingsDirectory());
     fileBrowser_.showDirectory(recordingsDirectory());
-    fileBrowser_.onFilePreview = [this](const juce::File& file) { previewAudioFile(file); };
+    // Double-clicking a file imports it rather than "previewing" it. The
+    // preview loaded the file into the transport-slaved player, which only
+    // sounds while the song is already rolling — so double-clicking a file
+    // set a label and produced silence, which reads as the Files pane doing
+    // nothing. Importing is visible, undoable, and lands the file where it
+    // can then be auditioned.
+    fileBrowser_.onFilePreview = [this](const juce::File& file)
+    {
+        if (audiofiles::isImportableAudioFile(file))
+            importAudioFileAtBeat(file, 0.0, -1);
+        else
+            previewAudioFile(file);
+    };
 
     {
         std::vector<juce::File> bookmarks;
