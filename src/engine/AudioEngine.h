@@ -14,7 +14,6 @@
 
 #include "engine/AudioClipSlot.h"
 #include "engine/AudioFilePlayerNode.h"
-#include "engine/AudioPreviewPlayer.h"
 #include "engine/DrumKitNode.h"
 #include "engine/AudioRecorder.h"
 #include "engine/ClipSlot.h"
@@ -322,23 +321,6 @@ public:
         can't be determined. */
     juce::String systemDefaultOutputName();
 
-    // ---- audition (the audio editor's preview; see AudioPreviewPlayer) ----
-
-    /** Decodes @p file for auditioning. Uses the same path-keyed cache the
-        tracks use, so previewing a clip that's already loaded costs nothing.
-        Message thread. Returns false if it can't be read. */
-    bool loadPreviewClip(const juce::File& file);
-
-    /** Plays [fromSeconds, toSeconds) of the loaded preview clip. An end at
-        or before the start means "to the end of the file". */
-    void startPreview(double fromSeconds, double toSeconds)
-    {
-        preview_.play(fromSeconds, toSeconds);
-    }
-
-    void   stopPreview()                        { preview_.stop(); }
-    bool   isPreviewPlaying() const noexcept    { return preview_.isPlaying(); }
-    double previewPositionSeconds() const noexcept { return preview_.positionSeconds(); }
 
     /** Renders @p lengthBeats of the project starting at @p startBeats, offline
         and faster than real time, through **the same processBlock() the device
@@ -450,7 +432,6 @@ private:
     DelayEffect         masterDelay_;
     ReverbEffect        masterReverb_;
     EqEffect            masterEq_;
-    AudioPreviewPlayer  preview_;
     MasteringProcessor  mastering_;
     MasterBusNode       master_;
     Transport           transport_;

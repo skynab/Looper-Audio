@@ -1,5 +1,6 @@
 #include "PaneAudit.h"
 
+#include <app/AnalyserPane.h>
 #include <app/ApplyEffectsDialog.h>
 #include <app/AudioEditorPane.h>
 #include <app/MasteringPane.h>
@@ -75,6 +76,9 @@ TEST_CASE("Every pane's controls have something listening to them", "[gui][wirin
 
     ApplyEffectsDialog effects;
     paneaudit::requireWired(effects, "ApplyEffectsDialog");
+
+    AnalyserPane analyser;
+    paneaudit::requireWired(analyser, "AnalyserPane");
 }
 
 TEST_CASE("A mixer strip reports every move the user makes", "[gui][wiring]")

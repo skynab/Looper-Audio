@@ -90,21 +90,6 @@ bool AudioEngine::loadAudioFile(const juce::File& file)
     return true;
 }
 
-bool AudioEngine::loadPreviewClip(const juce::File& file)
-{
-    auto cached = decodeOrGetCached(file);
-    if (cached == nullptr)
-        return false;
-
-    // A copy rather than the cached shared_ptr: the preview player owns a
-    // raw pointer it deletes on the message thread, and handing it something
-    // the decode cache also owns would double-free. Preview is one file at a
-    // time and only while the editor is open, so the copy is affordable.
-    preview_.collectRetired();
-    preview_.submitClip(new ClipData(*cached));
-    return true;
-}
-
 std::shared_ptr<ClipData> AudioEngine::decodeOrGetCached(const juce::File& file)
 {
     const auto path = file.getFullPathName();
@@ -641,11 +626,6 @@ void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffe
 
     // The file player and master ignore the MIDI buffer.
     filePlayer_.process(output, midi, context);
-
-    // Auditioning goes through the master chain deliberately: what you're
-    // checking is what the mix will sound like, and that includes the
-    // mastering rack.
-    preview_.process(output);
     masterFilter_.process(output);
     masterDelay_.process(output);
     masterReverb_.process(output);
@@ -690,10 +670,6 @@ juce::AudioBuffer<float> AudioEngine::renderOffline(double startBeats, double le
     const bool    wasPlaying  = transport_.isPlaying();
     const bool    wasLooping  = transport_.isLooping();
     const int64_t wasPlayhead = transport_.playhead();
-
-    // An audition would otherwise be mixed into the export: preview_ is
-    // processed inside processBlock, which is what renderOffline renders.
-    preview_.stop();
 
     // Fresh state, so a render is reproducible instead of inheriting whatever
     // tails happened to be ringing when the user hit Bounce.
@@ -769,7 +745,6 @@ void AudioEngine::prepareAll(double sampleRate, int blockSize)
     masterDelay_.prepare(sampleRate, blockSize);
     masterReverb_.prepare(sampleRate, blockSize);
     masterEq_.prepare(sampleRate, blockSize);
-    preview_.prepare(sampleRate);
     mastering_.prepare(sampleRate, blockSize);
     master_.prepare(sampleRate, blockSize);
 

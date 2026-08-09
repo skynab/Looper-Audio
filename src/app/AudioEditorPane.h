@@ -47,10 +47,15 @@ public:
         MainComponent measures the file — this pane has no sample data. */
     std::function<void()> onNormaliseRequested;
 
-    /** Audition the clip. @p fromSeconds / @p toSeconds is the range to
-        play; an end at or before the start means "to the end". */
-    std::function<void(double fromSeconds, double toSeconds)> onPlayRequested;
-    std::function<void()>                                    onStopRequested;
+    /** Move the song's playhead to a point in this clip's file. The editor
+        shows the *song* timeline — there is only one — so clicking here is
+        the same gesture as clicking the ruler in the Tracks pane. */
+    std::function<void(double secondsIntoFile)> onSeekRequested;
+
+    /** Start or stop the song transport. @p fromSeconds is where to start
+        from; a selection plays from its beginning. */
+    std::function<void(double fromSeconds)> onPlayRequested;
+    std::function<void()>                   onStopRequested;
 
     /** The destructive edit actions. Named rather than one callback with an
         enum so the owner's wiring reads as a list of commands, matching how
@@ -121,15 +126,10 @@ public:
                 if (onStopRequested) onStopRequested();
                 return;
             }
+            // From the selection's start when there is one, otherwise from
+            // wherever the cursor was last put.
             if (onPlayRequested)
-            {
-                // An empty selection means "no selection", which for
-                // auditioning sensibly means the whole clip — unlike the
-                // destructive actions, where it must refuse.
-                const auto range = selection_;
-                onPlayRequested(range.isEmpty() ? 0.0 : range.startSeconds,
-                                range.isEmpty() ? 0.0 : range.endSeconds);
-            }
+                onPlayRequested(selection_.isEmpty() ? playheadSeconds_ : selection_.startSeconds);
         };
 
         // Two rows of edit commands. Each fires its own callback; the owner
@@ -290,8 +290,12 @@ public:
         repaint();
     }
 
-    /** Where the audition has reached, and whether it's running. Pushed by
-        the owner's timer — the pane has no access to the engine. */
+    /** Where the *song's* playhead sits within this clip's file, and whether
+        the transport is rolling. Pushed by the owner's timer.
+
+        There is one timeline: this is the same playhead the Tracks pane
+        draws, expressed in seconds into the file rather than in song beats.
+        A position outside the clip simply falls off either edge of the view. */
     void setPlaybackState(bool playing, double positionSeconds)
     {
         const bool stateChanged = playing != playing_;
@@ -346,14 +350,14 @@ public:
 
         paintWaveform(g, area);
 
-        // Only while running: a parked playhead at zero is indistinguishable
-        // from the start-of-file edge and just adds a line to read past.
-        if (playing_)
+        // Always drawn, not just while rolling: this is the edit cursor as
+        // well as the playhead, and a cursor you can place but not see would
+        // be no use for deciding where to click next.
         {
             const float x = geometry_.xForSeconds(playheadSeconds_);
             if (x >= (float) area.getX() && x <= (float) area.getRight())
             {
-                g.setColour(juce::Colours::yellow.withAlpha(0.9f));
+                g.setColour(juce::Colours::yellow.withAlpha(playing_ ? 0.9f : 0.55f));
                 g.drawVerticalLine((int) x, (float) area.getY(), (float) area.getBottom());
             }
         }
@@ -400,6 +404,7 @@ public:
 
         dragAnchorSeconds_ = geometry_.secondsForX((float) e.position.x);
         dragging_          = true;
+        draggedFar_        = false;
 
         // A plain click clears rather than selecting a zero-length range:
         // "click somewhere to deselect" is the expected gesture, and an empty
@@ -413,9 +418,16 @@ public:
         if (! dragging_)
             return;
 
-        setSelection(AudioRange::fromDrag(dragAnchorSeconds_,
-                                          geometry_.secondsForX((float) e.position.x))
-                         .clampedTo(geometry_.fileLengthSeconds));
+        // A few pixels of travel separates "clicked to place the cursor" from
+        // "dragged to select"; without a threshold, the hand-wobble in any
+        // real click would leave a one-pixel selection behind.
+        if (std::abs(e.getDistanceFromDragStartX()) > kDragThresholdPixels)
+            draggedFar_ = true;
+
+        if (draggedFar_)
+            setSelection(AudioRange::fromDrag(dragAnchorSeconds_,
+                                              geometry_.secondsForX((float) e.position.x))
+                             .clampedTo(geometry_.fileLengthSeconds));
     }
 
     void mouseUp(const juce::MouseEvent&) override
@@ -425,6 +437,17 @@ public:
 
         dragging_ = false;
         notifySelection();
+
+        // A plain click positions the song's playhead, the same as clicking
+        // the ruler in the Tracks pane. It also leaves the selection cleared,
+        // which is what a click already did.
+        if (! draggedFar_)
+        {
+            playheadSeconds_ = dragAnchorSeconds_;
+            repaint();
+            if (onSeekRequested)
+                onSeekRequested(dragAnchorSeconds_);
+        }
     }
 
     void resized() override
@@ -548,6 +571,9 @@ public:
 
 private:
     static constexpr int kToolRowHeight = 24;
+
+    /** Travel that turns a click into a drag-select. */
+    static constexpr int kDragThresholdPixels = 3;
 
     /** Below this the waveform stops being something you can select in, so
         control rows are dropped rather than eating into it further. */
@@ -781,6 +807,7 @@ private:
     juce::Slider     noiseAmountSlider_, noiseFloorSlider_;
     bool             noisePrintCaptured_ = false;
     bool             playing_            = false;
+    bool             draggedFar_         = false;
     double           playheadSeconds_    = 0.0;
     WaveformPeaks    peaks_;
     double           peaksSampleRate_ = 0.0;

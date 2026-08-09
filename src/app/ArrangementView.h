@@ -456,8 +456,14 @@ private:
         if (area.getWidth() < 1.0f || area.getHeight() < 1.0f)
             return;
 
+        // Scaled by the clip's own gain, so a normalised or turned-down clip
+        // looks different on the timeline too. Drawing at a fixed 1.0 meant
+        // the level was visible in the audio editor and invisible here, which
+        // is worse than showing it nowhere: two views of the same clip
+        // disagreeing reads as one of them being wrong.
         g.setColour(juce::Colours::white.withAlpha(0.55f));
-        thumbnail->drawChannels(g, area.toNearestInt(), 0.0, seconds, 1.0f);
+        thumbnail->drawChannels(g, area.toNearestInt(), 0.0, seconds,
+                                juce::Decibels::decibelsToGain(clip.gainDb));
     }
 
     /** Where a track's mute button sits, in this component's coordinates.

@@ -27,6 +27,7 @@ add_executable(looper_tests
   engine/NoiseReductionTests.cpp
   engine/AudioEditsTests.cpp
   engine/TimeStretchTests.cpp
+  engine/SpectrumTests.cpp
   engine/DelayLineTests.cpp
   engine/StateVariableFilterTests.cpp
   engine/ShelfPeakFilterTests.cpp
@@ -78,7 +79,6 @@ if (LOOPER_BUILD_APP)
     gui/ArrangementViewTests.cpp
   gui/AudioEditorPaneTests.cpp
   gui/AudioFileTypesTests.cpp
-  gui/AudioPreviewPlayerTests.cpp
     gui/IconsTests.cpp
     gui/PianoRollTests.cpp
     gui/ShortcutsTests.cpp

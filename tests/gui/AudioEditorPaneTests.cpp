@@ -369,3 +369,86 @@ TEST_CASE("A waveform with no peaks yet says so rather than drawing nothing",
 
     REQUIRE(differingPixels(empty, drawn) > 100);
 }
+
+TEST_CASE("Clicking the waveform asks to move the song playhead", "[gui][audioeditor]")
+{
+    // The editor shows the song's timeline, not one of its own — clicking it
+    // is the same gesture as clicking the ruler in the Tracks pane.
+    JuceFixture fixture;
+    auto        pane = makeReadyPane(800, 300, 10.0);
+
+    double requested = -1.0;
+    int    calls     = 0;
+    pane->onSeekRequested = [&](double seconds) { requested = seconds; ++calls; };
+
+    const auto point = waveformPoint(*pane, 0.5f);
+    sendMouseDown(*pane, eventAt(*pane, point, point));
+    sendMouseUp(*pane, eventAt(*pane, point, point));
+
+    REQUIRE(calls == 1);
+    REQUIRE(requested > 3.0);
+    REQUIRE(requested < 7.0);
+}
+
+TEST_CASE("Dragging to select does not also seek", "[gui][audioeditor]")
+{
+    // Otherwise every selection would yank the playhead to wherever the drag
+    // happened to start.
+    JuceFixture fixture;
+    auto        pane = makeReadyPane(800, 300, 10.0);
+
+    int calls = 0;
+    pane->onSeekRequested = [&](double) { ++calls; };
+
+    const auto from = waveformPoint(*pane, 0.2f);
+    const auto to   = waveformPoint(*pane, 0.8f);
+    sendMouseDown(*pane, eventAt(*pane, from, from));
+    sendMouseDrag(*pane, eventAt(*pane, to, from));
+    sendMouseUp(*pane, eventAt(*pane, to, from));
+
+    REQUIRE(calls == 0);
+    REQUIRE_FALSE(pane->selection().isEmpty());
+}
+
+TEST_CASE("A tiny wobble is a click, not a selection", "[gui][audioeditor]")
+{
+    // Real clicks move a pixel or two. Without a threshold every one of them
+    // would leave a sliver of selection behind, which the destructive
+    // commands would then happily act on.
+    JuceFixture fixture;
+    auto        pane = makeReadyPane(800, 300, 10.0);
+
+    int calls = 0;
+    pane->onSeekRequested = [&](double) { ++calls; };
+
+    const auto point   = waveformPoint(*pane, 0.5f);
+    const juce::Point<float> wobble { point.x + 1.0f, point.y };
+
+    sendMouseDown(*pane, eventAt(*pane, point, point));
+    sendMouseDrag(*pane, eventAt(*pane, wobble, point));
+    sendMouseUp(*pane, eventAt(*pane, wobble, point));
+
+    REQUIRE(calls == 1);
+    REQUIRE(pane->selection().isEmpty());
+}
+
+TEST_CASE("The playhead is drawn even when stopped", "[gui][audioeditor]")
+{
+    // It is the edit cursor as well as the playhead. A cursor you can place
+    // but not see would be no use for deciding where to click next.
+    JuceFixture fixture;
+
+    AudioEditorPane pane;
+    pane.setVisible(true);
+    pane.setSize(600, 300);
+    pane.setClip(juce::File("/nonexistent/take.wav"), 10.0, 0.0f, "Audio 1", 0xff3080ff);
+    pane.setWaveform(loudPeaks(48000 * 10), 48000.0);
+    pane.resized();
+
+    const auto atStart = renderPane(pane);
+    pane.setPlaybackState(false, 5.0); // stopped, halfway through
+    const auto moved = renderPane(pane);
+
+    INFO(differingPixels(atStart, moved) << " pixels changed");
+    REQUIRE(differingPixels(atStart, moved) > 20);
+}

@@ -26,6 +26,7 @@
 #include "DrumsPane.h"
 #include "EffectChainPanel.h"
 #include "EqCurveView.h"
+#include "AnalyserPane.h"
 #include "ApplyEffectsDialog.h"
 #include "AudioEditorPane.h"
 #include "MasteringPane.h"
@@ -196,6 +197,13 @@ private:
     void                   normaliseSelectedClip();
     // The audio-editor edit actions. Each resolves the selection, transforms
     // the samples and goes through applyDestructiveEdit.
+    /** Runs @p transform over the selected range, reading the clip once.
+        The one path the destructive selection edits share. */
+    bool                   editSelection(
+                               const juce::String& label, bool snapToZeroCrossings,
+                               const std::function<void(std::vector<std::vector<float>>&,
+                                                        int from, int to, double sampleRate)>& transform);
+
     void                   cutAudioSelection();
     void                   copyAudioSelection();
     void                   pasteAudioAtSelection();
@@ -209,8 +217,14 @@ private:
 
     void                   showApplyEffectsDialog();
     void                   showSpeedPitchDialog();
+    void                   analyseSelection();
     void                   applySpeedAndPitch(double speedFactor, double semitones);
     void                   applyEffectsToSelection(const std::vector<model::EffectSlot>& chain);
+
+    /** Converts between the audio editor's file-seconds and song beats —
+        the one place that mapping lives. */
+    double                 songBeatForClipSeconds(double secondsIntoFile) const;
+    double                 clipSecondsForSongBeat(double beat) const;
 
     void                   captureNoisePrint();
     void                   reduceNoiseOnSelectedClip(float amountDb, float floorDb);
@@ -481,6 +495,7 @@ private:
     FretboardPane                      fretboard_; // ditto — see refreshTrackEffectsForSelected
     AudioEditorPane                    audioEditor_; // ditto — see refreshAudioEditorForSelected
     MasteringPane                      masteringPane_; // ditto — see updateMasteringControls
+    AnalyserPane                       analyserPane_;
     bool                               masteringDragging_ = false;
     model::MasteringSettings           masteringDragFrom_;
     // Follows the system's default output (headphones being plugged in,

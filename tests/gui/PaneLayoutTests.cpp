@@ -1,5 +1,6 @@
 #include "PaneAudit.h"
 
+#include <app/AnalyserPane.h>
 #include <app/ApplyEffectsDialog.h>
 #include <app/AudioEditorPane.h>
 #include <app/MasteringPane.h>
@@ -99,6 +100,21 @@ TEST_CASE("The audio editor lays out usably at every size", "[gui][panes]")
         pane.resized();
 
         paneaudit::requireUsable(pane, "AudioEditorPane at " + size.toString());
+    }
+}
+
+TEST_CASE("The analyser pane lays out usably at every size", "[gui][panes]")
+{
+    JuceFixture fixture;
+
+    for (const auto& size : kSizes)
+    {
+        AnalyserPane pane;
+        pane.setVisible(true);
+        pane.setBounds(size);
+        pane.resized();
+
+        paneaudit::requireUsable(pane, "AnalyserPane at " + size.toString());
     }
 }
 

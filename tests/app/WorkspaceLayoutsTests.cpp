@@ -19,7 +19,7 @@ namespace
         that the two agree. */
     const std::set<std::string> kRegisteredPanels {
         "Files", "Transport", "Tracks", "Keys", "Synth", "Drums", "Guitar",
-        "Audio", "Mastering", "Session", "Track FX", "Mixer", "Master", "Keyboard"
+        "Audio", "Mastering", "Analyser", "Session", "Track FX", "Mixer", "Master", "Keyboard"
     };
 }
 
@@ -116,6 +116,7 @@ TEST_CASE("Each layout opens the panes its job needs", "[app][layouts]")
 
     REQUIRE(has(audio, "Audio"));
     REQUIRE(has(audio, "Mastering"));
+    REQUIRE(has(audio, "Analyser"));
 
     // Both keep the timeline and the transport: you need to pick a clip and
     // to start playback whichever job you're doing.

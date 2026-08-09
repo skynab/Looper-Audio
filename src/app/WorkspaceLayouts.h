@@ -100,9 +100,11 @@ inline std::unique_ptr<DockLayoutNode> buildWorkspaceLayout(Workspace workspace)
                                    above(0.80,
                                          leaf({ "Audio" }),
                                          leaf({ "Transport", "Keyboard" }, "Transport"))),
-                             above(0.60,
+                             above(0.45,
                                    leaf({ "Mastering" }),
-                                   leaf({ "Master" }))));
+                                   above(0.55,
+                                         leaf({ "Analyser" }),
+                                         leaf({ "Master" })))));
     }
 
     // Music Creation — the arrangement the app shipped with as its only
