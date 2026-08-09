@@ -37,6 +37,7 @@ struct Song
     ReverbSettings     reverb;
     SendBusSettings    sendBus;
     EqSettings         eq;
+    MasteringSettings  mastering;
     AutomationLane     masterGainDb; // master gain automation (dB over beats)
 
     // Project-specific data, not an app preference — round-trips with the

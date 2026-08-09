@@ -116,9 +116,14 @@ public:
         if (foundIndex < 0)
             return; // between clips, or before/after every clip's window
 
-        const auto* clip = current_->at((size_t) foundIndex).clipData.get();
+        const auto& activeSlot = current_->at((size_t) foundIndex);
+        const auto* clip       = activeSlot.clipData.get();
         if (clip == nullptr)
             return;
+
+        // Per-clip trim (model::Clip::gainDb), already linear — see
+        // AudioClipSlot::gain.
+        const float clipGain = activeSlot.gain;
 
         const double ratio      = clip->sourceSampleRate > 0.0
                                       ? clip->sourceSampleRate / deviceSampleRate_
@@ -137,7 +142,7 @@ public:
                 {
                     const int    srcCh  = juce::jmin(ch, fileChans - 1);
                     const float* srcPtr = clip->audio.getReadPointer(srcCh);
-                    buffer.getWritePointer(ch)[i] += sampleLinear(srcPtr, length, position);
+                    buffer.getWritePointer(ch)[i] += clipGain * sampleLinear(srcPtr, length, position);
                 }
             }
 

@@ -44,4 +44,36 @@ inline float eqMagnitudeDb(const model::EqSettings& eq, float hz, double sampleR
     return bass.magnitudeDbAt(hz) + mid.magnitudeDbAt(hz) + treble.magnitudeDbAt(hz);
 }
 
+/** The mastering rack's EQ response at @p hz, in dB.
+
+    Same three-filters-summed approach as eqMagnitudeDb above, and built from
+    the same ShelfPeakFilter the rack itself uses — so the curve on screen
+    can't drift from the filters in the signal path. Unlike the master EQ,
+    every frequency here is adjustable, which is why they come from the
+    settings rather than from fixed constants. */
+inline float masteringEqMagnitudeDb(const model::MasteringSettings& m, float hz,
+                                    double sampleRate = 48000.0)
+{
+    ShelfPeakFilter low;
+    low.prepare(sampleRate);
+    low.setShape(ShelfPeakFilter::Shape::LowShelf);
+    low.setFrequency(m.lowShelfHz);
+    low.setGainDb(m.lowShelfDb);
+
+    ShelfPeakFilter peak;
+    peak.prepare(sampleRate);
+    peak.setShape(ShelfPeakFilter::Shape::Peaking);
+    peak.setFrequency(m.peakHz);
+    peak.setQ(m.peakQ);
+    peak.setGainDb(m.peakDb);
+
+    ShelfPeakFilter high;
+    high.prepare(sampleRate);
+    high.setShape(ShelfPeakFilter::Shape::HighShelf);
+    high.setFrequency(m.highShelfHz);
+    high.setGainDb(m.highShelfDb);
+
+    return low.magnitudeDbAt(hz) + peak.magnitudeDbAt(hz) + high.magnitudeDbAt(hz);
+}
+
 } // namespace looper::engine

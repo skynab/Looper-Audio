@@ -2,6 +2,9 @@
 
 #include <engine/GenerativeLoop.h>
 
+#include <algorithm>
+#include <cmath>
+
 using namespace looper::engine;
 
 // --- euclideanRhythm ---------------------------------------------------
@@ -307,6 +310,126 @@ TEST_CASE("generateMelodicLoop's swing keeps every note inside the pattern", "[e
     {
         REQUIRE(note.startBeats >= 0.0);
         REQUIRE(note.startBeats + note.lengthBeats <= pattern.lengthBeats + 1.0e-9);
+    }
+}
+
+namespace
+{
+    /** How many notes share a start time with at least one other note —
+        i.e. how much of the part is actually sounding as harmony. */
+    int simultaneousNoteCount(const Pattern& p)
+    {
+        int count = 0;
+        for (size_t i = 0; i < p.notes.size(); ++i)
+            for (size_t j = 0; j < p.notes.size(); ++j)
+                if (i != j && std::abs(p.notes[i].startBeats - p.notes[j].startBeats) < 1.0e-9)
+                {
+                    ++count;
+                    break;
+                }
+        return count;
+    }
+}
+
+TEST_CASE("generateMelodicLoop's harmony stacks notes onto the same onset", "[engine][generativeloop]")
+{
+    // The ask this exists for: some onsets should sound more than one note.
+    MelodicLoopParams params;
+    params.seed    = 5;
+    params.bars    = 2;
+    params.harmony = 0.8;
+
+    const auto pattern = generateMelodicLoop(params);
+    INFO(simultaneousNoteCount(pattern) << " of " << pattern.notes.size() << " notes are stacked");
+    REQUIRE(simultaneousNoteCount(pattern) > 0);
+}
+
+TEST_CASE("generateMelodicLoop's harmony at zero is one note per onset", "[engine][generativeloop]")
+{
+    // The only reading of a harmony control under which turning it off
+    // leaves the part alone - same contract Tremolo's depth has.
+    MelodicLoopParams params;
+    params.seed    = 5;
+    params.bars    = 2;
+    params.harmony = 0.0;
+
+    const auto pattern = generateMelodicLoop(params);
+    REQUIRE_FALSE(pattern.notes.empty());
+    REQUIRE(simultaneousNoteCount(pattern) == 0);
+}
+
+TEST_CASE("generateMelodicLoop's harmony notes are still in the requested scale", "[engine][generativeloop]")
+{
+    // Harmony is stacked by scale *degree*, not by a fixed semitone
+    // interval, precisely so this holds - a fixed +4 semitones would leave
+    // the scale on half the degrees of a major scale.
+    for (auto type : { ScaleType::Major, ScaleType::MinorPentatonic, ScaleType::Dorian })
+    {
+        for (unsigned seed = 1; seed <= 10; ++seed)
+        {
+            MelodicLoopParams params;
+            params.scale   = Scale { type, 62 };
+            params.seed    = seed;
+            params.bars    = 2;
+            params.harmony = 1.0;
+
+            const auto pattern = generateMelodicLoop(params);
+            INFO("seed " << seed);
+            for (const auto& note : pattern.notes)
+                REQUIRE(isInScale(note.noteNumber, params.scale));
+        }
+    }
+}
+
+TEST_CASE("generateMelodicLoop's harmony adds notes without moving the melody", "[engine][generativeloop]")
+{
+    // Harmony is drawn every onset rather than only the harmonised ones, so
+    // the same seed walks the same melody at every setting: turning harmony
+    // up must add notes to the part, not generate a different part.
+    MelodicLoopParams dry;
+    dry.seed    = 11;
+    dry.bars    = 2;
+    dry.harmony = 0.0;
+
+    MelodicLoopParams wet = dry;
+    wet.harmony            = 0.9;
+
+    const auto dryPattern = generateMelodicLoop(dry);
+    const auto wetPattern = generateMelodicLoop(wet);
+    REQUIRE(wetPattern.notes.size() > dryPattern.notes.size());
+
+    // Every melody onset survives, at the same time and pitch.
+    for (const auto& note : dryPattern.notes)
+    {
+        const bool found = std::any_of(wetPattern.notes.begin(), wetPattern.notes.end(),
+            [&](const Note& w)
+            {
+                return w.noteNumber == note.noteNumber
+                    && std::abs(w.startBeats - note.startBeats) < 1.0e-9;
+            });
+        INFO("melody note " << note.noteNumber << " at " << note.startBeats);
+        REQUIRE(found);
+    }
+}
+
+TEST_CASE("generateMelodicLoop's harmony never overlaps two notes on the same pitch",
+          "[engine][generativeloop]")
+{
+    // Harmony introduces a new way for two notes to land on one pitch: a
+    // stacked third can be the pitch a later onset's melody walks onto.
+    // clampNoteLengths already covers it, and this is what says so.
+    for (unsigned seed = 1; seed <= 20; ++seed)
+    {
+        MelodicLoopParams params;
+        params.seed    = seed;
+        params.bars    = 2;
+        params.density = 0.95;
+        params.swing   = 0.85;
+        params.harmony = 1.0;
+
+        const auto pattern = generateMelodicLoop(params);
+        INFO("seed " << seed);
+        REQUIRE_FALSE(hasSamePitchOverlap(pattern));
     }
 }
 

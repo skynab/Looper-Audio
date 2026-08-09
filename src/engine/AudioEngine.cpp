@@ -123,7 +123,8 @@ bool AudioEngine::setTrackAudioClips(int index, const std::vector<AudioClipSpec>
             allOk = false;
             continue; // skip this clip; the others still load
         }
-        slots->push_back({ decoded, spec.startBeats, spec.lengthBeats });
+        slots->push_back({ decoded, spec.startBeats, spec.lengthBeats,
+                           juce::Decibels::decibelsToGain(spec.gainDb) });
     }
 
     auto& track = tracks_[(size_t) index];
@@ -575,6 +576,20 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
 
     recorder_.process(inputChannelData, numInputChannels, numSamples, context.transport.playing);
 
+    processBlock(output, incomingMidi_, context);
+
+    // After the master bus deliberately: the click bypasses the master
+    // effects and gain, stays off the meter, and can never be exported (it
+    // sits outside processBlock, which is what renderOffline renders).
+    // `force` sounds it through a count-in even when it's otherwise off.
+    metronome_.process(output, context, isCountingIn());
+}
+
+void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffer& midi,
+                               const ProcessContext& context) noexcept
+{
+    const int numSamples = context.numSamples;
+
     bool anySolo = false;
     for (auto& track : tracks_)
         anySolo |= track.solo.load(std::memory_order_relaxed);
@@ -592,7 +607,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
     for (int i = 0; i < kMaxTracks; ++i)
     {
         if (tracks_[(size_t) i].active.load(std::memory_order_relaxed))
-            tracks_[(size_t) i].render(output, sendBus_, incomingMidi_, context, i == armed, anySolo,
+            tracks_[(size_t) i].render(output, sendBus_, midi, context, i == armed, anySolo,
                                        launchQuantumSamples);
     }
 
@@ -610,20 +625,91 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
     }
 
     // The file player and master ignore the MIDI buffer.
-    filePlayer_.process(output, incomingMidi_, context);
+    filePlayer_.process(output, midi, context);
     masterFilter_.process(output);
     masterDelay_.process(output);
     masterReverb_.process(output);
     masterEq_.process(output);
-    master_.process(output, incomingMidi_, context);
-
-    // After the master bus deliberately: the click bypasses the master
-    // effects and gain, stays off the meter, and can never be exported (the
-    // offline renderer has no metronome). `force` sounds it through a
-    // count-in even when it's otherwise switched off.
-    metronome_.process(output, context, isCountingIn());
+    // The mastering rack sits between the master EQ and the output node, so
+    // its limiter is the last thing to touch level before the meter reads it
+    // — a ceiling that something after it could exceed wouldn't be one.
+    mastering_.process(output);
+    master_.process(output, midi, context);
 
     transport_.advance(numSamples);
+}
+
+juce::AudioBuffer<float> AudioEngine::renderOffline(double startBeats, double lengthBeats, int blockSize)
+{
+    const double sampleRate = sampleRate_.load(std::memory_order_relaxed);
+    const double bpm        = transport_.tempoMap().tempo();
+
+    juce::AudioBuffer<float> output(2, 0);
+    if (sampleRate <= 0.0 || bpm <= 0.0 || lengthBeats <= 0.0)
+        return output;
+
+    blockSize = juce::jmax(1, blockSize);
+
+    const double  samplesPerBeat = sampleRate * 60.0 / bpm;
+    const int64_t startSample    = (int64_t) std::llround(startBeats * samplesPerBeat);
+    const int     totalSamples   = (int) std::llround(lengthBeats * samplesPerBeat);
+    if (totalSamples <= 0)
+        return output;
+
+    // Suspending the device is what makes this safe rather than a race: the
+    // mixer's state has exactly one writer by design, and the device thread
+    // is otherwise inside processBlock at the same time as this loop.
+    deviceManager_.removeAudioCallback(this);
+
+    // Only the device callback drains this, so with the callback removed
+    // anything still queued would sit unapplied for the whole render — a
+    // tempo change made just before hitting Bounce would silently not be in
+    // the file. Drained here, while this thread is the only one running.
+    drainCommandQueue();
+
+    const bool    wasPlaying  = transport_.isPlaying();
+    const bool    wasLooping  = transport_.isLooping();
+    const int64_t wasPlayhead = transport_.playhead();
+
+    // Fresh state, so a render is reproducible instead of inheriting whatever
+    // tails happened to be ringing when the user hit Bounce.
+    prepareAll(sampleRate, blockSize);
+
+    // Looping off for the duration: a loop region set for auditioning would
+    // otherwise wrap the playhead mid-export and repeat a section.
+    transport_.setLooping(false);
+    transport_.seek(startSample);
+    transport_.setPlaying(true);
+
+    output.setSize(2, totalSamples);
+    output.clear();
+
+    juce::MidiBuffer noLiveMidi;
+
+    for (int pos = 0; pos < totalSamples; pos += blockSize)
+    {
+        const int n = juce::jmin(blockSize, totalSamples - pos);
+
+        ProcessContext context;
+        context.sampleRate = sampleRate;
+        context.numSamples = n;
+        context.transport  = transport_.snapshot();
+
+        juce::AudioBuffer<float> view(output.getArrayOfWritePointers(), 2, pos, n);
+        noLiveMidi.clear();
+        processBlock(view, noLiveMidi, context);
+    }
+
+    transport_.setPlaying(wasPlaying);
+    transport_.setLooping(wasLooping);
+    transport_.seek(wasPlayhead);
+
+    // Again on the way out, so live playback doesn't start up holding the
+    // render's delay and reverb tails.
+    prepareAll(sampleRate, blockSize);
+
+    deviceManager_.addAudioCallback(this);
+    return output;
 }
 
 void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
@@ -634,6 +720,12 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     sampleRate_.store(sampleRate, std::memory_order_relaxed);
     midiCollector_.reset(sampleRate);
     incomingMidi_.ensureSize(2048);
+
+    prepareAll(sampleRate, blockSize);
+}
+
+void AudioEngine::prepareAll(double sampleRate, int blockSize)
+{
     transport_.prepare(sampleRate);
 
     currentBlockSize_ = blockSize;
@@ -653,6 +745,7 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
     masterDelay_.prepare(sampleRate, blockSize);
     masterReverb_.prepare(sampleRate, blockSize);
     masterEq_.prepare(sampleRate, blockSize);
+    mastering_.prepare(sampleRate, blockSize);
     master_.prepare(sampleRate, blockSize);
 
     sendBus_.setSize(2, blockSize);
@@ -666,6 +759,47 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
 
     recorder_.prepare(sampleRate, 2, kMaxRecordSeconds);
     metronome_.prepare(sampleRate);
+}
+
+juce::String AudioEngine::systemDefaultOutputName()
+{
+    auto* type = deviceManager_.getCurrentDeviceTypeObject();
+    if (type == nullptr)
+        return {};
+
+    // Without a rescan the list is whatever it was when the type was created,
+    // so a device that has just been plugged in isn't in it yet — which is
+    // precisely the moment this gets asked.
+    type->scanForDevices();
+
+    const auto names = type->getDeviceNames(false); // false = outputs
+    const int  index = type->getDefaultDeviceIndex(false);
+
+    return juce::isPositiveAndBelow(index, names.size()) ? names[index] : juce::String {};
+}
+
+juce::String AudioEngine::followSystemDefaultOutput()
+{
+    const auto defaultName = systemDefaultOutputName();
+    if (defaultName.isEmpty())
+        return {};
+
+    if (auto* current = deviceManager_.getCurrentAudioDevice())
+        if (current->getName() == defaultName)
+            return {}; // already on it
+
+    auto setup = deviceManager_.getAudioDeviceSetup();
+    setup.outputDeviceName         = defaultName;
+    setup.useDefaultOutputChannels = true;
+
+    // treatAsChosenDevice = false: this is the app following the system, not
+    // the user picking something, so it shouldn't be written back as a
+    // remembered preference.
+    const auto error = deviceManager_.setAudioDeviceSetup(setup, false);
+    if (error.isNotEmpty())
+        return {};
+
+    return defaultName;
 }
 
 void AudioEngine::audioDeviceStopped()

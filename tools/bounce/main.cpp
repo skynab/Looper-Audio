@@ -22,10 +22,139 @@
 #include "engine/Metronome.h"
 #include "engine/SessionPlayer.h"
 #include "engine/MidiFileIO.h"
+#include "engine/MasteringProcessor.h"
 #include "engine/OfflineRenderer.h"
 #include "engine/ReverbEffect.h"
 #include "model/AutomationLane.h"
+#include "model/GuitarTonePresets.h"
+#include "model/SynthTonePresets.h"
+#include "model/MasteringPresets.h"
 #include "model/Song.h"
+
+/** One chain node for @p slot, for the preset checks below — they need to
+    render a `model::EffectSlot` chain the way a real track would, and the
+    app-side translation that normally does this lives in MainComponent,
+    which this tool doesn't link.
+
+    if/else rather than a switch because this deliberately handles only the
+    kinds the presets actually use, and -Wswitch-enum would rightly object to
+    a switch that does that. An unhandled kind returns null and is skipped,
+    so a preset gaining a new kind shows up as a check that stops proving
+    what it claims — which is why each check also asserts the chain changed
+    the sound, not merely that it ran. */
+static std::unique_ptr<looper::engine::EffectProcessor> nodeForSlot(const looper::model::EffectSlot& slot)
+{
+    using namespace looper::engine;
+    using looper::model::EffectKind;
+
+    if (slot.kind == EffectKind::Compressor)
+    {
+        auto node = std::make_unique<CompressorNode>();
+        node->effect.setEnabled(slot.compressor.enabled);
+        node->effect.setThresholdDb(slot.compressor.thresholdDb);
+        node->effect.setRatio(slot.compressor.ratio);
+        node->effect.setAttackMs(slot.compressor.attackMs);
+        node->effect.setReleaseMs(slot.compressor.releaseMs);
+        node->effect.setMakeUpDb(slot.compressor.makeUpDb);
+        return node;
+    }
+    if (slot.kind == EffectKind::Drive)
+    {
+        auto node = std::make_unique<DriveNode>();
+        node->effect.setEnabled(slot.drive.enabled);
+        node->effect.setDrive(slot.drive.drive);
+        node->effect.setTone(slot.drive.tone);
+        node->effect.setLevel(slot.drive.level);
+        node->effect.setHardClip(slot.drive.hardClip);
+        node->effect.setCabinet(slot.drive.cabinet);
+        return node;
+    }
+    if (slot.kind == EffectKind::Gate)
+    {
+        auto node = std::make_unique<GateNode>();
+        node->effect.setEnabled(slot.gate.enabled);
+        node->effect.setThresholdDb(slot.gate.thresholdDb);
+        node->effect.setRangeDb(slot.gate.rangeDb);
+        node->effect.setAttackMs(slot.gate.attackMs);
+        node->effect.setHoldMs(slot.gate.holdMs);
+        node->effect.setReleaseMs(slot.gate.releaseMs);
+        return node;
+    }
+    if (slot.kind == EffectKind::Delay)
+    {
+        auto node = std::make_unique<DelayNode>();
+        node->effect.setEnabled(slot.delay.enabled);
+        node->effect.setTimeMs(slot.delay.timeMs);
+        node->effect.setFeedback(slot.delay.feedback);
+        node->effect.setMix(slot.delay.mix);
+        return node;
+    }
+    if (slot.kind == EffectKind::Chorus)
+    {
+        auto node = std::make_unique<ChorusNode>();
+        node->effect.setEnabled(slot.chorus.enabled);
+        node->effect.setRateHz(slot.chorus.rateHz);
+        node->effect.setDepth(slot.chorus.depth);
+        node->effect.setMix(slot.chorus.mix);
+        return node;
+    }
+    if (slot.kind == EffectKind::Reverb)
+    {
+        auto node = std::make_unique<ReverbNode>();
+        node->effect.setEnabled(slot.reverb.enabled);
+        node->effect.setRoomSize(slot.reverb.roomSize);
+        node->effect.setDamping(slot.reverb.damping);
+        node->effect.setMix(slot.reverb.mix);
+        return node;
+    }
+    return nullptr;
+}
+
+/** Summed energy in [loHz, hiHz] of @p buf's left channel, by direct
+    correlation at a geometric comb of frequencies (so each octave is
+    weighted alike). Two fixed bands don't justify an FFT, and the same
+    technique already measures the chorus's harmonic spill.
+
+    Shared by the preset checks, which both need to say something about
+    *timbre* rather than level: RMS barely moves between a sine and a
+    driven, detuned saw at the same note, so a level comparison would pass
+    for a preset that had been applied to entirely the wrong fields. */
+static double bandEnergy(const juce::AudioBuffer<float>& buf, double loHz, double hiHz,
+                         double sampleRate)
+{
+    const int   from  = (int) (0.05 * sampleRate);
+    const int   count = (int) (0.5 * sampleRate);
+    const auto* data  = buf.getReadPointer(0);
+
+    double total = 0.0;
+    for (double hz = loHz; hz <= hiHz; hz *= 1.15)
+    {
+        double re = 0.0, im = 0.0;
+        for (int n = 0; n < count; ++n)
+        {
+            const double phase = 2.0 * 3.14159265358979 * hz * (double) n / sampleRate;
+            re += data[from + n] * std::cos(phase);
+            im -= data[from + n] * std::sin(phase);
+        }
+        total += (re * re + im * im) / ((double) count * (double) count);
+    }
+    return total;
+}
+
+/** The largest sample-for-sample difference between two equally-sized
+    buffers — "did this stage change anything at all", which several checks
+    need and which no level comparison answers. */
+static float worstBufferDifference(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+{
+    const int channels = std::min(a.getNumChannels(), b.getNumChannels());
+    const int samples  = std::min(a.getNumSamples(), b.getNumSamples());
+
+    float worst = 0.0f;
+    for (int ch = 0; ch < channels; ++ch)
+        for (int n = 0; n < samples; ++n)
+            worst = std::max(worst, std::abs(a.getReadPointer(ch)[n] - b.getReadPointer(ch)[n]));
+    return worst;
+}
 
 // Headless bounce: renders a demo arpeggio to a WAV so the synth + sequencer
 // audio path can be verified without an audio device. Also usable as a smoke test.
@@ -988,6 +1117,312 @@ int main(int argc, char** argv)
         tremoloModulates = loudWindows > 4 && deepestDip < 0.3f;
     }
 
+    // The Cyber Bass synth tone, end to end. Same purpose as the Modern
+    // Metal check below: a preset made of ~20 hand-tuned fields can be
+    // individually valid and still come out silent, thin, or clipping once
+    // they're combined, and no per-field test sees that. Values come from
+    // presetForSynthTone rather than being restated here.
+    bool cyberBassHasWeight = false;
+    {
+        const auto preset = looper::model::presetForSynthTone(SynthTone::CyberBass);
+
+        auto renderBass = [&](bool withPreset)
+        {
+            const int totalSamples = (int) (sampleRate * 1.5);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack track;
+            track.prepare(sampleRate, 512);
+
+            if (withPreset)
+            {
+                const auto& s = preset.synth;
+                track.synth.setWaveform(s.waveform);
+                track.synth.setAttackMs(s.attackMs);
+                track.synth.setDecayMs(s.decayMs);
+                track.synth.setSustain(s.sustain);
+                track.synth.setReleaseMs(s.releaseMs);
+                track.synth.setFilterEnabled(s.filterEnabled);
+                track.synth.setFilterMode(s.filterMode);
+                track.synth.setFilterCutoff(s.filterCutoff);
+                track.synth.setFilterResonance(s.filterResonance);
+                track.synth.setFilterEnvAmount(s.filterEnvAmount);
+                track.synth.setFilterEnvAttackMs(s.filterEnvAttackMs);
+                track.synth.setFilterEnvDecayMs(s.filterEnvDecayMs);
+                track.synth.setFilterEnvSustain(s.filterEnvSustain);
+                track.synth.setFilterEnvReleaseMs(s.filterEnvReleaseMs);
+                track.synth.setSubOscEnabled(s.subOscEnabled);
+                track.synth.setSubOscLevel(s.subOscLevel);
+                track.synth.setUnisonVoices(s.unisonVoices);
+                track.synth.setUnisonDetuneCents(s.unisonDetuneCents);
+
+                auto chain = std::make_unique<EffectChain>();
+                for (const auto& slot : preset.effectChain)
+                    if (auto node = nodeForSlot(slot))
+                        chain->add(std::move(node));
+                chain->prepare(sampleRate, 512);
+                track.setEffectChain(chain.release());
+            }
+
+            // A held low note, which is what this sound is for.
+            Pattern bassPattern;
+            bassPattern.lengthBeats = 4.0;
+            bassPattern.notes.push_back({ 0.0, 3.5, 36, 0.9f });
+
+            ClipSlot slot;
+            slot.pattern     = bassPattern;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            track.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockView(mix.getArrayOfWritePointers(), 2, pos, n);
+                track.render(blockView, sendBus, noLiveMidi, context, false, false);
+            }
+            return mix;
+        };
+
+        const auto plain = renderBass(false);
+        const auto cyber = renderBass(true);
+
+        const float cyberRms  = cyber.getRMSLevel(0, 0, cyber.getNumSamples());
+        const float cyberPeak = cyber.getMagnitude(0, 0, cyber.getNumSamples());
+
+        // Measured as *harmonic richness*, not level. The default synth is a
+        // bare sine, so at this note it has almost nothing above its own
+        // fundamental; the preset is four detuned saws through a resonant
+        // filter and a drive, which necessarily fills the band above it.
+        // That ratio is what distinguishes "the preset was applied" from
+        // "something made a sound" — RMS does not (measured: 0.136 vs 0.140,
+        // i.e. indistinguishable), and a level check would therefore pass
+        // for a preset wired into entirely the wrong fields.
+        const double plainGrit = bandEnergy(plain, 300.0, 2000.0, sampleRate);
+        const double cyberGrit = bandEnergy(cyber, 300.0, 2000.0, sampleRate);
+        const double grit      = cyberGrit / std::max(plainGrit, 1.0e-18);
+
+        cyberBassHasWeight = cyberRms > 1.0e-3f   // audible at all
+                          && grit > 10.0          // and unmistakably not a sine
+                          && cyberPeak < 1.0f;    // without clipping the bus
+
+        std::cout << "cyber bass: rms=" << cyberRms << " peak=" << cyberPeak
+                  << " grit=" << grit << "\n";
+    }
+
+    // The Modern Metal tone template, end to end: a plucked note through the
+    // exact chain the button applies. This exists because the first version
+    // of that preset shipped audibly thin - Drive's make-up gain falls as
+    // 1/sqrt(drive) (see DriveEffect::process), so pushing drive near its
+    // ceiling quietly cut the output to a fraction of its input, which no
+    // per-pedal test could see. Values come from presetForGuitarTone rather
+    // than being restated, so retuning the preset re-checks the real thing.
+    bool metalToneHasBody = false;
+    {
+        const auto preset = looper::model::presetForGuitarTone(GuitarTone::ModernMetal);
+
+        auto renderThroughPreset = [&](bool withChain)
+        {
+            const int totalSamples = (int) (sampleRate * 1.5);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            GuitarNode guitar;
+            guitar.prepare(sampleRate, 512);
+            guitar.setDecaySeconds(preset.guitar.decaySeconds);
+            guitar.setBrightness(preset.guitar.brightness);
+            guitar.setPickPosition(preset.guitar.pickPosition);
+            guitar.setPickHardness(preset.guitar.pickHardness);
+
+            // The tuning matters as much as the pedals here: a GuitarNode
+            // left in standard tuning can't reach a dropped low note at all
+            // (it's below every open string), so it renders silence. This is
+            // the engine-side half of what AudioEngine::setTrackGuitarTuning
+            // does for a real track.
+            for (int s = 0; s < kNumGuitarStrings; ++s)
+                guitar.setOpenNote(s, preset.guitar.tuning[(size_t) s]);
+
+            EffectChain chain;
+            if (withChain)
+                for (const auto& slot : preset.effectChain)
+                    if (auto node = nodeForSlot(slot))
+                        chain.add(std::move(node));
+            chain.prepare(sampleRate, 512);
+
+            // The preset's own lowest string, which is the note this tone is
+            // actually about - drop C's low C2 rather than a standard low E.
+            const int lowString = preset.guitar.tuning[0];
+
+            juce::MidiBuffer midi;
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                midi.clear();
+                if (pos == 0)
+                    midi.addEvent(juce::MidiMessage::noteOn(1, lowString, 0.9f), 0);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.bpm                = bpm;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                juce::AudioBuffer<float> view(mix.getArrayOfWritePointers(), 2, pos, n);
+                guitar.process(view, midi, context);
+                chain.process(view);
+            }
+            return mix;
+        };
+
+        const auto dry     = renderThroughPreset(false);
+        const auto through = renderThroughPreset(true);
+
+        const float dryRms  = dry.getRMSLevel(0, 0, dry.getNumSamples());
+        const float wetRms  = through.getRMSLevel(0, 0, through.getNumSamples());
+        const float wetPeak = through.getMagnitude(0, 0, through.getNumSamples());
+
+        // "Growl" measured rather than asserted: energy in the low-mid band
+        // where a dropped, saturated guitar's body lives, over the fizz band
+        // above the cabinet's corner. Summed over a comb of frequencies in
+        // each band by direct correlation - the same technique the chorus
+        // harmonic check uses, and cheaper than an FFT for two fixed bands.
+        const double growlBand = bandEnergy(through, 90.0, 600.0, sampleRate);
+        const double fizzBand  = bandEnergy(through, 2000.0, 6000.0, sampleRate);
+        const double growl     = growlBand / std::max(fizzBand, 1.0e-18);
+
+        // Three separate ways the tone can be wrong, all of which have to
+        // fail this: silent/thin (the bug that prompted it), not actually
+        // distorting (a chain that passes through), and clipping the mix
+        // bus. A high-gain tone should come out at least as loud as the
+        // clean note, since that is the entire point of an amp.
+        metalToneHasBody = dryRms > 1.0e-4f
+                        && wetRms >= dryRms
+                        && wetPeak < 1.0f
+                        // The preset's values were tuned against this figure
+                        // and land near 6.4. The floor is set well under
+                        // that but well over the ~2.7 the preset measured
+                        // before it was tuned for growl, so it catches a
+                        // regression back to that character without pinning
+                        // an exact number nobody should be editing to.
+                        && growl > 4.0;
+
+        std::cout << "modern metal tone: dryRms=" << dryRms << " wetRms=" << wetRms
+                  << " wetPeak=" << wetPeak << " growl=" << growl << "\n";
+    }
+
+    // The mastering rack, end to end through the real processor. Two claims
+    // that a per-stage unit test can't make: that the rack as assembled
+    // changes the sound at all, and that its limiter's ceiling survives
+    // everything upstream of it — the EQ, exciter, widener and reverb all
+    // add level, and a ceiling that only holds in isolation isn't one.
+    bool masteringChangesSound   = false;
+    bool masteringHoldsCeiling   = false;
+    {
+        auto makeMix = [&]
+        {
+            const int totalSamples = (int) (sampleRate * 1.0);
+            juce::AudioBuffer<float> buf(2, totalSamples);
+            for (int n = 0; n < totalSamples; ++n)
+            {
+                // Loud, broadband and transient-heavy: a tone plus periodic
+                // full-scale spikes, which is what actually tests a limiter.
+                const float tone  = 0.5f * std::sin(2.0f * juce::MathConstants<float>::pi
+                                                    * 220.0f * (float) n / (float) sampleRate);
+                const float spike = (n % 4000 < 40) ? 0.95f : 0.0f;
+                buf.setSample(0, n, tone + spike);
+                buf.setSample(1, n, tone - spike * 0.7f); // not identical, so width has something to act on
+            }
+            return buf;
+        };
+
+        auto runRack = [&](const looper::model::MasteringSettings& settings)
+        {
+            auto rackBuffer = makeMix();
+
+            MasteringProcessor rack;
+            rack.prepare(sampleRate, 512);
+            rack.setEnabled(settings.enabled);
+            rack.setLowShelf(settings.lowShelfHz, settings.lowShelfDb);
+            rack.setPeak(settings.peakHz, settings.peakDb, settings.peakQ);
+            rack.setHighShelf(settings.highShelfHz, settings.highShelfDb);
+            rack.setExciter(settings.exciterAmount, settings.exciterCrossoverHz);
+            rack.setWidth(settings.width);
+            rack.setReverb(settings.reverbAmount, settings.reverbRoomSize);
+            rack.setMaximizer(settings.maximizerInputDb, settings.maximizerCeilingDb,
+                              settings.maximizerReleaseMs);
+            rack.setOutputGainDb(settings.outputGainDb);
+
+            for (int pos = 0; pos < rackBuffer.getNumSamples(); pos += 512)
+            {
+                const int n = std::min(512, rackBuffer.getNumSamples() - pos);
+                juce::AudioBuffer<float> view(rackBuffer.getArrayOfWritePointers(), 2, pos, n);
+                rack.process(view);
+            }
+            return rackBuffer;
+        };
+
+        const auto dry = runRack(looper::model::MasteringSettings {}); // disabled: must be untouched
+        const auto raw = makeMix();
+        masteringChangesSound = worstBufferDifference(dry, raw) < 1.0e-9f; // bypassed really is bypassed
+
+        // Every preset's ceiling must hold on this deliberately nasty input.
+        masteringHoldsCeiling = true;
+        for (int i = 0; i < looper::engine::kNumMasteringPresets; ++i)
+        {
+            const auto preset   = (looper::engine::MasteringPreset) i;
+            const auto settings = looper::model::presetForMastering(preset);
+            const auto out      = runRack(settings);
+
+            const float peak    = out.getMagnitude(0, 0, out.getNumSamples());
+            const float ceiling = std::pow(10.0f, settings.maximizerCeilingDb / 20.0f);
+
+            if (settings.enabled)
+            {
+                // Output gain is applied after the limiter, so the ceiling it
+                // guarantees is scaled by it too.
+                const float allowed = ceiling * std::pow(10.0f, settings.outputGainDb / 20.0f) + 1.0e-3f;
+                if (peak > allowed)
+                {
+                    masteringHoldsCeiling = false;
+                    std::cout << "  ceiling breached by " << looper::engine::masteringPresetName(preset)
+                              << ": peak=" << peak << " allowed=" << allowed << "\n";
+                }
+
+                // And it must actually be doing something.
+                if (worstBufferDifference(out, raw) < 1.0e-4f)
+                {
+                    masteringChangesSound = false;
+                    std::cout << "  " << looper::engine::masteringPresetName(preset)
+                              << " changed nothing\n";
+                }
+            }
+        }
+
+        std::cout << "mastering: bypassIsClean=" << (masteringChangesSound ? 1 : 0)
+                  << " ceilingHolds=" << (masteringHoldsCeiling ? 1 : 0) << "\n";
+    }
+
     // A gate is only worth having if it actually quiets a noisy tail between
     // notes rather than merely being wired in — rendered directly through
     // GateEffect (not a whole track) since the claim is about the DSP node
@@ -1928,6 +2363,10 @@ int main(int argc, char** argv)
               << "  compressorSquashes=" << (compressorSquashes ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  gateClosesQuiet=" << (gateClosesQuiet ? 1 : 0)
+              << "  metalToneHasBody=" << (metalToneHasBody ? 1 : 0)
+              << "  cyberBassHasWeight=" << (cyberBassHasWeight ? 1 : 0)
+              << "  masteringChangesSound=" << (masteringChangesSound ? 1 : 0)
+              << "  masteringHoldsCeiling=" << (masteringHoldsCeiling ? 1 : 0)
               << "  driveChangesSound=" << (driveChangesSound ? 1 : 0)
               << "  driveCabinetWorks=" << (driveCabinetWorks ? 1 : 0)
               << "  effectChainOrderMatters=" << (effectChainOrderMatters ? 1 : 0)

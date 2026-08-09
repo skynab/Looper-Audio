@@ -8,6 +8,7 @@
 
 #include "model/Song.h"
 
+#include "AudioFileTypes.h"
 #include "ClipPreview.h"
 #include "Icons.h"
 #include "WaveformCache.h"
@@ -30,7 +31,18 @@ namespace looper
     so this is a real scheduling change, not just cosmetic — see Sequencer's
     clip-start gating).
 
-    Also a juce::DragAndDropTarget for files dragged out of a FileBrowserPanel
+    Accepts files from two different places, which need two different JUCE
+    interfaces — and only having the first is why dragging a file in from
+    Finder used to do nothing at all:
+
+      - juce::DragAndDropTarget handles drags that start *inside* the app
+        (the FileBrowserPanel's tree).
+      - juce::FileDragAndDropTarget handles drags from the operating system.
+
+    Both end at the same onFileDropped, so a file behaves identically however
+    it arrived.
+
+    Originally only a juce::DragAndDropTarget for files dragged out of a FileBrowserPanel
     (identified by sourceComponent being a juce::FileTreeComponent, not by the
     drag's description string — DockRegion uses that string for its own
     panel-regrouping drags, so type is the unambiguous signal). Dropping a
@@ -40,6 +52,7 @@ namespace looper
 */
 class ArrangementView final : public juce::Component,
                               public juce::DragAndDropTarget,
+                              public juce::FileDragAndDropTarget,
                               public juce::TooltipClient
 {
 public:
@@ -813,7 +826,66 @@ private:
                          trackIndexForY((float) details.localPosition.y));
     }
 
+    // juce::FileDragAndDropTarget — drags from the OS, not from inside the app.
+    bool isInterestedInFileDrag(const juce::StringArray& files) override
+    {
+        return audiofiles::containsImportableAudio(files);
+    }
+
+    void fileDragEnter(const juce::StringArray&, int x, int /*y*/) override
+    {
+        fileDragActive_  = true;
+        dropPreviewBeat_ = geometry_.beatForX((float) x);
+        repaint();
+    }
+
+    void fileDragMove(const juce::StringArray&, int x, int /*y*/) override
+    {
+        dropPreviewBeat_ = geometry_.beatForX((float) x);
+        repaint();
+    }
+
+    void fileDragExit(const juce::StringArray&) override
+    {
+        fileDragActive_ = false;
+        repaint();
+    }
+
+    void filesDropped(const juce::StringArray& files, int x, int y) override
+    {
+        fileDragActive_ = false;
+        repaint();
+
+        if (! onFileDropped)
+            return;
+
+        const int    trackIndex = trackIndexForY((float) y);
+        const double dropBeat   = geometry_.beatForX((float) x);
+
+        // Dropping several files at once lays them end to end rather than
+        // stacking them all on one beat, where they'd overlap and only the
+        // first would be audible. Each lands on its own new track when the
+        // drop wasn't onto an existing lane (trackIndex -1), so a multi-file
+        // drop reads as "import these", not "make a mess".
+        //
+        // Their real lengths aren't known until each is probed by the owner,
+        // so they're spaced by a fixed gap — corrected the moment the owner
+        // sizes each clip to its file.
+        double beat = dropBeat;
+        for (const auto& file : audiofiles::importableFilesIn(files))
+        {
+            onFileDropped(file, beat, trackIndex);
+            beat += kMultiDropSpacingBeats;
+        }
+    }
+
 private:
+    /** How far apart consecutive files from one multi-file drop are placed,
+        when they share a track. Four beats is one bar at 4/4 — enough that
+        two short clips don't overlap, and an obvious grid position to nudge
+        from afterwards. */
+    static constexpr double kMultiDropSpacingBeats = 4.0;
+
     /** The track lane @p y falls in, or -1 if it's above the first lane
         (the ruler) or below the last one. */
     int trackIndexForY(float y) const

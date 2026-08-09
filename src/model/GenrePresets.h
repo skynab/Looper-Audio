@@ -2,6 +2,7 @@
 
 #include "engine/Genre.h"
 #include "model/SynthPreset.h"
+#include "model/SynthTonePresets.h"
 
 namespace looper::model
 {
@@ -209,6 +210,17 @@ inline SynthPreset presetForGenre(engine::Genre genre)
             drive.drive.hardClip = false;
             drive.drive.cabinet  = false;
             p.effectChain = { drive };
+            break;
+        }
+        case engine::Genre::Cyberpunk:
+        {
+            // Delegated rather than restated: the Cyber Bass tone button and
+            // the Cyberpunk genre are meant to be the same sound, and two
+            // copies of ~20 hand-tuned fields would drift the first time
+            // either was adjusted. Only the display name differs, since a
+            // generated loop's preset is named after its genre.
+            p = presetForSynthTone(engine::SynthTone::CyberBass);
+            p.name = engine::genreName(genre);
             break;
         }
     }

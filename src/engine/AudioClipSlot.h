@@ -28,6 +28,10 @@ struct AudioClipSlot
     std::shared_ptr<ClipData> clipData;
     double startBeats  = 0.0;
     double lengthBeats = 0.0;
+
+    /** Linear, already converted from model::Clip::gainDb by the caller —
+        the audio thread shouldn't be doing decibel conversions per block. */
+    float  gain        = 1.0f;
 };
 
 } // namespace looper::engine

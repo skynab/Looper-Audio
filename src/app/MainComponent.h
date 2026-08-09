@@ -9,7 +9,11 @@
 #include <string>
 
 #include "engine/AudioEngine.h"
+#include "engine/DrumKitStyle.h"
 #include "engine/GuitarTone.h"
+#include "engine/MasteringPreset.h"
+#include "engine/NoiseReduction.h"
+#include "engine/SynthTone.h"
 #include "engine/TempoMap.h"
 #include "model/History.h"
 #include "model/PresetSerialization.h"
@@ -20,6 +24,8 @@
 #include "DrumsPane.h"
 #include "EffectChainPanel.h"
 #include "EqCurveView.h"
+#include "AudioEditorPane.h"
+#include "MasteringPane.h"
 #include "FretboardPane.h"
 #include "FileBrowserPanel.h"
 #include "LevelMeter.h"
@@ -89,6 +95,10 @@ private:
     void timerCallback() override;
     void changeListenerCallback(juce::ChangeBroadcaster*) override;
     void logAudioDeviceStatus();
+    /** Switches to the system's default output when it changes — see
+        AudioEngine::followSystemDefaultOutput. Guarded against re-entry
+        because re-opening a device itself broadcasts a change. */
+    void followSystemOutputIfEnabled();
     void updateLoopRegion();
     double loopEndBeats() const;
     void stopAtEndOfArrangement();
@@ -168,6 +178,25 @@ private:
     void                   refreshPianoRollForSelected();
     void                   refreshSynthEditorForSelected();
     void                   refreshDrumsPaneForSelected();
+    void                   refreshAudioEditorForSelected();
+    void                   updateMasteringControls();
+    void                   setMasteringSettings(const model::MasteringSettings& settings);
+    void                   beginMasteringDrag();
+    void                   endMasteringDrag();
+    void                   applyMasteringPreset(engine::MasteringPreset preset);
+    /** The selected clip if it's an Audio clip with a file, else nullptr. */
+    const model::Clip*     selectedAudioClip() const;
+    void                   setSelectedClipGainDb(float gainDb);
+    void                   beginClipGainDrag();
+    void                   endClipGainDrag();
+    void                   normaliseSelectedClip();
+    void                   captureNoisePrint();
+    void                   reduceNoiseOnSelectedClip(float amountDb, float floorDb);
+    /** Reads @p file fully into per-channel float vectors, or an empty
+        result if it can't be read. Message thread; used by the audio
+        editor's offline operations. */
+    std::vector<std::vector<float>> readAudioFileChannels(const juce::File& file,
+                                                          double& sampleRateOut) const;
     void                   refreshEffectChainForSelected();
     void                   addEffectSlot(model::EffectKind kind, const model::PluginRef& plugin);
     void                   removeEffectSlot(int slotIndex);
@@ -228,6 +257,9 @@ private:
     void                   setTrackType(int trackIndex, model::TrackType newType);
     void                   moveClipToTrack(int srcTrackIndex, int clipIndex, int destTrackIndex, double newStartBeats);
     void                   applyGuitarTone(engine::GuitarTone tone);
+    void                   applySynthTone(engine::SynthTone tone);
+    void                   applyDrumKitStyle(engine::DrumKitStyle style);
+    model::DrumKit         kitForDrumKitStyle(engine::DrumKitStyle style) const;
     void                   quantizeNotes(double swingAmount);
     void                   setPatternBars(int bars);
     void                   setTimeSignature(int numerator, int denominator);
@@ -390,6 +422,35 @@ private:
     juce::OwnedArray<PluginEditorWindow> pluginWindows_;
     SessionView                        sessionView_;
     FretboardPane                      fretboard_; // ditto — see refreshTrackEffectsForSelected
+    AudioEditorPane                    audioEditor_; // ditto — see refreshAudioEditorForSelected
+    MasteringPane                      masteringPane_; // ditto — see updateMasteringControls
+    bool                               masteringDragging_ = false;
+    model::MasteringSettings           masteringDragFrom_;
+    // Follows the system's default output (headphones being plugged in,
+    // say) rather than holding whichever device was default at launch.
+    // Persisted, and switchable off for anyone deliberately running a fixed
+    // interface — see the View menu.
+    bool                               followSystemOutput_ = true;
+    bool                               switchingDevice_    = false;
+
+    bool                               clipGainDragging_ = false;
+    int                                clipGainDragTrack_ = -1;
+    int                                clipGainDragClip_  = -1;
+    float                              clipGainDragFrom_  = 0.0f;
+
+    // The captured noise print, one profile per channel, plus the file it
+    // was measured from — a print is only meaningful for the recording it
+    // came from, so it's dropped when the selection moves to another.
+    std::vector<engine::NoiseProfile>  noiseProfiles_;
+    juce::File                         noiseProfileFile_;
+
+    // The peaks the audio editor draws, and the file they came from.
+    // refreshAudioEditorForSelected() runs on ~26 unrelated edits, so this
+    // is cached by path — rebuilding would re-read the file every time
+    // anything in the app changed.
+    WaveformPeaks                      waveformPeaks_;
+    juce::File                         waveformPeaksFile_;
+    double                             waveformPeaksSampleRate_ = 0.0;
 
     CallbackComponent                  arrangeTab_;
     juce::Viewport                     arrangementViewport_;

@@ -5,6 +5,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include "engine/DrumKitStyle.h"
 #include "engine/Pattern.h"
 #include "model/DrumKit.h"
 #include "model/Track.h"
@@ -54,6 +55,17 @@ public:
             stepGrid_.setSelectedPad(padIndex);
         };
 
+        // Kit styles: one button per engine::DrumKitStyle, each swapping
+        // every pad's sample and trim in one click. Same shape as the tone
+        // rows on FretboardPane and SynthEditor.
+        for (int i = 0; i < engine::kNumDrumKitStyles; ++i)
+        {
+            const auto style  = (engine::DrumKitStyle) i;
+            auto*      button = kitStyleButtons_.add(new juce::TextButton(engine::drumKitStyleName(style)));
+            button->onClick   = [this, style] { if (onKitStyleRequested) onKitStyleRequested(style); };
+            addChildComponent(button);
+        }
+
         layout_.setItemLayout(0, 220, 520, 320); // kit editor: min/max/preferred
         layout_.setItemLayout(1, 8, 8, 8);       // divider
         layout_.setItemLayout(2, 200, -1.0, -1.0); // step grid: takes the rest
@@ -66,6 +78,13 @@ public:
     std::function<void(int padIndex)>                        onPadRemoved;
     std::function<void(const engine::Pattern&)>              onPatternChanged;
     std::function<void(int noteNumber)>                      onNotePreview;
+
+    /** A one-click kit character: every pad's sample and trim replaced at
+        once — see engine::padsForDrumKitStyle, which is what knows the
+        values, and MainComponent::applyDrumKitStyle, which resolves them to
+        real files. Not a pass-through like the callbacks above; this pane
+        owns the buttons that fire it. */
+    std::function<void(engine::DrumKitStyle)>                onKitStyleRequested;
 
     /** Shows the kit and its pattern. Both halves get the same pad list, so
         the grid's rows and the editor's rows always describe the same kit. */
@@ -148,6 +167,19 @@ public:
 
         auto area = getLocalBounds();
         area.removeFromTop(kTrackHeaderHeight);
+
+        // Divide what's actually there rather than imposing a minimum width
+        // — a minimum overflows the row in a narrow pane and leaves the
+        // buttons past the edge with zero width, which is indistinguishable
+        // from a button that doesn't work. Same loop as FretboardPane's.
+        auto styleRow = area.removeFromTop(kKitStyleRowHeight);
+        for (int i = 0; i < kitStyleButtons_.size(); ++i)
+        {
+            const int remaining = kitStyleButtons_.size() - i;
+            const int width     = juce::jmax(1, styleRow.getWidth() / remaining);
+            kitStyleButtons_[i]->setBounds(styleRow.removeFromLeft(width).reduced(1));
+        }
+
         juce::Component* items[] = { &kitEditor_, &divider_, &stepGrid_ };
         layout_.layOutComponents(items, 3, area.getX(), area.getY(), area.getWidth(), area.getHeight(),
                                  false, // side by side
@@ -169,8 +201,12 @@ private:
         kitEditor_.setVisible(visible);
         stepGrid_.setVisible(visible);
         divider_.setVisible(visible);
+        for (auto* button : kitStyleButtons_)
+            button->setVisible(visible);
         resized();
     }
+
+    static constexpr int kKitStyleRowHeight = 22;
 
     DrumKitEditor kitEditor_;
     DrumStepGrid  stepGrid_;
@@ -181,6 +217,7 @@ private:
     juce::Label                       placeholderLabel_;
     juce::StretchableLayoutManager    layout_;
     juce::StretchableLayoutResizerBar divider_ { &layout_, 1, true };
+    juce::OwnedArray<juce::TextButton> kitStyleButtons_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(DrumsPane)
 };

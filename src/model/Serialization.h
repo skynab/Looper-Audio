@@ -57,8 +57,15 @@ namespace looper::model
           its own ADSR), the sub-oscillator, and unison — read the same
           tolerant way as every prior SYNTH/FXSLOT extension.
       27  + five more FXSLOT fields: the gate pedal, read the same
-          tolerant way as 20's, 21's, 23's, and 24's. */
-inline constexpr int kFormatVersion = 27;
+          tolerant way as 20's, 21's, 23's, and 24's.
+      28  + CLIPGAIN, a per-clip trim. Its own record rather than another
+          CLIP field, because CLIP ends in the rest-of-line audioFile and
+          nothing can follow that; absent in older files, where 0dB is the
+          right answer anyway.
+      29  + MASTERING, the master-bus mastering rack. Read the same tolerant
+          way as EQ in v25: absent in older files, where every field's
+          default is a no-op, so an old project sounds identical. */
+inline constexpr int kFormatVersion = 29;
 namespace detail
 {
     inline std::string num(double v)
@@ -75,6 +82,13 @@ namespace detail
         out << "CLIP " << clip.id << " " << (int) clip.type << " "
             << num(clip.startBeats) << " " << num(clip.lengthBeats) << " "
             << num(clip.pattern.lengthBeats) << " " << clip.audioFile << "\n";
+
+        // Its own record rather than another field on CLIP: audioFile is a
+        // rest-of-line field (a path may contain spaces), so nothing can
+        // follow it on that line. A separate optional record is also what
+        // makes an older file readable unchanged — readTagged leaves the
+        // cursor alone when the tag isn't there, and the default stands.
+        out << "CLIPGAIN " << num((double) clip.gainDb) << "\n";
         out << "NOTES " << clip.pattern.notes.size() << "\n";
 
         for (const auto& note : clip.pattern.notes)
@@ -120,6 +134,20 @@ inline std::string serialize(const Song& song)
         << detail::num((double) song.eq.bassDb) << " "
         << detail::num((double) song.eq.midDb) << " "
         << detail::num((double) song.eq.trebleDb) << "\n";
+    {
+        const auto& m = song.mastering;
+        out << "MASTERING " << (m.enabled ? 1 : 0) << " "
+            << detail::num((double) m.lowShelfHz) << " " << detail::num((double) m.lowShelfDb) << " "
+            << detail::num((double) m.peakHz) << " " << detail::num((double) m.peakDb) << " "
+            << detail::num((double) m.peakQ) << " "
+            << detail::num((double) m.highShelfHz) << " " << detail::num((double) m.highShelfDb) << " "
+            << detail::num((double) m.exciterAmount) << " " << detail::num((double) m.exciterCrossoverHz) << " "
+            << detail::num((double) m.width) << " "
+            << detail::num((double) m.reverbAmount) << " " << detail::num((double) m.reverbRoomSize) << " "
+            << detail::num((double) m.maximizerInputDb) << " " << detail::num((double) m.maximizerCeilingDb) << " "
+            << detail::num((double) m.maximizerReleaseMs) << " "
+            << detail::num((double) m.outputGainDb) << "\n";
+    }
     out << "PROJECTROOT " << song.projectRootFolder << "\n";
     out << "AUTO " << song.masterGainDb.points().size() << "\n";
     for (const auto& p : song.masterGainDb.points())
@@ -332,6 +360,10 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             clip.audioFile = detail::trimLeadingSpace(std::move(audio));
         }
 
+        // Optional: absent in files written before v28, where 0 dB is right.
+        if (readTagged("CLIPGAIN", rest))
+            clip.gainDb = (float) std::strtod(rest.c_str(), nullptr);
+
         if (! readTagged("NOTES", rest))
             return false;
         const int noteCount = std::atoi(rest.c_str());
@@ -430,6 +462,48 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
         song.eq.bassDb   = (float) bassDb;
         song.eq.midDb    = (float) midDb;
         song.eq.trebleDb = (float) trebleDb;
+    }
+
+    if (readTagged("MASTERING", rest)) // added in v29; older files keep the defaults (every stage a no-op)
+    {
+        std::istringstream ms(rest);
+        auto&              m = song.mastering;
+
+        // Pre-set to the struct's own defaults before extraction, so a
+        // record truncated by a future/older writer leaves sane values
+        // rather than zeros — a zero lowShelfHz or peakQ would be a broken
+        // filter, not a neutral one.
+        int    enabled = 0;
+        double lowHz = m.lowShelfHz, lowDb = m.lowShelfDb;
+        double peakHz = m.peakHz, peakDb = m.peakDb, peakQ = m.peakQ;
+        double highHz = m.highShelfHz, highDb = m.highShelfDb;
+        double excAmount = m.exciterAmount, excHz = m.exciterCrossoverHz;
+        double width = m.width;
+        double revAmount = m.reverbAmount, revRoom = m.reverbRoomSize;
+        double maxIn = m.maximizerInputDb, maxCeil = m.maximizerCeilingDb, maxRel = m.maximizerReleaseMs;
+        double outDb = m.outputGainDb;
+
+        ms >> enabled >> lowHz >> lowDb >> peakHz >> peakDb >> peakQ >> highHz >> highDb
+           >> excAmount >> excHz >> width >> revAmount >> revRoom
+           >> maxIn >> maxCeil >> maxRel >> outDb;
+
+        m.enabled            = enabled != 0;
+        m.lowShelfHz         = (float) lowHz;
+        m.lowShelfDb         = (float) lowDb;
+        m.peakHz             = (float) peakHz;
+        m.peakDb             = (float) peakDb;
+        m.peakQ              = (float) peakQ;
+        m.highShelfHz        = (float) highHz;
+        m.highShelfDb        = (float) highDb;
+        m.exciterAmount      = (float) excAmount;
+        m.exciterCrossoverHz = (float) excHz;
+        m.width              = (float) width;
+        m.reverbAmount       = (float) revAmount;
+        m.reverbRoomSize     = (float) revRoom;
+        m.maximizerInputDb   = (float) maxIn;
+        m.maximizerCeilingDb = (float) maxCeil;
+        m.maximizerReleaseMs = (float) maxRel;
+        m.outputGainDb       = (float) outDb;
     }
 
     if (readTagged("PROJECTROOT", rest))

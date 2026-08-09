@@ -10,6 +10,7 @@ add_executable(looper_tests
   engine/SequencerMathTests.cpp
   engine/DefaultContentTests.cpp
   engine/DrumSynthTests.cpp
+  engine/DrumKitStyleTests.cpp
   engine/ScaleTests.cpp
   engine/GenerativeLoopTests.cpp
   engine/GenreTests.cpp
@@ -22,6 +23,8 @@ add_executable(looper_tests
   engine/GuitarChordsTests.cpp
   engine/WaveshaperTests.cpp
   engine/PedalDspTests.cpp
+  engine/MasteringDspTests.cpp
+  engine/NoiseReductionTests.cpp
   engine/DelayLineTests.cpp
   engine/StateVariableFilterTests.cpp
   engine/ShelfPeakFilterTests.cpp
@@ -32,11 +35,16 @@ add_executable(looper_tests
   model/SerializationTests.cpp
   model/PresetSerializationTests.cpp
   model/GenrePresetsTests.cpp
+  model/SynthTonePresetsTests.cpp
+  model/GuitarTonePresetsTests.cpp
+  model/MasteringPresetsTests.cpp
   model/AutomationLaneTests.cpp
   app/TimelineGeometryTests.cpp
   app/PianoRollGeometryTests.cpp
   app/DockLayoutTreeTests.cpp
   app/ClipPreviewTests.cpp
+  app/AudioSelectionTests.cpp
+  app/WaveformPeaksTests.cpp
   app/ScrollFollowTests.cpp
   app/ChordStampTests.cpp
   app/TrackSelectionTests.cpp
@@ -65,6 +73,8 @@ if (LOOPER_BUILD_APP)
   add_executable(looper_gui_tests
     gui/FretboardPaneTests.cpp
     gui/ArrangementViewTests.cpp
+  gui/AudioEditorPaneTests.cpp
+  gui/AudioFileTypesTests.cpp
     gui/IconsTests.cpp
     gui/PianoRollTests.cpp
     gui/ShortcutsTests.cpp

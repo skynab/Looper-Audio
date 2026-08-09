@@ -13,7 +13,7 @@ namespace
     constexpr engine::Genre kAllGenres[] = { engine::Genre::House,  engine::Genre::Techno,
                                               engine::Genre::HipHop, engine::Genre::Trap,
                                               engine::Genre::Ambient, engine::Genre::LoFi,
-                                              engine::Genre::Synthwave };
+                                              engine::Genre::Synthwave, engine::Genre::Cyberpunk };
 }
 
 TEST_CASE("Every genre has a preset with a name", "[model][genrepresets]")

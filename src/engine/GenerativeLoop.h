@@ -199,6 +199,13 @@ struct MelodicLoopParams
     Scale    scale;
     double   density     = 0.6; // 0..1: onset density and, loosely, phrase busyness
     double   swing       = 0.0; // 0..0.9, forwarded to NoteOps::quantizeNotes
+
+    /** 0..1: how often an onset is harmonised rather than played as a single
+        note. At 0 every onset is one note, which is what this generator did
+        before harmony existed. Non-zero by default so a generated part has
+        some vertical interest on its own — see generateMelodicLoop. */
+    double   harmony     = 0.3;
+
     unsigned seed        = 1;
 };
 
@@ -209,6 +216,14 @@ struct MelodicLoopParams
     either side of the root so it wanders without changing register
     entirely. Every note this returns satisfies isInScale(note, params.scale)
     by construction, since pitches only ever come from degreeToNote.
+
+    Some onsets are harmonised (see MelodicLoopParams::harmony) — a third,
+    or a third and a fifth, stacked on the walked degree and sounding with
+    it. Stacking by *scale degree* rather than by a fixed semitone interval
+    is what keeps the harmony in key: degree+2 is a major third over some
+    degrees of a major scale and a minor third over others, exactly as
+    harmonising within a key does on paper. A fixed +4 semitones would leave
+    the scale on half of them.
 */
 inline Pattern generateMelodicLoop(const MelodicLoopParams& params)
 {
@@ -232,12 +247,14 @@ inline Pattern generateMelodicLoop(const MelodicLoopParams& params)
         if (onsets[(size_t) i])
             onsetSteps.push_back(i);
 
-    std::minstd_rand                      rng(params.seed);
-    std::uniform_int_distribution<int>    walkStep(-2, 2);
-    std::uniform_real_distribution<float> velocityJitter(-0.1f, 0.1f);
+    std::minstd_rand                       rng(params.seed);
+    std::uniform_int_distribution<int>     walkStep(-2, 2);
+    std::uniform_real_distribution<float>  velocityJitter(-0.1f, 0.1f);
+    std::uniform_real_distribution<double> chance(0.0, 1.0);
 
-    const int scaleSize = (int) intervalsForScale(params.scale.type).size();
-    int       degree    = 0;
+    const int    scaleSize = (int) intervalsForScale(params.scale.type).size();
+    const double harmony   = std::clamp(params.harmony, 0.0, 1.0);
+    int          degree    = 0;
 
     for (size_t idx = 0; idx < onsetSteps.size(); ++idx)
     {
@@ -252,6 +269,35 @@ inline Pattern generateMelodicLoop(const MelodicLoopParams& params)
         n.noteNumber  = degreeToNote(params.scale, degree);
         n.velocity    = (float) std::clamp(0.75 + (double) velocityJitter(rng), 0.1, 1.0);
         pattern.notes.push_back(n);
+
+        // Harmony is drawn every onset, not only the harmonised ones, so a
+        // given seed walks the same melody at every harmony setting - the
+        // setting adds notes to a part rather than generating a different
+        // one, which is what makes it auditionable against itself.
+        const double roll = chance(rng);
+        if (roll < harmony)
+        {
+            // A third alone most of the time, the full triad occasionally:
+            // constant triads read as a chord pad rather than a harmonised
+            // line, and the ask was for *some* onsets to stack up.
+            const bool triad = roll < harmony * 0.4;
+
+            // Appended straight after their melody note, which keeps
+            // pattern.notes sorted ascending by startBeats (they share one)
+            // - clampNoteLengths relies on that ordering. It also handles
+            // the one collision that matters here: a harmony pitch that a
+            // later onset's melody lands on too.
+            for (int interval : { 2, 4 })
+            {
+                if (interval == 4 && ! triad)
+                    break;
+
+                Note h        = n;
+                h.noteNumber  = degreeToNote(params.scale, degree + interval);
+                h.velocity    = (float) std::clamp((double) n.velocity * 0.8, 0.1, 1.0);
+                pattern.notes.push_back(h);
+            }
+        }
     }
 
     NoteOps::quantizeNotes(pattern.notes, stepBeats, params.swing);

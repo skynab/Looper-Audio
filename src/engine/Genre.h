@@ -13,7 +13,8 @@ enum class Genre
     Trap,
     Ambient,
     LoFi,
-    Synthwave
+    Synthwave,
+    Cyberpunk
 };
 
 /** Display name for @p genre, as shown in the Generate Loop dialog. */
@@ -28,6 +29,7 @@ inline const char* genreName(Genre genre)
         case Genre::Ambient: return "Ambient";
         case Genre::LoFi:    return "Lo-Fi";
         case Genre::Synthwave: return "Synthwave";
+        case Genre::Cyberpunk: return "Cyberpunk";
     }
     return "House";
 }
@@ -56,6 +58,10 @@ inline GenreRhythmProfile rhythmProfileForGenre(Genre genre)
         case Genre::Ambient: return { 0.20, 0.00 }; // sparse, no groove to speak of
         case Genre::LoFi:    return { 0.35, 0.35 }; // loose, human, unhurried
         case Genre::Synthwave: return { 0.65, 0.00 }; // driving, tightly gridded sequences
+        // Midtempo: sparse and dead straight. The halftime feel this genre
+        // is named for comes from tempo, which a generated pattern doesn't
+        // set - so the pattern earns it by leaving space instead.
+        case Genre::Cyberpunk: return { 0.30, 0.00 };
     }
     return { 0.5, 0.0 };
 }

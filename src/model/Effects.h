@@ -131,6 +131,48 @@ struct PluginRef
 };
 
 /** What one slot of a track's effect chain is. */
+/** The mastering rack on the master bus: the last thing the mix passes
+    through before it leaves the app.
+
+    A fixed set of stages in a fixed order (see engine::MasteringProcessor),
+    not a reorderable chain — a mastering chain has a canonical order for real
+    reasons (shape the tone, then add harmonics to what you shaped, then set
+    the width, then the space, then catch the peaks last), and every stage
+    here is a no-op at its default so an untouched rack is bit-identical to
+    no rack at all. */
+struct MasteringSettings
+{
+    bool enabled = false;
+
+    // Three-band EQ, the shape of Audition's mastering EQ: a shelf at each
+    // end and one peaking band between them. Frequencies are adjustable here
+    // (unlike the fixed master EqSettings above), because deciding *where*
+    // the mud or the harshness is is most of the job.
+    float lowShelfHz    = 120.0f;
+    float lowShelfDb    = 0.0f;
+    float peakHz        = 1000.0f;
+    float peakDb        = 0.0f;
+    float peakQ         = 0.9f;
+    float highShelfHz   = 8000.0f;
+    float highShelfDb   = 0.0f;
+
+    float exciterAmount     = 0.0f;    // 0..1
+    float exciterCrossoverHz = 3000.0f;
+
+    float width = 1.0f; // 1 = unchanged, 0 = mono, >1 = wider
+
+    float reverbAmount   = 0.0f; // 0..1 wet mix
+    float reverbRoomSize = 0.6f;
+
+    float maximizerInputDb  = 0.0f;   // drive into the limiter: this is "louder"
+    float maximizerCeilingDb = -0.3f; // nothing gets past this
+    float maximizerReleaseMs = 100.0f;
+
+    float outputGainDb = 0.0f;
+
+    bool operator==(const MasteringSettings&) const = default;
+};
+
 enum class EffectKind
 {
     Filter = 0,

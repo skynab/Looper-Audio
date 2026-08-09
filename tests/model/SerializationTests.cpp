@@ -501,3 +501,139 @@ TEST_CASE("A current-format file still round-trips after the version work", "[mo
     REQUIRE(deserialize(serialize(original), restored, &error));
     REQUIRE(restored == original);
 }
+
+TEST_CASE("The mastering rack round-trips", "[model][io]")
+{
+    Song original = makeSampleSong();
+    auto& m = original.mastering;
+    m.enabled            = true;
+    m.lowShelfHz         = 95.0f;
+    m.lowShelfDb         = 2.5f;
+    m.peakHz             = 2200.0f;
+    m.peakDb             = -3.5f;
+    m.peakQ              = 1.4f;
+    m.highShelfHz        = 9500.0f;
+    m.highShelfDb        = 1.5f;
+    m.exciterAmount      = 0.35f;
+    m.exciterCrossoverHz = 4200.0f;
+    m.width              = 1.25f;
+    m.reverbAmount       = 0.15f;
+    m.reverbRoomSize     = 0.65f;
+    m.maximizerInputDb   = 6.0f;
+    m.maximizerCeilingDb = -0.7f;
+    m.maximizerReleaseMs = 140.0f;
+    m.outputGainDb       = -1.5f;
+
+    Song        restored;
+    std::string error;
+    REQUIRE(deserialize(serialize(original), restored, &error));
+    REQUIRE(restored.mastering == original.mastering);
+    REQUIRE(restored == original);
+}
+
+TEST_CASE("A project from before the mastering rack opens neutral", "[model][io]")
+{
+    // A v28 file has no MASTERING record. Every field's default is a no-op,
+    // so an old project must open sounding exactly as it did — in particular
+    // the rack must come back *disabled*, and the filter frequencies must be
+    // real values rather than zeros, which would be broken filters.
+    const std::string v28 =
+        "LOOPER 28\n"
+        "BPM 120\n"
+        "TSNUM 4\n"
+        "TSDEN 4\n"
+        "NEXTID 3\n"
+        "FILTER 0 0 1000 0.707\n"
+        "DELAY 0 300 0.35 0.3\n"
+        "REVERB 0 0.5 0.5 0.3\n"
+        "SENDBUS 0 0 0.5 0.5 300 0.35 0.5\n"
+        "EQ 0 0 0 0\n"
+        "PROJECTROOT \n"
+        "AUTO 0\n"
+        "SCENES 0\n"
+        "TRACKS 1\n"
+        "TRACK 1 0 0 0 0 0 Synth\n"
+        "TAUTOS 0\n"
+        "FXCHAIN 0\n"
+        "SESSION 0\n"
+        "CLIPS 1\n"
+        "CLIP 2 0 0 4 4 \n"
+        "CLIPGAIN 0\n"
+        "NOTES 0\n";
+
+    Song        song;
+    std::string error;
+    REQUIRE(deserialize(v28, song, &error));
+    REQUIRE(song.mastering == MasteringSettings {});
+    REQUIRE_FALSE(song.mastering.enabled);
+    REQUIRE(song.mastering.peakQ > 0.0f);
+    REQUIRE(song.mastering.lowShelfHz > 0.0f);
+}
+
+TEST_CASE("Per-clip gain round-trips", "[model][io]")
+{
+    Song original = makeSampleSong();
+    REQUIRE_FALSE(original.tracks.empty());
+    REQUIRE_FALSE(original.tracks[0].clips.empty());
+    original.tracks[0].clips[0].gainDb = -4.5f;
+
+    Song        restored;
+    std::string error;
+    REQUIRE(deserialize(serialize(original), restored, &error));
+    REQUIRE(restored.tracks[0].clips[0].gainDb == -4.5f);
+    REQUIRE(restored == original);
+}
+
+TEST_CASE("Clip gain survives an audio path containing spaces", "[model][io]")
+{
+    // The reason CLIPGAIN is its own record rather than another field on the
+    // CLIP line: audioFile is read with getline to the end of the line, so
+    // anything written after it would be swallowed into the path. A path
+    // with spaces is the case that would have exposed it.
+    Song original = makeSampleSong();
+    original.tracks[0].clips[0].type      = ClipType::Audio;
+    original.tracks[0].clips[0].audioFile = "/Users/me/My Recordings/take one.wav";
+    original.tracks[0].clips[0].gainDb    = 3.0f;
+
+    Song        restored;
+    std::string error;
+    REQUIRE(deserialize(serialize(original), restored, &error));
+    REQUIRE(restored.tracks[0].clips[0].audioFile == "/Users/me/My Recordings/take one.wav");
+    REQUIRE(restored.tracks[0].clips[0].gainDb == 3.0f);
+}
+
+TEST_CASE("A project from before per-clip gain opens at unity", "[model][io]")
+{
+    // A v27 file: CLIP goes straight to NOTES with no CLIPGAIN between them.
+    // Silence is not a safe default for a gain, so the check that matters is
+    // that the missing record leaves 0 dB rather than -inf or garbage.
+    const std::string v27 =
+        "LOOPER 27\n"
+        "BPM 120\n"
+        "TSNUM 4\n"
+        "TSDEN 4\n"
+        "NEXTID 3\n"
+        "FILTER 0 0 1000 0.707\n"
+        "DELAY 0 300 0.35 0.3\n"
+        "REVERB 0 0.5 0.5 0.3\n"
+        "SENDBUS 0 0 0.5 0.5 300 0.35 0.5\n"
+        "EQ 0 0 0 0\n"
+        "PROJECTROOT \n"
+        "AUTO 0\n"
+        "SCENES 0\n"
+        "TRACKS 1\n"
+        "TRACK 1 0 0 0 0 0 Synth\n"
+        "TAUTOS 0\n"
+        "FXCHAIN 0\n"
+        "SESSION 0\n"
+        "CLIPS 1\n"
+        "CLIP 2 0 0 4 4 \n"
+        "NOTES 0\n";
+
+    Song        song;
+    std::string error;
+    REQUIRE(deserialize(v27, song, &error));
+    REQUIRE(song.tracks.size() == 1);
+    REQUIRE(song.tracks[0].clips.size() == 1);
+    REQUIRE(song.tracks[0].clips[0].gainDb == 0.0f);
+}

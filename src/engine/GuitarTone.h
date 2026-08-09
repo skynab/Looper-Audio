@@ -11,10 +11,11 @@ enum class GuitarTone
     CleanJazz,
     ClassicRockCrunch,
     AmbientShoegaze,
-    FunkPercussive
+    FunkPercussive,
+    IndustrialCyber
 };
 
-constexpr int kNumGuitarTones = 5;
+constexpr int kNumGuitarTones = 6;
 
 /** Display name for @p tone, as shown on the fretboard pane's tone buttons. */
 inline const char* guitarToneName(GuitarTone tone)
@@ -26,6 +27,7 @@ inline const char* guitarToneName(GuitarTone tone)
         case GuitarTone::ClassicRockCrunch:  return "Classic Rock";
         case GuitarTone::AmbientShoegaze:    return "Ambient";
         case GuitarTone::FunkPercussive:     return "Funk";
+        case GuitarTone::IndustrialCyber:    return "Industrial";
     }
     return "Modern Metal";
 }

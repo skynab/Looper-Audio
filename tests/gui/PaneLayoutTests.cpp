@@ -1,5 +1,7 @@
 #include "PaneAudit.h"
 
+#include <app/AudioEditorPane.h>
+#include <app/MasteringPane.h>
 #include <app/DrumsPane.h>
 #include <app/EffectChainPanel.h>
 #include <app/FileBrowserPanel.h>
@@ -81,6 +83,51 @@ TEST_CASE("The drums pane lays out usably at every size", "[gui][panes]")
 
         paneaudit::requireUsable(pane, "DrumsPane at " + size.toString());
     }
+}
+
+TEST_CASE("The audio editor lays out usably at every size", "[gui][panes]")
+{
+    JuceFixture fixture;
+
+    for (const auto& size : kSizes)
+    {
+        AudioEditorPane pane;
+        pane.setVisible(true);
+        pane.setBounds(size);
+        pane.setClip(juce::File("/nonexistent/take.wav"), 12.0, 0.0f, "Audio 1", 0xff3080ff);
+        pane.resized();
+
+        paneaudit::requireUsable(pane, "AudioEditorPane at " + size.toString());
+    }
+}
+
+TEST_CASE("The mastering pane lays out usably at every size", "[gui][panes]")
+{
+    JuceFixture fixture;
+
+    for (const auto& size : kSizes)
+    {
+        MasteringPane pane;
+        pane.setVisible(true);
+        pane.setBounds(size);
+        pane.setSettings(model::MasteringSettings {});
+        pane.resized();
+
+        paneaudit::requireUsable(pane, "MasteringPane at " + size.toString());
+    }
+}
+
+TEST_CASE("The audio editor is usable with no clip selected", "[gui][panes]")
+{
+    JuceFixture fixture;
+
+    AudioEditorPane pane;
+    pane.setVisible(true);
+    pane.setBounds(0, 0, 700, 400);
+    pane.setNoAudioClipSelected();
+    pane.resized();
+
+    paneaudit::requireUsable(pane, "AudioEditorPane with no clip");
 }
 
 TEST_CASE("The drums pane is usable with no track selected too", "[gui][panes]")

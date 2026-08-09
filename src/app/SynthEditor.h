@@ -4,6 +4,7 @@
 
 #include <functional>
 
+#include "engine/SynthTone.h"
 #include "model/SynthSettings.h"
 #include "model/Track.h"
 
@@ -48,6 +49,14 @@ public:
     std::function<void()>          onSavePresetRequested;
     std::function<void(int index)> onDeletePresetRequested;
 
+    /** A one-click starting sound: settings plus an effect chain tuned for
+        the picked engine::SynthTone — see model::presetForSynthTone, which
+        is what actually knows the values, the same way this pane never has
+        document mutation logic of its own. Complements the preset box above
+        rather than replacing it: these are always present and can't be
+        deleted, where a saved preset is a file the user made. */
+    std::function<void(engine::SynthTone)> onSynthToneRequested;
+
     SynthEditor()
     {
         placeholderLabel_.setText("Select an Instrument track to edit its synth", juce::dontSendNotification);
@@ -83,6 +92,18 @@ public:
                 onDeletePresetRequested(index);
         };
         addAndMakeVisible(deletePresetButton_);
+
+        // Tone templates: one button per engine::SynthTone, each applying a
+        // whole SynthSettings + effect chain in one click. Laid out as one
+        // row, the same "divide what's actually there" way FretboardPane
+        // lays out its guitar tones.
+        for (int i = 0; i < engine::kNumSynthTones; ++i)
+        {
+            const auto tone   = (engine::SynthTone) i;
+            auto*      button = toneButtons_.add(new juce::TextButton(engine::synthToneName(tone)));
+            button->onClick   = [this, tone] { if (onSynthToneRequested) onSynthToneRequested(tone); };
+            addAndMakeVisible(button);
+        }
 
         setupSectionHeader(oscHeader_, "Oscillator");
         waveformBox_.addItem("Sine", 1);
@@ -226,6 +247,19 @@ public:
         deletePresetButton_.setBounds(presetRow.removeFromRight(64).reduced(2, 0));
         savePresetButton_.setBounds(presetRow.removeFromRight(64).reduced(2, 0));
         presetBox_.setBounds(presetRow.reduced(2, 0));
+
+        // Divide what's actually there rather than imposing a minimum width:
+        // a minimum overflows the row in a narrow pane and the buttons past
+        // the edge get zero width - present, hit-testable at nothing, and
+        // indistinguishable from a button that doesn't work. Same loop, and
+        // same reason, as FretboardPane's tone row.
+        auto toneRow = area.removeFromTop(kToneRowHeight);
+        for (int i = 0; i < toneButtons_.size(); ++i)
+        {
+            const int remaining = toneButtons_.size() - i;
+            const int width     = juce::jmax(1, toneRow.getWidth() / remaining);
+            toneButtons_[i]->setBounds(toneRow.removeFromLeft(width).reduced(1));
+        }
         area.removeFromTop(10);
 
         layoutHeader(oscHeader_, area);
@@ -252,8 +286,9 @@ public:
     }
 
 private:
-    static constexpr int kRowHeight    = 26;
-    static constexpr int kHeaderHeight = 22;
+    static constexpr int kRowHeight     = 26;
+    static constexpr int kHeaderHeight  = 22;
+    static constexpr int kToneRowHeight = 22;
 
     void setupSectionHeader(juce::Label& label, const juce::String& text)
     {
@@ -311,16 +346,32 @@ private:
         filterResonanceSlider_.setEnabled(on);
     }
 
+    /** Every control this pane shows and hides, in one place — see the same
+        list in FretboardPane and EffectChainPanel, and the bug that made it
+        worth having: a control laid out and shown from one list while being
+        parented from another drifts silently, and the failure looks like a
+        control that simply doesn't draw. */
+    std::vector<juce::Component*> managedControls()
+    {
+        std::vector<juce::Component*> controls {
+            &presetBox_, &savePresetButton_, &deletePresetButton_,
+            &oscHeader_, &waveformBox_, &ampHeader_,
+            &attackSlider_, &decaySlider_, &sustainSlider_, &releaseSlider_, &filterHeader_,
+            &filterEnabledButton_, &filterModeBox_, &filterCutoffSlider_, &filterResonanceSlider_,
+            &outputHeader_, &gainSlider_
+        };
+
+        for (auto* button : toneButtons_)
+            controls.push_back(button);
+
+        return controls;
+    }
+
     void setControlsVisible(bool visible)
     {
         controlsVisible_ = visible;
         placeholderLabel_.setVisible(! visible);
-        juce::Component* controls[] = { &presetBox_, &savePresetButton_, &deletePresetButton_,
-                                        &oscHeader_, &waveformBox_, &ampHeader_,
-                                        &attackSlider_, &decaySlider_, &sustainSlider_, &releaseSlider_, &filterHeader_,
-                                        &filterEnabledButton_, &filterModeBox_, &filterCutoffSlider_, &filterResonanceSlider_,
-                                        &outputHeader_, &gainSlider_ };
-        for (auto* c : controls)
+        for (auto* c : managedControls())
             c->setVisible(visible);
         resized();
     }
@@ -340,6 +391,7 @@ private:
 
     juce::ComboBox   presetBox_;
     juce::TextButton savePresetButton_, deletePresetButton_;
+    juce::OwnedArray<juce::TextButton> toneButtons_;
 
     juce::Label      oscHeader_;
     juce::ComboBox   waveformBox_;

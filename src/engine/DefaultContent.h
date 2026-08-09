@@ -44,4 +44,44 @@ inline Pattern makeDefaultDrumLoopPattern()
     return pattern;
 }
 
+/**
+    A one-bar starter riff: straight eighth-note chugs on the lowest string,
+    with the root leaving for a minor third and a fourth at the end of the
+    bar so it's a phrase rather than a metronome. The guitar equivalent of
+    makeDefaultDrumLoopPattern, and there for the same reason — a fresh
+    launch should make the guitar track *audibly* do something.
+
+    @p lowStringNote is the open pitch of the lowest string, and is required
+    rather than defaulted on purpose: a guitar can only sound a note some
+    string can actually reach, so a riff written for standard tuning is
+    silent on a dropped one (it lands below every open string) and vice
+    versa. Taking the real tuning is the same call DrumLoopParams makes in
+    asking for the target kit's actual pad notes. Every pitch below is an
+    offset from it, so the riff transposes with the tuning instead of
+    breaking against it.
+*/
+inline Pattern makeDefaultGuitarRiffPattern(int lowStringNote)
+{
+    Pattern pattern;
+    pattern.lengthBeats = 4.0;
+
+    // Short relative to the eighth-note spacing, which is what makes this
+    // read as palm-muted chugging rather than as held notes.
+    auto add = [&](double beat, int semitonesAboveOpen, float velocity)
+    {
+        pattern.notes.push_back({ beat, 0.3, lowStringNote + semitonesAboveOpen, velocity });
+    };
+
+    add(0.0, 0, 1.0f);  // the downbeat, hit hardest
+    add(0.5, 0, 0.8f);
+    add(1.0, 0, 0.85f);
+    add(1.5, 0, 0.8f);
+    add(2.0, 0, 0.95f);
+    add(2.5, 0, 0.8f);
+    add(3.0, 3, 0.9f);  // minor third
+    add(3.5, 5, 0.9f);  // fourth, leading back to the root
+
+    return pattern;
+}
+
 } // namespace looper::engine

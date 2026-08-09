@@ -1,5 +1,7 @@
 #include "PaneAudit.h"
 
+#include <app/AudioEditorPane.h>
+#include <app/MasteringPane.h>
 #include <app/DrumsPane.h>
 #include <app/EffectChainPanel.h>
 #include <app/FileBrowserPanel.h>
@@ -58,6 +60,17 @@ TEST_CASE("Every pane's controls have something listening to them", "[gui][wirin
 
     SynthEditor synth;
     paneaudit::requireWired(synth, "SynthEditor");
+
+    AudioEditorPane audio;
+    // Shown against a file that doesn't exist: the pane must still parent and
+    // wire everything, since that's exactly the state it's in for the frames
+    // before a thumbnail loads (and permanently, for a clip whose file has
+    // been moved).
+    audio.setClip(juce::File("/nonexistent/take.wav"), 12.0, 0.0f, "Audio 1", 0xff3080ff);
+    paneaudit::requireWired(audio, "AudioEditorPane");
+
+    MasteringPane mastering;
+    paneaudit::requireWired(mastering, "MasteringPane");
 }
 
 TEST_CASE("A mixer strip reports every move the user makes", "[gui][wiring]")

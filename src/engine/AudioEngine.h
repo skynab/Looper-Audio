@@ -24,11 +24,14 @@
 #include "engine/EngineCommand.h"
 #include "engine/InstrumentTrack.h"
 #include "engine/MasterBusNode.h"
+#include "engine/MasteringProcessor.h"
 #include "engine/Metronome.h"
 #include "engine/PluginHost.h"
 #include "engine/PluginNode.h"
 #include "engine/Pattern.h"
 #include "engine/Transport.h"
+
+#include "model/Effects.h"
 
 namespace looper::engine
 {
@@ -41,6 +44,7 @@ struct AudioClipSpec
     juce::File file;
     double     startBeats  = 0.0;
     double     lengthBeats = 0.0;
+    float      gainDb      = 0.0f;
 };
 
 /** One drum pad to load onto a track: a note number, the file to play when
@@ -300,6 +304,44 @@ public:
     /** Housekeeping to run periodically on the message thread (frees retired clips/patterns). */
     void pump() noexcept;
 
+    /** Re-opens the output device the system currently considers default,
+        if that isn't the one already open. Returns the device's name when it
+        switched, or an empty string when nothing needed doing.
+
+        This exists because JUCE opens a device *by name* and then keeps it.
+        initialiseWithDefaultDevices() picks the default that was current at
+        launch, so plugging in headphones afterwards changes the system
+        default while the app carries on holding the built-in speakers —
+        which is heard as the app ignoring the headphones entirely.
+
+        Message thread only: it closes and re-opens the audio device. */
+    juce::String followSystemDefaultOutput();
+
+    /** The system's current default output device name, or empty if that
+        can't be determined. */
+    juce::String systemDefaultOutputName();
+
+    /** Renders @p lengthBeats of the project starting at @p startBeats, offline
+        and faster than real time, through **the same processBlock() the device
+        callback uses**.
+
+        That sharing is the whole point rather than an optimisation. The old
+        export re-implemented the signal path by hand and had silently drifted
+        from it: it omitted audio clips entirely, every clip after the first,
+        every per-track effect chain, and the master EQ. Any export built as a
+        second copy of the mixer will drift again the next time either side
+        changes; one that calls the mixer cannot.
+
+        Message thread only, and it **suspends the audio device for its
+        duration** — the engine's mixer state is single-writer by design, so
+        rendering while the device thread is also in processBlock() would be a
+        data race. Playback stops for the length of the render and the
+        transport is restored afterwards.
+
+        Deliberately excludes the metronome, matching what you'd want exported
+        and what the device callback already keeps outside the master bus. */
+    juce::AudioBuffer<float> renderOffline(double startBeats, double lengthBeats, int blockSize = 512);
+
     juce::String loadedClipName() const             { return loadedClipName_; }
     double       loadedClipSeconds() const noexcept { return loadedClipSeconds_; }
 
@@ -308,6 +350,24 @@ public:
     int64_t playheadSamples() const noexcept { return transport_.playheadForUI(); }
     double  sampleRate() const noexcept      { return sampleRate_.load(std::memory_order_relaxed); }
     float   masterPeak(int channel) const noexcept { return master_.peak(channel); }
+    /** Gain reduction the mastering rack's limiter is applying, in dB. */
+    float   masteringReductionDb() const noexcept { return mastering_.currentReductionDb(); }
+
+    /** The whole mastering rack in one call — it's a single settings struct
+        on the document, so pushing it field-by-field would just be more ways
+        to forget one. Message thread; every setter underneath is an atomic. */
+    void setMastering(const model::MasteringSettings& s)
+    {
+        mastering_.setEnabled(s.enabled);
+        mastering_.setLowShelf(s.lowShelfHz, s.lowShelfDb);
+        mastering_.setPeak(s.peakHz, s.peakDb, s.peakQ);
+        mastering_.setHighShelf(s.highShelfHz, s.highShelfDb);
+        mastering_.setExciter(s.exciterAmount, s.exciterCrossoverHz);
+        mastering_.setWidth(s.width);
+        mastering_.setReverb(s.reverbAmount, s.reverbRoomSize);
+        mastering_.setMaximizer(s.maximizerInputDb, s.maximizerCeilingDb, s.maximizerReleaseMs);
+        mastering_.setOutputGainDb(s.outputGainDb);
+    }
     float   trackPeak(int index, int channel) const noexcept
     {
         return (index >= 0 && index < kMaxTracks) ? tracks_[(size_t) index].peak(channel) : 0.0f;
@@ -328,6 +388,26 @@ public:
 
 private:
     void drainCommandQueue() noexcept;
+
+    /** One block of the mixer: tracks, send bus, file player, master chain,
+        transport advance. Shared verbatim by the device callback and
+        renderOffline() so an export cannot drift from what's heard — see
+        renderOffline's comment for why that sharing is the design and not a
+        convenience.
+
+        @p midi is the live input for this block (empty when rendering
+        offline). The metronome is deliberately *not* here: it sits outside
+        the master bus so it stays off the meter and out of exports. */
+    void processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffer& midi,
+                      const ProcessContext& context) noexcept;
+
+    /** Prepares every node for @p sampleRate / @p blockSize. Called on device
+        start, and again either side of an offline render — re-preparing
+        resets every delay line and reverb tail, so a render starts from
+        silence rather than inheriting whatever was ringing when it began,
+        and playback afterwards doesn't inherit the render's tails either. */
+    void prepareAll(double sampleRate, int blockSize);
+
     /** Decodes @p file fully into RAM. Returns nullptr if it can't be read. Message thread. */
     std::unique_ptr<ClipData> decodeAudioFile(const juce::File& file);
     /** As above, but cached by absolute path — repeated calls (even from
@@ -351,6 +431,7 @@ private:
     DelayEffect         masterDelay_;
     ReverbEffect        masterReverb_;
     EqEffect            masterEq_;
+    MasteringProcessor  mastering_;
     MasterBusNode       master_;
     Transport           transport_;
 

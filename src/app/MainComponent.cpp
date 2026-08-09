@@ -15,7 +15,9 @@
 #include "engine/OfflineRenderer.h"
 #include "model/GenrePresets.h"
 #include "model/GuitarTonePresets.h"
+#include "model/MasteringPresets.h"
 #include "model/Serialization.h"
+#include "model/SynthTonePresets.h"
 
 #include <algorithm>
 #include <cmath>
@@ -42,6 +44,18 @@ static constexpr int kFirstTrackTypeMenuId = 300;
 /** How close to the edge the playhead gets before the keys grid pages. Small,
     so almost the whole width is travelled before each jump. */
 static constexpr int kKeysFollowMargin = 24;
+
+/** Extra beats rendered past the last clip when bouncing, so reverb and delay
+    tails decay into the file instead of being chopped off at the final beat.
+    Two bars at 4/4 — comfortably longer than the master reverb's tail at its
+    largest room size. */
+static constexpr double kBounceTailBeats = 8.0;
+
+/** What Normalize aims the loudest sample at. Just under full scale rather
+    than at it: a clip normalised to exactly 1.0 has no headroom left for the
+    track fader, pan law, or any effect that can overshoot, so it would be
+    the first thing to clip the master bus. */
+static constexpr float kNormaliseTargetPeak = 0.98f;
 
 /** The time signatures offered. A fixed list because these are the ones
     people write in; a free numerator and denominator invites 4/7, which the
@@ -92,10 +106,10 @@ namespace
         one entry per engine::Genre. Index 1..N maps to kGenerateLoopGenres
         [index - 1], the same offset-by-one scheme everywhere a combo box has
         a "none of these" option ahead of a fixed enum list. */
-    constexpr engine::Genre kGenerateLoopGenres[7] =
+    constexpr engine::Genre kGenerateLoopGenres[8] =
         { engine::Genre::House, engine::Genre::Techno, engine::Genre::HipHop,
           engine::Genre::Trap, engine::Genre::Ambient, engine::Genre::LoFi,
-          engine::Genre::Synthwave };
+          engine::Genre::Synthwave, engine::Genre::Cyberpunk };
 
     /** "Undo Delete track" rather than a bare "Undo". Every edit already
         records what it was; not showing it left the user to remember what
@@ -140,9 +154,10 @@ MainComponent::MainComponent()
     addAndMakeVisible(workspace_);
     workspace_.onLayoutChanged = [this] { saveDockLayout(); };
 
-    // ---- document: a starter synth track plus a drum track with a
-    // programmed loop and real sounds, so a fresh launch is audible
-    // immediately rather than opening on silence ----
+    // ---- document: a starter synth track, a drum track with a programmed
+    // loop and real sounds, and a guitar track with a riff and a full pedal
+    // chain — so a fresh launch is audible immediately rather than opening
+    // on silence. See makeStarterSong ----
     {
         seedFactoryDrumKit();
         history_.reset(makeStarterSong());
@@ -242,6 +257,7 @@ MainComponent::MainComponent()
     // transport controls. The dock region's height is the user's to set by
     // dragging its divider — this is what makes a one-row pane worth dragging
     // down to, rather than resizing the region from under them.
+    followSystemOutput_ = settings_.getValue("followSystemOutput", "1") != "0";
     transportCollapsed_ = settings_.getValue("transportCollapsed", "0") != "0";
     collapseTransportButton_.onClick = [this]
     {
@@ -749,6 +765,7 @@ MainComponent::MainComponent()
     drumsPane_.onPadRemoved     = [this](int padIndex) { removeDrumPad(padIndex); };
     drumsPane_.onPatternChanged = [this](const engine::Pattern& p) { editPattern(p); };
     drumsPane_.onNotePreview    = [this](int noteNumber) { previewNote(noteNumber); };
+    drumsPane_.onKitStyleRequested = [this](engine::DrumKitStyle s) { applyDrumKitStyle(s); };
 
     // ---- arrange tab: a zoomable/scrollable timeline, click to seek ----
     arrangementViewport_.setViewedComponent(&arrangementView_, false);
@@ -869,6 +886,7 @@ MainComponent::MainComponent()
     synthEditor_.onPresetSelected        = [this](int i) { applyPreset(i); };
     synthEditor_.onSavePresetRequested   = [this] { savePresetDialog(); };
     synthEditor_.onDeletePresetRequested = [this](int i) { deletePresetAt(i); };
+    synthEditor_.onSynthToneRequested    = [this](engine::SynthTone t) { applySynthTone(t); };
     sessionView_.onLaunchClip  = [this](int track, int scene)
     {
         engine_.launchSessionSlot(track, scene);
@@ -906,6 +924,36 @@ MainComponent::MainComponent()
     };
     fretboard_.onGuitarToneRequested = [this](engine::GuitarTone tone) { applyGuitarTone(tone); };
 
+    audioEditor_.onGainChanged   = [this](float gainDb) { setSelectedClipGainDb(gainDb); };
+    audioEditor_.onGainDragStart = [this] { beginClipGainDrag(); };
+    audioEditor_.onGainDragEnd   = [this] { endClipGainDrag(); };
+    audioEditor_.onNormaliseRequested = [this] { normaliseSelectedClip(); };
+    audioEditor_.onCaptureNoisePrintRequested = [this] { captureNoisePrint(); };
+    audioEditor_.onReduceNoiseRequested = [this](float amountDb, float floorDb)
+    {
+        reduceNoiseOnSelectedClip(amountDb, floorDb);
+    };
+
+    masteringPane_.onSettingsChanged   = [this](const model::MasteringSettings& s) { setMasteringSettings(s); };
+    masteringPane_.onSettingsDragStart = [this] { beginMasteringDrag(); };
+    masteringPane_.onSettingsDragEnd   = [this] { endMasteringDrag(); };
+    masteringPane_.onPresetRequested   = [this](engine::MasteringPreset p) { applyMasteringPreset(p); };
+    masteringPane_.onFilesDropped      = [this](const juce::Array<juce::File>& files)
+    {
+        // Each on its own new track (index -1), at the start: arriving via
+        // the mastering pane means "get this into the project", and there's
+        // no drop position to honour the way the timeline has one.
+        for (const auto& file : files)
+            importAudioFileAtBeat(file, 0.0, -1);
+
+        showStatus(files.size() == 1 ? "Imported " + files[0].getFileName()
+                                     : "Imported " + juce::String(files.size()) + " files");
+    };
+    // The selection is read back off the pane when an action fires, so
+    // nothing needs storing here — but a repaint keeps the arrangement's
+    // idea of the selected clip honest if it ever draws one.
+    audioEditor_.onSelectionChanged = [](AudioRange) {};
+
     effectChain_.onBuiltInAdded = [this](model::EffectKind kind) { addEffectSlot(kind, {}); };
     effectChain_.onPluginAdded  = [this](const engine::PluginEntry& entry)
     {
@@ -941,6 +989,8 @@ MainComponent::MainComponent()
     workspace_.registerPanel("Synth", synthEditor_);
     workspace_.registerPanel("Drums", drumsPane_);
     workspace_.registerPanel("Guitar", fretboard_);
+    workspace_.registerPanel("Audio", audioEditor_);
+    workspace_.registerPanel("Mastering", masteringPane_);
     workspace_.registerPanel("Session", sessionView_);
     workspace_.registerPanel("Track FX", effectChain_);
     workspace_.registerPanel("Mixer", mixerView_);
@@ -1002,6 +1052,7 @@ MainComponent::MainComponent()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1010,6 +1061,7 @@ MainComponent::MainComponent()
     updateFilterControls();
     updateReverbControls();
     updateEqControls();
+    updateMasteringControls();
     updateEditingLabel();
     updateSendBusControls();
 
@@ -1064,8 +1116,8 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
                 hasUnsavedChanges() || projectFile_ == juce::File{});
         addItem(menu, 24, "Save Project As...", keys::saveAs);
         menu.addSeparator();
-        menu.addItem(4, "Import Audio...");
-        menu.addItem(7, "Import Audio to Track...");
+        menu.addItem(4, "Preview Audio File...");
+        menu.addItem(7, "Import Audio to Track...   (or drag files in)");
         menu.addItem(8, "Import MIDI...");
         menu.addItem(9, "Export MIDI...");
         addItem(menu, 5, "Bounce to WAV...", keys::bounce);
@@ -1074,6 +1126,9 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(31, "Repair Recorded Clip Lengths...");
         menu.addSeparator();
         menu.addItem(6, "Audio Settings...");
+        // Right next to Audio Settings, which is where anyone whose sound is
+        // coming out of the wrong device goes looking.
+        menu.addItem(32, "Follow System Output Device", true, followSystemOutput_);
     }
     else if (topLevelMenuIndex == 1) // Edit
     {
@@ -1143,10 +1198,19 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 29: pasteTrack(); break;
         case 30: duplicateTrackAt(selectedTrackIndex_); break;
         case 31: repairRecordedClipLengths(); break;
-        case 4:  chooseFile(); break; // import audio (preview player)
+        case 4:  chooseFile(); break; // preview only - see chooseFile
         case 5:  bounceProject(); break;
         case 6:  showAudioSettings(); break;
         case 7:  importAudioToNewTrack(); break;
+        case 32:
+            followSystemOutput_ = ! followSystemOutput_;
+            settings_.setValue("followSystemOutput", followSystemOutput_ ? "1" : "0");
+            settings_.saveIfNeeded();
+            if (followSystemOutput_)
+                followSystemOutputIfEnabled();
+            showStatus(followSystemOutput_ ? "Following the system output device"
+                                           : "Staying on the selected output device");
+            break;
         case 8:  importMidiFileDialog(); break;
         case 9:  exportMidiFileDialog(); break;
         case 10: history_.undo(); refreshFromModel(); break;
@@ -1283,6 +1347,7 @@ void MainComponent::addTrack()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1324,6 +1389,7 @@ void MainComponent::addDrumTrack()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1404,6 +1470,7 @@ bool MainComponent::commitStampedNotes(const std::vector<engine::Note>& notes,
     syncEngineTracks();
     refreshPianoRollForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
 
     // Stamping writes notes into the clip; unless the transport happens to be
     // rolling over that bar, nothing moves and nothing sounds. Say what landed
@@ -1559,7 +1626,7 @@ void MainComponent::addGuitarTrack()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
-    refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1670,6 +1737,7 @@ void MainComponent::addClipToSelectedTrack()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1716,6 +1784,12 @@ void MainComponent::showGenerateLoopDialog()
             scales.add(name);
         window->addComboBox("scale", scales, "Scale:");
         window->getComboBoxComponent("scale")->setSelectedItemIndex(0);
+
+        // Melodic only: there's no such thing as harmonising a drum onset.
+        // Defaulted to "Some" rather than "None" so a generated part has
+        // some vertical interest without having to be asked for it.
+        window->addComboBox("harmony", { "None", "Some", "Lots" }, "Harmony:");
+        window->getComboBoxComponent("harmony")->setSelectedItemIndex(1);
     }
 
     window->addComboBox("density", { "Low", "Medium", "High" }, "Density:");
@@ -1797,9 +1871,13 @@ void MainComponent::showGenerateLoopDialog()
                     const int rootIndex  = window->getComboBoxComponent("root")->getSelectedItemIndex();
                     const int scaleIndex = window->getComboBoxComponent("scale")->getSelectedItemIndex();
 
+                    static const double kHarmonies[] = { 0.0, 0.3, 0.7 };
+                    const int harmonyIndex = window->getComboBoxComponent("harmony")->getSelectedItemIndex();
+
                     engine::MelodicLoopParams params;
                     params.density     = density;
                     params.swing       = swing;
+                    params.harmony     = kHarmonies[(size_t) juce::jlimit(0, 2, harmonyIndex)];
                     params.seed        = seed;
                     params.scale.type  = kGenerateLoopScaleTypes[(size_t) juce::jlimit(
                                              0, (int) std::size(kGenerateLoopScaleTypes) - 1, scaleIndex)];
@@ -1859,6 +1937,7 @@ void MainComponent::showGenerateLoopDialog()
                 self->refreshDrumsPaneForSelected();
                 self->refreshEffectChainForSelected();
                 self->refreshFretboardForSelected();
+                self->refreshAudioEditorForSelected();
                 self->refreshSessionView();
                 self->arrangementView_.setSong(self->history_.current());
                 self->arrangementView_.setSelectedClip(self->selectedTrackIndex_, self->selectedClipIndex_);
@@ -2027,6 +2106,7 @@ void MainComponent::addEffectSlot(model::EffectKind kind, const model::PluginRef
     syncEngineTracks();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
 }
 
 void MainComponent::removeEffectSlot(int slotIndex)
@@ -2046,6 +2126,7 @@ void MainComponent::removeEffectSlot(int slotIndex)
     syncEngineTracks();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
 }
 
 /** Moves a slot one place up or down. Order is the whole point of a chain, so
@@ -2069,6 +2150,7 @@ void MainComponent::moveEffectSlot(int slotIndex, int delta)
     syncEngineTracks();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
 }
 
 /** Bypass. Not structural — the node stays in the chain — so this is a live
@@ -2093,6 +2175,7 @@ void MainComponent::setEffectSlotBypass(int slotIndex, bool enabled)
     engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, toSlotParams(updatedChain[(size_t) slotIndex]));
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
 }
 
 /** A knob turn on a built-in slot: live, non-undoable per notch, same as the
@@ -2215,6 +2298,7 @@ void MainComponent::pasteNotes()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
 }
 
@@ -2267,6 +2351,7 @@ void MainComponent::pasteClip()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2320,6 +2405,7 @@ void MainComponent::deleteSelectedClip()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2612,6 +2698,7 @@ void MainComponent::setTrackType(int trackIndex, model::TrackType newType)
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     updateMixerStrips();
@@ -2641,8 +2728,70 @@ void MainComponent::applyGuitarTone(engine::GuitarTone tone)
     syncEngineTracks();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     updateMixerStrips();
     updateEditingLabel();
+}
+
+/** One-click synth tone templates: overwrites the selected Instrument
+    track's SynthSettings and effect chain with the hand-tuned values for
+    @p tone (see model::presetForSynthTone). Same body as applyPreset's, but
+    read from an in-memory table instead of a file — so unlike a saved
+    preset there's nothing to fail to load, and nothing to report. */
+void MainComponent::applySynthTone(engine::SynthTone tone)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+    if (history_.current().tracks[(size_t) selectedTrackIndex_].type != model::TrackType::Instrument)
+        return;
+
+    const int  trackIndex = selectedTrackIndex_;
+    const auto preset     = model::presetForSynthTone(tone);
+    history_.edit(preset.name + " Tone", [trackIndex, preset](model::Song& s)
+    {
+        auto& track = s.tracks[(size_t) trackIndex];
+        track.synthSettings = preset.synth;
+        track.effectChain   = preset.effectChain;
+    });
+
+    syncEngineTracks();
+    refreshSynthEditorForSelected();
+    refreshEffectChainForSelected();
+    updateMixerStrips();
+    updateEditingLabel();
+    showStatus("Applied synth tone: " + juce::String(preset.name));
+}
+
+/** One-click drum kit styles: replaces the selected Drum track's whole kit
+    with the samples and per-pad mix for @p style (see
+    engine::padsForDrumKitStyle). Every style keeps the same four note
+    numbers and labels on purpose — clips store raw note numbers, and
+    generateDrumLoop looks pads up by label, so a kit that renumbered its
+    pads would silently orphan every note already written against it. */
+void MainComponent::applyDrumKitStyle(engine::DrumKitStyle style)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+    if (history_.current().tracks[(size_t) selectedTrackIndex_].type != model::TrackType::Drum)
+        return;
+
+    const int  trackIndex = selectedTrackIndex_;
+    const auto kit        = kitForDrumKitStyle(style);
+
+    history_.edit(std::string(engine::drumKitStyleName(style)) + " Kit",
+        [trackIndex, kit](model::Song& s)
+        {
+            s.tracks[(size_t) trackIndex].drumKit = kit;
+        });
+
+    syncEngineTracks();
+    // The piano roll builds its drum rows from drumKit.pads, so it would
+    // otherwise keep drawing the old kit's labels.
+    refreshPianoRollForSelected();
+    refreshDrumsPaneForSelected();
+    refreshEffectChainForSelected();
+    updateMixerStrips();
+    showStatus("Applied drum kit: " + juce::String(engine::drumKitStyleName(style)));
 }
 
 /** Moves an arrangement clip from one track to another, in place of a
@@ -2704,6 +2853,7 @@ void MainComponent::moveClipToTrack(int srcTrackIndex, int clipIndex, int destTr
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2782,6 +2932,7 @@ void MainComponent::duplicateClip()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2834,6 +2985,7 @@ void MainComponent::quantizeNotes(double swingAmount)
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
 
     // Reloading the pattern clears the selection, which would silently widen
@@ -2909,6 +3061,7 @@ void MainComponent::setPatternBars(int bars)
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     updateEditingLabel();
@@ -3006,10 +3159,16 @@ void MainComponent::syncEngineTracks()
             spec.file        = juce::File(clip.audioFile);
             spec.startBeats  = clip.startBeats;
             spec.lengthBeats = clip.lengthBeats;
+            spec.gainDb      = clip.gainDb;
             audioSpecs.push_back(spec);
         }
-        if (! audioSpecs.empty())
-            engine_.setTrackAudioClips(i, audioSpecs);
+        // Submitted even when empty, which the guard here used to skip: the
+        // engine holds the last list it was given, so deleting a track's only
+        // audio clip left that clip still loaded and still playing, with
+        // nothing on screen to explain it. "Unconditionally resubmitted" in
+        // the comment above is only true if it's also submitted when there's
+        // nothing to submit.
+        engine_.setTrackAudioClips(i, audioSpecs);
 
         // Drum kit -> routes this track's notes to the drum sampler instead
         // of the synth (see InstrumentTrack::instrument — unlike audio
@@ -3188,6 +3347,359 @@ void MainComponent::refreshDrumsPaneForSelected()
     drumsPane_.setTrackInfo(track.name, track.colour);
 }
 
+/** The selected clip if it's an Audio clip that actually references a file,
+    or nullptr. Everything the audio editor does needs all three of those to
+    hold, so they're checked once here rather than at each call site. */
+const model::Clip* MainComponent::selectedAudioClip() const
+{
+    const auto& song = history_.current();
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= (int) song.tracks.size())
+        return nullptr;
+
+    const auto& clips = song.tracks[(size_t) selectedTrackIndex_].clips;
+    if (selectedClipIndex_ < 0 || selectedClipIndex_ >= (int) clips.size())
+        return nullptr;
+
+    const auto& clip = clips[(size_t) selectedClipIndex_];
+    if (clip.type != model::ClipType::Audio || clip.audioFile.empty())
+        return nullptr;
+
+    return &clip;
+}
+
+/** Shows the selected audio clip in the editor, or a placeholder if the
+    selection isn't one — the same is-it-this-kind gating the Synth, Drums
+    and Guitar panes use. */
+void MainComponent::refreshAudioEditorForSelected()
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+    {
+        audioEditor_.setNoAudioClipSelected();
+        return;
+    }
+
+    const juce::File file(clip->audioFile);
+    const auto&      track = history_.current().tracks[(size_t) selectedTrackIndex_];
+
+    // The file's own duration, not the clip's window: the editor edits the
+    // recording, and a clip shortened on the timeline still has all of its
+    // audio behind it.
+    audioEditor_.setClip(file, engine_.probeDurationSeconds(file), clip->gainDb,
+                         track.name, track.colour);
+    audioEditor_.setNoisePrintCaptured(! noiseProfiles_.empty() && noiseProfileFile_ == file);
+
+    // Read once per file, not once per refresh. Denoise writes a new file
+    // and repoints the clip, so a changed path is exactly the signal that
+    // the audio itself changed and the peaks are stale.
+    if (file != waveformPeaksFile_)
+    {
+        double     sampleRate = 0.0;
+        const auto channels   = readAudioFileChannels(file, sampleRate);
+
+        waveformPeaks_.clear();
+        if (! channels.empty() && sampleRate > 0.0)
+            waveformPeaks_.build(channels);
+
+        waveformPeaksFile_       = file;
+        waveformPeaksSampleRate_ = sampleRate;
+    }
+
+    audioEditor_.setWaveform(waveformPeaks_, waveformPeaksSampleRate_);
+}
+
+/** Writes the selected clip's gain. Live during a slider drag — the
+    surrounding beginStructDrag/commitStructDrag pair is what makes the whole
+    drag one undo step, same as every other continuous control here. */
+void MainComponent::setSelectedClipGainDb(float gainDb)
+{
+    if (selectedAudioClip() == nullptr)
+        return;
+
+    const int trackIndex = selectedTrackIndex_;
+    const int clipIndex  = selectedClipIndex_;
+
+    auto& song = history_.mutableCurrent();
+    song.tracks[(size_t) trackIndex].clips[(size_t) clipIndex].gainDb = gainDb;
+
+    syncEngineTracks();
+}
+
+/** Sets the clip's gain so its loudest sample just reaches kNormaliseTargetPeak.
+
+    Reads the file rather than using the thumbnail's summary: a thumbnail is a
+    downsampled peak envelope, so it can under-report the true peak by enough
+    to leave a "normalised" clip clipping. Reading is exact and happens once,
+    on a button press, which is the one place it's affordable. */
+void MainComponent::normaliseSelectedClip()
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return;
+
+    const juce::File file(clip->audioFile);
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+    if (reader == nullptr)
+    {
+        showError("Could not read " + file.getFileName());
+        return;
+    }
+
+    // Both extremes per channel, then the largest magnitude across them: a
+    // waveform is rarely symmetric, so taking only the maximum would
+    // under-read a signal whose biggest excursion is negative.
+    const int numChannels = juce::jmax(1, (int) reader->numChannels);
+    std::vector<juce::Range<float>> levels((size_t) numChannels);
+    reader->readMaxLevels(0, reader->lengthInSamples, levels.data(), numChannels);
+
+    float peak = 0.0f;
+    for (const auto& range : levels)
+        peak = juce::jmax(peak, std::abs(range.getStart()), std::abs(range.getEnd()));
+
+    if (peak <= 0.0f)
+    {
+        // Silence has no peak to normalise to, and the alternative is
+        // dividing by zero and handing the clip an infinite gain.
+        showError("That clip is silent");
+        return;
+    }
+
+    const float gainDb = juce::Decibels::gainToDecibels(kNormaliseTargetPeak / peak);
+
+    const int trackIndex = selectedTrackIndex_;
+    const int clipIndex  = selectedClipIndex_;
+    history_.edit("Normalize clip", [trackIndex, clipIndex, gainDb](model::Song& s)
+    {
+        s.tracks[(size_t) trackIndex].clips[(size_t) clipIndex].gainDb = gainDb;
+    });
+
+    syncEngineTracks();
+    refreshAudioEditorForSelected();
+    showStatus("Normalized: " + juce::String(gainDb, 1) + " dB");
+}
+
+/** Pushes the document's mastering rack into the pane and the engine. The
+    one place both are refreshed from the model, so undo, load and a preset
+    click all land the same way. */
+void MainComponent::updateMasteringControls()
+{
+    const auto& mastering = history_.current().mastering;
+    masteringPane_.setSettings(mastering);
+    engine_.setMastering(mastering);
+}
+
+/** Live tweak from the mastering pane — document in place, then the engine,
+    same path as the master EQ sliders. The undo step is bracketed by the
+    drag pair below rather than taken per move. */
+void MainComponent::setMasteringSettings(const model::MasteringSettings& settings)
+{
+    history_.mutableCurrent().mastering = settings;
+    engine_.setMastering(settings);
+}
+
+void MainComponent::beginMasteringDrag()
+{
+    masteringDragging_ = true;
+    masteringDragFrom_ = history_.current().mastering;
+}
+
+void MainComponent::endMasteringDrag()
+{
+    if (! masteringDragging_)
+        return;
+
+    masteringDragging_ = false;
+
+    commitStructDrag(history_, "Set mastering", masteringDragFrom_,
+                     history_.current().mastering,
+                     [](model::Song& s, const model::MasteringSettings& value)
+    {
+        s.mastering = value;
+    });
+}
+
+/** One-click mastering starting points — see model::presetForMastering,
+    which is what knows the values. One undo step, same shape as every other
+    preset application here. */
+void MainComponent::applyMasteringPreset(engine::MasteringPreset preset)
+{
+    const auto settings = model::presetForMastering(preset);
+    history_.edit(std::string(engine::masteringPresetName(preset)) + " mastering",
+                  [settings](model::Song& s) { s.mastering = settings; });
+
+    updateMasteringControls();
+    showStatus("Mastering: " + juce::String(engine::masteringPresetName(preset)));
+}
+
+/** Reads @p file fully into per-channel float vectors.
+
+    Deliberately its own read rather than reaching into AudioEngine's decode
+    cache: that cache is keyed by *path* and shared by every clip pointing at
+    the same file, so processing a buffer borrowed from it would silently
+    alter every other clip using that recording. Offline editing here always
+    reads fresh and writes somewhere new. */
+std::vector<std::vector<float>> MainComponent::readAudioFileChannels(const juce::File& file,
+                                                                     double& sampleRateOut) const
+{
+    std::vector<std::vector<float>> channels;
+    sampleRateOut = 0.0;
+
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats();
+
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+    if (reader == nullptr || reader->lengthInSamples <= 0)
+        return channels;
+
+    const int numChannels = juce::jmax(1, (int) reader->numChannels);
+    const int length      = (int) juce::jmin<juce::int64>(reader->lengthInSamples,
+                                                          (juce::int64) std::numeric_limits<int>::max());
+
+    juce::AudioBuffer<float> buffer(numChannels, length);
+    reader->read(&buffer, 0, length, 0, true, true);
+    sampleRateOut = reader->sampleRate;
+
+    channels.resize((size_t) numChannels);
+    for (int ch = 0; ch < numChannels; ++ch)
+        channels[(size_t) ch].assign(buffer.getReadPointer(ch), buffer.getReadPointer(ch) + length);
+
+    return channels;
+}
+
+/** Measures the noise in the selected range, per channel.
+
+    Per channel rather than from a mono sum: a stereo recording's two sides
+    routinely have different noise floors (different preamps, or one side
+    nearer a fan), and subtracting an average from both would under-clean one
+    and over-clean the other. */
+void MainComponent::captureNoisePrint()
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return;
+
+    const auto range = audioEditor_.selection();
+    if (range.isEmpty())
+    {
+        showError("Select a passage of noise first");
+        return;
+    }
+
+    const juce::File file(clip->audioFile);
+    double           sampleRate = 0.0;
+    const auto       channels   = readAudioFileChannels(file, sampleRate);
+
+    if (channels.empty() || sampleRate <= 0.0)
+    {
+        showError("Could not read " + file.getFileName());
+        return;
+    }
+
+    const int total = (int) channels[0].size();
+    const int from  = juce::jlimit(0, total, (int) std::llround(range.startSeconds * sampleRate));
+    const int to    = juce::jlimit(from, total, (int) std::llround(range.endSeconds * sampleRate));
+
+    std::vector<engine::NoiseProfile> profiles;
+    for (const auto& channel : channels)
+    {
+        const std::vector<float> passage(channel.begin() + from, channel.begin() + to);
+        profiles.push_back(engine::noisereduction::captureNoiseProfile(passage));
+    }
+
+    // captureNoiseProfile refuses a passage shorter than one analysis frame,
+    // which is the honest answer rather than a profile built from padding —
+    // so that refusal has to be reported, not silently stored.
+    if (profiles.empty() || profiles[0].isEmpty())
+    {
+        showError("That selection is too short to measure - select at least ~50ms");
+        return;
+    }
+
+    noiseProfiles_    = std::move(profiles);
+    noiseProfileFile_ = file;
+    audioEditor_.setNoisePrintCaptured(true);
+    showStatus("Noise print captured from "
+               + juce::String(range.lengthSeconds(), 2) + "s");
+}
+
+/** Subtracts the captured print from the whole clip, writing the result to a
+    new file and repointing the clip at it in one undo step.
+
+    Writing a new file rather than editing in place is what keeps this
+    undoable and keeps it from leaking: undo just points the clip back at the
+    original, which is still on disk and untouched. It also sidesteps the
+    decode cache's path-keyed sharing entirely — a new path is a new entry. */
+void MainComponent::reduceNoiseOnSelectedClip(float amountDb, float floorDb)
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return;
+
+    const juce::File file(clip->audioFile);
+    if (noiseProfiles_.empty() || noiseProfileFile_ != file)
+    {
+        showError("Capture a noise print from this clip first");
+        return;
+    }
+
+    double     sampleRate = 0.0;
+    const auto channels   = readAudioFileChannels(file, sampleRate);
+    if (channels.empty() || sampleRate <= 0.0)
+    {
+        showError("Could not read " + file.getFileName());
+        return;
+    }
+
+    showBusy("Reducing noise...");
+
+    const int numChannels = (int) channels.size();
+    const int length      = (int) channels[0].size();
+
+    juce::AudioBuffer<float> processed(numChannels, length);
+    for (int ch = 0; ch < numChannels; ++ch)
+    {
+        // A mono print on a stereo file (or the reverse) is possible if the
+        // file changed underneath; reusing the last profile is better than
+        // refusing, and clamping is how.
+        const auto& profile = noiseProfiles_[(size_t) juce::jmin(ch, (int) noiseProfiles_.size() - 1)];
+        const auto  cleaned = engine::noisereduction::reduceNoise(channels[(size_t) ch], profile,
+                                                                  amountDb, floorDb);
+        std::copy(cleaned.begin(), cleaned.end(), processed.getWritePointer(ch));
+    }
+
+    const auto destination = recordingsDirectory()
+                                 .getNonexistentChildFile(file.getFileNameWithoutExtension() + " (denoised)",
+                                                          ".wav");
+    if (! engine::OfflineRenderer::writeWav(destination, processed, sampleRate))
+    {
+        showError("Could not write " + destination.getFileName());
+        return;
+    }
+
+    const int  trackIndex = selectedTrackIndex_;
+    const int  clipIndex  = selectedClipIndex_;
+    const auto newPath    = destination.getFullPathName().toStdString();
+    history_.edit("Reduce noise", [trackIndex, clipIndex, newPath](model::Song& s)
+    {
+        s.tracks[(size_t) trackIndex].clips[(size_t) clipIndex].audioFile = newPath;
+    });
+
+    // The print described the original file, so it no longer applies — and
+    // the peaks describe it too, so they'd otherwise draw the old audio
+    // against the new clip.
+    noiseProfiles_.clear();
+    noiseProfileFile_  = juce::File{};
+    waveformPeaksFile_ = juce::File{};
+
+    syncEngineTracks();
+    refreshAudioEditorForSelected();
+    arrangementView_.setSong(history_.current());
+    showStatus("Noise reduced: " + destination.getFileName());
+}
+
 /** The selected track's index if it's a Drum track, or -1 — the one check
     every drum-kit edit below needs before touching the document. */
 int MainComponent::selectedDrumTrackIndex() const
@@ -3246,6 +3758,7 @@ void MainComponent::addDrumPad()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
 }
 
@@ -3282,6 +3795,7 @@ void MainComponent::removeDrumPad(int padIndex)
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
 
     // More destructive than the row disappearing suggests: every hit that
@@ -3725,6 +4239,46 @@ void MainComponent::endSynthSettingsDrag()
     });
 }
 
+/** Remembers the selected clip's gain before a drag on the audio editor's
+    gain slider started, so the whole drag lands as one undo step rather than
+    one per mouse-move — the same pair, for the same reason, as the synth and
+    guitar settings drags. */
+void MainComponent::beginClipGainDrag()
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return;
+
+    clipGainDragging_   = true;
+    clipGainDragTrack_  = selectedTrackIndex_;
+    clipGainDragClip_   = selectedClipIndex_;
+    clipGainDragFrom_   = clip->gainDb;
+}
+
+void MainComponent::endClipGainDrag()
+{
+    if (! clipGainDragging_
+        || clipGainDragTrack_ != selectedTrackIndex_
+        || clipGainDragClip_ != selectedClipIndex_)
+        return;
+
+    clipGainDragging_ = false;
+
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return;
+
+    const int   trackIndex = clipGainDragTrack_;
+    const int   clipIndex  = clipGainDragClip_;
+    const float landedOn   = clip->gainDb;
+
+    commitStructDrag(history_, "Set clip gain", clipGainDragFrom_, landedOn,
+                     [trackIndex, clipIndex](model::Song& s, const float& value)
+    {
+        s.tracks[(size_t) trackIndex].clips[(size_t) clipIndex].gainDb = value;
+    });
+}
+
 /** Remembers a track's guitar settings before a drag on one of the
     fretboard's controls started — see FretboardPane::onSettingsDragStart. */
 void MainComponent::beginGuitarSettingsDrag()
@@ -3862,6 +4416,7 @@ void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     updateMixerStrips(); // refreshes the selection highlight
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -3896,6 +4451,7 @@ void MainComponent::refreshFromModel()
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -3904,6 +4460,7 @@ void MainComponent::refreshFromModel()
     updateFilterControls();
     updateReverbControls();
     updateEqControls();
+    updateMasteringControls();
     updateSendBusControls();
     fileBrowser_.setProjectRootFolder(history_.current().projectRootFolder.empty()
                                           ? juce::File{}
@@ -3991,7 +4548,7 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
 void MainComponent::chooseFile()
 {
     chooser_ = std::make_unique<juce::FileChooser>("Load an audio file", juce::File{},
-                                                   "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3");
+                                                   audiofiles::wildcards());
 
     const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
 
@@ -4004,8 +4561,13 @@ void MainComponent::chooseFile()
 }
 
 /** Loads a file into the global preview player (not tied to any track) — used
-    by the "Import Audio..." menu item and by double-clicking a file in the
-    file-browser pane. */
+    by the "Preview Audio File..." menu item and by double-clicking a file in
+    the file-browser pane.
+
+    Named "Preview" rather than "Import" because that is what it does: the
+    file plays once and never becomes a clip. While both menu items said
+    "Import Audio", picking this one looked like importing and produced a
+    project with nothing in it. */
 void MainComponent::previewAudioFile(const juce::File& file)
 {
     if (engine_.loadAudioFile(file))
@@ -4138,7 +4700,7 @@ void MainComponent::importAudioToNewTrack()
     }
 
     chooser_ = std::make_unique<juce::FileChooser>("Import audio to a new track", juce::File{},
-                                                   "*.wav;*.aiff;*.aif;*.flac;*.ogg;*.mp3");
+                                                   audiofiles::wildcards());
     const auto flags = juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles;
 
     chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
@@ -4254,6 +4816,7 @@ void MainComponent::selectTrackAndRefreshAll(int newTrackIndex)
     refreshDrumsPaneForSelected();
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -4685,8 +5248,6 @@ juce::File MainComponent::factoryDrumKitDirectory() const
 void MainComponent::seedFactoryDrumKit()
 {
     const auto dir = factoryDrumKitDirectory();
-    if (dir.getNumberOfChildFiles(juce::File::findFiles, "*.wav") > 0)
-        return;
 
     // Fixed rather than the live device rate: these are rendered once, to
     // disk, and reused across sessions — re-rendering at whatever rate the
@@ -4695,12 +5256,21 @@ void MainComponent::seedFactoryDrumKit()
     // whatever a file's own rate is.
     const double sampleRate = 48000.0;
 
+    // Seeded per file rather than bailing on the whole directory. The intent
+    // was always "a file the user replaced or deleted stays that way", and
+    // per-file honours that exactly — while still letting a later version
+    // add a sound an existing install would otherwise never receive, which
+    // is what the whole-directory check quietly prevented.
     auto writeOneShot = [&](const juce::String& name, std::vector<float> samples)
     {
+        const auto file = dir.getChildFile(name + ".wav");
+        if (file.existsAsFile())
+            return;
+
         engine::normalizePeak(samples);
         juce::AudioBuffer<float> buffer(1, (int) samples.size());
         std::copy(samples.begin(), samples.end(), buffer.getWritePointer(0));
-        engine::OfflineRenderer::writeWav(dir.getChildFile(name + ".wav"), buffer, sampleRate);
+        engine::OfflineRenderer::writeWav(file, buffer, sampleRate);
     };
 
     // Three variants each, so "generic" doesn't mean "one option" — a user
@@ -4721,25 +5291,49 @@ void MainComponent::seedFactoryDrumKit()
     writeOneShot("Clap Classic", engine::synthesizeClap(sampleRate, 1500.0f, 120.0f, 401u));
     writeOneShot("Clap Tight",   engine::synthesizeClap(sampleRate, 1800.0f, 80.0f, 402u));
     writeOneShot("Clap Roomy",   engine::synthesizeClap(sampleRate, 1200.0f, 200.0f, 403u));
+
+    // The sounds engine::DrumKitStyle's non-Classic kits are built from.
+    // Same four generators, pushed harder: the industrial kick clips into
+    // its own drive (which is what makes it read as a machine rather than a
+    // drum), the industrial snare trades body for noise, and the sub kick
+    // starts and ends low with a long tail so a halftime groove has
+    // something to sit on.
+    writeOneShot("Kick Industrial",  engine::synthesizeKick(sampleRate, 220.0f, 50.0f, 8.0f, 180.0f, 8.0f));
+    writeOneShot("Kick Sub",         engine::synthesizeKick(sampleRate, 90.0f,  30.0f, 60.0f, 600.0f, 2.5f));
+    writeOneShot("Snare Industrial", engine::synthesizeSnare(sampleRate, 320.0f, 0.12f, 180.0f, 4500.0f, 204u));
 }
 
-/** model::makeDefaultDrumKit()'s four pads (Kick/Snare/Hat/Other), pointed
-    at one factory sound each — the "Tight"/"Crisp"/"Closed"/"Classic"
-    variant of each, arbitrarily chosen as the one that plays if nobody
-    picks. The other two variants of each still exist in
-    factoryDrumKitDirectory() for anyone who wants to swap. Can't live in
-    model::makeDefaultDrumKit() itself: a file path is exactly the kind of
-    thing the model layer doesn't know about. */
-model::DrumKit MainComponent::defaultDrumKitWithFactorySamples() const
+/** engine::padsForDrumKitStyle's four pads for @p style, with each sample
+    stem resolved against factoryDrumKitDirectory(). This resolution step is
+    the whole reason the table itself lives in the engine layer and deals in
+    stems: a file path is exactly the kind of thing neither that layer nor
+    the model layer knows about. */
+model::DrumKit MainComponent::kitForDrumKitStyle(engine::DrumKitStyle style) const
 {
-    auto       kit = model::makeDefaultDrumKit();
     const auto dir = factoryDrumKitDirectory();
 
-    kit.pads[0].samplePath = dir.getChildFile("Kick Tight.wav").getFullPathName().toStdString();
-    kit.pads[1].samplePath = dir.getChildFile("Snare Crisp.wav").getFullPathName().toStdString();
-    kit.pads[2].samplePath = dir.getChildFile("Hat Closed.wav").getFullPathName().toStdString();
-    kit.pads[3].samplePath = dir.getChildFile("Clap Classic.wav").getFullPathName().toStdString();
+    model::DrumKit kit;
+    for (const auto& spec : engine::padsForDrumKitStyle(style))
+    {
+        model::DrumPad pad;
+        pad.noteNumber     = spec.noteNumber;
+        pad.label          = spec.label;
+        pad.samplePath     = dir.getChildFile(juce::String(spec.sampleStem) + ".wav")
+                                .getFullPathName().toStdString();
+        pad.gainDb         = spec.gainDb;
+        pad.pitchSemitones = spec.pitchSemitones;
+        kit.pads.push_back(pad);
+    }
     return kit;
+}
+
+/** The kit a new Drum track starts with: the Classic style, which is the
+    same Kick Tight/Snare Crisp/Hat Closed/Clap Classic set this returned
+    before kit styles existed. One definition rather than two, so the
+    starting kit and the Classic button can't drift apart. */
+model::DrumKit MainComponent::defaultDrumKitWithFactorySamples() const
+{
+    return kitForDrumKitStyle(engine::DrumKitStyle::Classic);
 }
 
 /** The project that exists the moment the app opens — deliberately not also
@@ -4767,6 +5361,25 @@ model::Song MainComponent::makeStarterSong() const
     drumClip.pattern     = engine::makeDefaultDrumLoopPattern();
     drumClip.lengthBeats = drumClip.pattern.lengthBeats;
     model::addClip(song, drumId, drumClip);
+
+    // A guitar track that arrives already sounding like something, for the
+    // same reason the drum track does. Given the Modern Metal tone rather
+    // than a bare default so the pedal chain, the gate and the drop tuning
+    // are all on screen and audible on first launch instead of being
+    // features you have to know to go looking for.
+    //
+    // The riff is written against the preset's own tuning, not a hardcoded
+    // one - see makeDefaultGuitarRiffPattern on why that isn't optional.
+    const auto guitarTone = model::presetForGuitarTone(engine::GuitarTone::ModernMetal);
+
+    const int guitarId = model::addTrack(song, model::TrackType::Guitar, "Guitar 1").id;
+    song.tracks.back().guitarSettings = guitarTone.guitar;
+    song.tracks.back().effectChain    = guitarTone.effectChain;
+    model::Clip guitarClip;
+    guitarClip.type        = model::ClipType::Instrument;
+    guitarClip.pattern     = engine::makeDefaultGuitarRiffPattern(guitarTone.guitar.tuning[0]);
+    guitarClip.lengthBeats = guitarClip.pattern.lengthBeats;
+    model::addClip(song, guitarId, guitarClip);
 
     return song;
 }
@@ -5002,96 +5615,25 @@ void MainComponent::bounceProject()
         file = file.withFileExtension("wav");
         showBusy("Rendering to WAV...");
 
-        const auto& song = history_.current();
-        std::vector<engine::Pattern> patterns;
-        std::vector<float>           gains;
-        std::vector<bool>            solos;
-        std::vector<double>          clipStarts;
-        std::vector<float>           sends;
-        for (const auto& track : song.tracks)
-        {
-            patterns.push_back(track.clips.empty() ? engine::Pattern {} : track.clips[0].pattern);
-            gains.push_back(track.muted ? -100.0f : track.gainDb);
-            solos.push_back(track.solo);
-            clipStarts.push_back(track.clips.empty() ? 0.0 : track.clips[0].startBeats);
-            sends.push_back(track.sendLevel);
-        }
-        if (patterns.empty())
-        {
-            patterns.push_back({});
-            gains.push_back(0.0f);
-            solos.push_back(false);
-            clipStarts.push_back(0.0);
-            sends.push_back(0.0f);
-        }
-
         const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 44100.0;
-        const double bpm        = song.bpm;
 
-        // Sample-accurate per-track gain automation: only wire the callback up
-        // when at least one track actually has a lane, so a project with none
-        // renders through the exact same (untouched) fast path as before this
-        // existed — no behaviour change for the common case.
-        const bool anyTrackAutomated = std::any_of(song.tracks.begin(), song.tracks.end(),
-                                                   [](const model::Track& t) { return t.hasAutomation(); });
+        // Everything the mix contains, rendered by the mixer itself — see
+        // AudioEngine::renderOffline. This used to be a hand-written second
+        // copy of the signal path, and it had drifted badly: audio clips were
+        // absent entirely, only each track's first clip was rendered, every
+        // per-track effect chain was skipped, the master EQ was skipped, and
+        // the length was hardcoded to eight seconds. Calling the engine means
+        // none of those can come back.
+        //
+        // A tail past the last clip so reverb and delay decay into the file
+        // rather than being cut off mid-ring at the final beat.
+        const double lengthBeats = songEndBeats() + kBounceTailBeats;
+        auto buffer = engine_.renderOffline(0.0, lengthBeats);
 
-        engine::OfflineRenderer::TrackAutomationList automationCurves;
-        if (anyTrackAutomated)
-            for (const auto& track : song.tracks)
-                automationCurves.push_back(toTrackAutomation(track));
-
-        auto buffer = engine::OfflineRenderer::render(patterns, gains, solos, clipStarts, sends,
-                                                       song.sendBus.enabled, song.sendBus.roomSize,
-                                                       song.sendBus.damping, song.sendBus.returnLevel,
-                                                       bpm, sampleRate, 8.0, 512,
-                                                       anyTrackAutomated ? &automationCurves : nullptr,
-                                                       (int) song.sendBus.effectType,
-                                                       song.sendBus.delayTimeMs, song.sendBus.delayFeedback);
-
-        if (song.filter.enabled)
+        if (buffer.getNumSamples() == 0)
         {
-            engine::FilterEffect ff;
-            ff.prepare(sampleRate, 512);
-            ff.setEnabled(true);
-            ff.setMode(song.filter.mode);
-            ff.setCutoff(song.filter.cutoff);
-            ff.setResonance(song.filter.resonance);
-            ff.process(buffer);
-        }
-
-        if (song.delay.enabled)
-        {
-            engine::DelayEffect fx;
-            fx.prepare(sampleRate, 512);
-            fx.setEnabled(true);
-            fx.setTimeMs(song.delay.timeMs);
-            fx.setFeedback(song.delay.feedback);
-            fx.setMix(song.delay.mix);
-            fx.process(buffer);
-        }
-
-        if (song.reverb.enabled)
-        {
-            engine::ReverbEffect rv;
-            rv.prepare(sampleRate, 512);
-            rv.setEnabled(true);
-            rv.setRoomSize(song.reverb.roomSize);
-            rv.setDamping(song.reverb.damping);
-            rv.setMix(song.reverb.mix);
-            rv.process(buffer);
-        }
-
-        if (! song.masterGainDb.empty())
-        {
-            const double samplesPerBeat = sampleRate * 60.0 / bpm;
-            const int    n              = buffer.getNumSamples();
-            for (int i = 0; i < n; ++i)
-            {
-                const double beat = samplesPerBeat > 0.0 ? (double) i / samplesPerBeat : 0.0;
-                const float  g    = juce::Decibels::decibelsToGain(song.masterGainDb.valueAt(beat, 0.0f));
-                for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
-                    buffer.getWritePointer(ch)[i] *= g;
-            }
+            showError("Nothing to bounce");
+            return;
         }
 
         if (engine::OfflineRenderer::writeWav(file, buffer, sampleRate))
@@ -5225,6 +5767,7 @@ void MainComponent::timerCallback()
 
     meter_.setLevel(0, engine_.masterPeak(0));
     meter_.setLevel(1, engine_.masterPeak(1));
+    masteringPane_.setReductionDb(engine_.masteringReductionDb());
 
     const int n = trackCount();
     for (int i = 0; i < n; ++i)
@@ -5316,8 +5859,27 @@ void MainComponent::timerCallback()
 
 void MainComponent::changeListenerCallback(juce::ChangeBroadcaster*)
 {
+    followSystemOutputIfEnabled();
     logAudioDeviceStatus();
     updateLoopRegion();
+}
+
+/** The device manager broadcasts whenever the device list changes, which is
+    what plugging in headphones looks like from here. JUCE won't move by
+    itself — it opened a device by name at launch and keeps it — so this is
+    what actually follows the system. */
+void MainComponent::followSystemOutputIfEnabled()
+{
+    if (! followSystemOutput_ || switchingDevice_)
+        return;
+
+    // Re-opening the device broadcasts another change, and without this the
+    // callback would re-enter while the device is half-open.
+    const juce::ScopedValueSetter<bool> guard(switchingDevice_, true);
+
+    const auto switchedTo = engine_.followSystemDefaultOutput();
+    if (switchedTo.isNotEmpty())
+        showStatus("Output: " + switchedTo);
 }
 
 void MainComponent::logAudioDeviceStatus()
