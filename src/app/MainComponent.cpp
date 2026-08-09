@@ -30,6 +30,11 @@ namespace looper
     a pane can never collide with one. */
 static constexpr int kFirstPanelMenuId = 100;
 
+/** Layout entries in the View menu. Between the fixed commands (1..32) and
+    the panel toggles (kFirstPanelMenuId upward), which is the only free
+    range — the panel list is unbounded above, so this can't sit past it. */
+static constexpr int kFirstLayoutMenuId = 40;
+
 /** Colour entries in the per-track gear menu, clear of that menu's own
     fixed items. */
 static constexpr int kFirstColourMenuId = 200;
@@ -928,6 +933,32 @@ MainComponent::MainComponent()
     audioEditor_.onGainDragStart = [this] { beginClipGainDrag(); };
     audioEditor_.onGainDragEnd   = [this] { endClipGainDrag(); };
     audioEditor_.onNormaliseRequested = [this] { normaliseSelectedClip(); };
+    audioEditor_.onPlayRequested = [this](double fromSeconds, double toSeconds)
+    {
+        const auto* clip = selectedAudioClip();
+        if (clip == nullptr)
+            return;
+
+        if (! engine_.loadPreviewClip(juce::File(clip->audioFile)))
+        {
+            showError("Could not read that clip");
+            return;
+        }
+        engine_.startPreview(fromSeconds, toSeconds);
+    };
+    audioEditor_.onStopRequested = [this] { engine_.stopPreview(); };
+    audioEditor_.onCutRequested     = [this] { cutAudioSelection(); };
+    audioEditor_.onCopyRequested    = [this] { copyAudioSelection(); };
+    audioEditor_.onPasteRequested   = [this] { pasteAudioAtSelection(); };
+    audioEditor_.onDeleteRequested  = [this] { deleteAudioSelection(); };
+    audioEditor_.onTrimRequested    = [this] { trimToAudioSelection(); };
+    audioEditor_.onSplitRequested   = [this] { splitClipAtSelection(); };
+    audioEditor_.onSilenceRequested = [this] { silenceAudioSelection(); };
+    audioEditor_.onFadeInRequested  = [this] { fadeInAudioSelection(); };
+    audioEditor_.onFadeOutRequested = [this] { fadeOutAudioSelection(); };
+    audioEditor_.onReverseRequested = [this] { reverseAudioSelection(); };
+    audioEditor_.onApplyEffectsRequested = [this] { showApplyEffectsDialog(); };
+    audioEditor_.onSpeedPitchRequested   = [this] { showSpeedPitchDialog(); };
     audioEditor_.onCaptureNoisePrintRequested = [this] { captureNoisePrint(); };
     audioEditor_.onReduceNoiseRequested = [this](float amountDb, float floorDb)
     {
@@ -1175,8 +1206,20 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         }
 
         menu.addSeparator();
+
+        // Ids sit in 33..99: 1..32 are the fixed commands and panel toggles
+        // run from kFirstPanelMenuId upward, so this is the only free range.
+        juce::PopupMenu layoutMenu;
+        for (int i = 0; i < layouts::kNumWorkspaces; ++i)
+        {
+            const auto workspace = (layouts::Workspace) i;
+            layoutMenu.addItem(kFirstLayoutMenuId + i, layouts::workspaceName(workspace),
+                               true, workspace == activeWorkspace_);
+        }
+        menu.addSubMenu("Layout", layoutMenu);
+
         // Splitting is a drag gesture (drop a tab on a pane's edge), so the
-        // only layout command left is a way back to the default.
+        // only layout command left is a way back to this one's default.
         menu.addItem(14, "Reset Layout");
     }
 
@@ -1232,6 +1275,14 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         // no-op the user would read as broken, so togglePanel reveals a buried
         // one and closes one that's already in front.
         default:
+            // Checked before the panel range, which is unbounded above.
+            if (menuItemID >= kFirstLayoutMenuId
+                && menuItemID < kFirstLayoutMenuId + layouts::kNumWorkspaces)
+            {
+                applyWorkspaceLayout((layouts::Workspace) (menuItemID - kFirstLayoutMenuId));
+                break;
+            }
+
             if (menuItemID >= kFirstPanelMenuId)
                 togglePanel(menuItemID - kFirstPanelMenuId);
             break;
@@ -2042,6 +2093,32 @@ void MainComponent::refreshEffectChainForSelected()
 /** One chain slot's parameters in the engine's terms. `enabled` is the
     slot's own bypass, not the per-settings flag — bypass has to mean the same
     thing for a hosted plugin as for a built-in. */
+/** How long the blend back to the unprocessed audio takes at each edge of a
+    rendered selection. Long enough to remove the step an effect's level
+    change leaves, far too short to hear as a fade. */
+static constexpr double kEffectEdgeFadeSeconds = 0.005;
+
+/** One engine node for a built-in effect kind, or nullptr for a kind that
+    can't be built here (Plugin, which needs the plugin host). Mirrors
+    AudioEngine::rebuildTrackEffectChain's switch. */
+static std::unique_ptr<engine::EffectProcessor> makeEffectNode(model::EffectKind kind)
+{
+    switch (kind)
+    {
+        case model::EffectKind::Filter:     return std::make_unique<engine::FilterNode>();
+        case model::EffectKind::Delay:      return std::make_unique<engine::DelayNode>();
+        case model::EffectKind::Reverb:     return std::make_unique<engine::ReverbNode>();
+        case model::EffectKind::Drive:      return std::make_unique<engine::DriveNode>();
+        case model::EffectKind::Compressor: return std::make_unique<engine::CompressorNode>();
+        case model::EffectKind::Tremolo:    return std::make_unique<engine::TremoloNode>();
+        case model::EffectKind::Chorus:     return std::make_unique<engine::ChorusNode>();
+        case model::EffectKind::Wobble:     return std::make_unique<engine::WobbleNode>();
+        case model::EffectKind::Gate:       return std::make_unique<engine::GateNode>();
+        case model::EffectKind::Plugin:     return nullptr;
+    }
+    return nullptr;
+}
+
 static engine::EffectSlotParams toSlotParams(const model::EffectSlot& slot)
 {
     engine::EffectSlotParams params;
@@ -3375,6 +3452,7 @@ void MainComponent::refreshAudioEditorForSelected()
     const auto* clip = selectedAudioClip();
     if (clip == nullptr)
     {
+        engine_.stopPreview();
         audioEditor_.setNoAudioClipSelected();
         return;
     }
@@ -3569,6 +3647,523 @@ std::vector<std::vector<float>> MainComponent::readAudioFileChannels(const juce:
     return channels;
 }
 
+/** Copies the selection into the audio clipboard. Non-destructive, so it
+    doesn't go through applyDestructiveEdit. */
+void MainComponent::copyAudioSelection()
+{
+    int    from = 0, to = 0, length = 0;
+    double sampleRate = 0.0;
+    std::vector<std::vector<float>> channels;
+
+    if (! selectedSampleRange(from, to, length, sampleRate, channels, false))
+    {
+        showError("Select part of the clip first");
+        return;
+    }
+
+    audioClipboard_.clear();
+    for (const auto& channel : channels)
+        audioClipboard_.push_back(engine::audioedits::extractRange(channel, from, to));
+
+    audioClipboardSampleRate_ = sampleRate;
+    showStatus("Copied " + juce::String((double) (to - from) / sampleRate, 2) + "s");
+}
+
+void MainComponent::cutAudioSelection()
+{
+    int    from = 0, to = 0, length = 0;
+    double sampleRate = 0.0;
+    std::vector<std::vector<float>> channels;
+
+    if (! selectedSampleRange(from, to, length, sampleRate, channels, true))
+    {
+        showError("Select part of the clip first");
+        return;
+    }
+
+    audioClipboard_.clear();
+    for (const auto& channel : channels)
+        audioClipboard_.push_back(engine::audioedits::extractRange(channel, from, to));
+    audioClipboardSampleRate_ = sampleRate;
+
+    if (applyDestructiveEdit("Cut audio", [from, to](const std::vector<float>& samples, int)
+        {
+            return engine::audioedits::removeRange(samples, from, to);
+        }))
+        showStatus("Cut " + juce::String((double) (to - from) / sampleRate, 2) + "s");
+}
+
+void MainComponent::deleteAudioSelection()
+{
+    int    from = 0, to = 0, length = 0;
+    double sampleRate = 0.0;
+    std::vector<std::vector<float>> channels;
+
+    if (! selectedSampleRange(from, to, length, sampleRate, channels, true))
+    {
+        showError("Select part of the clip first");
+        return;
+    }
+
+    if (applyDestructiveEdit("Delete audio", [from, to](const std::vector<float>& samples, int)
+        {
+            return engine::audioedits::removeRange(samples, from, to);
+        }))
+        showStatus("Deleted " + juce::String((double) (to - from) / sampleRate, 2) + "s");
+}
+
+/** Pastes the clipboard at the selection's start, replacing the selection if
+    there is one. Resamples when the clipboard came from a file at another
+    rate — otherwise pasting 44.1k into 48k would play back too fast. */
+void MainComponent::pasteAudioAtSelection()
+{
+    if (audioClipboard_.empty())
+    {
+        showError("Nothing to paste");
+        return;
+    }
+
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return;
+
+    double     sampleRate = 0.0;
+    const auto channels   = readAudioFileChannels(juce::File(clip->audioFile), sampleRate);
+    if (channels.empty() || sampleRate <= 0.0)
+    {
+        showError("Could not read that clip");
+        return;
+    }
+
+    const auto range  = audioEditor_.selection();
+    const int  length = (int) channels[0].size();
+    const int  at     = juce::jlimit(0, length, (int) std::llround(range.startSeconds * sampleRate));
+    const int  until  = range.isEmpty()
+                          ? at
+                          : juce::jlimit(at, length, (int) std::llround(range.endSeconds * sampleRate));
+
+    const double ratio = audioClipboardSampleRate_ > 0.0 ? audioClipboardSampleRate_ / sampleRate : 1.0;
+
+    if (applyDestructiveEdit("Paste audio", [this, at, until, ratio](const std::vector<float>& samples, int channel)
+        {
+            // A mono clipboard into a stereo clip (or the reverse) reuses the
+            // last available channel rather than refusing — the same rule the
+            // players follow for channel-count mismatches.
+            const auto& source = audioClipboard_[(size_t) juce::jmin(channel, (int) audioClipboard_.size() - 1)];
+            const auto  fitted = std::abs(ratio - 1.0) < 1.0e-9
+                                     ? source
+                                     : engine::audioedits::resample(source, ratio);
+
+            const auto cleared = until > at ? engine::audioedits::removeRange(samples, at, until) : samples;
+            return engine::audioedits::insertAt(cleared, fitted, at);
+        }))
+        showStatus("Pasted");
+}
+
+void MainComponent::trimToAudioSelection()
+{
+    int    from = 0, to = 0, length = 0;
+    double sampleRate = 0.0;
+    std::vector<std::vector<float>> channels;
+
+    if (! selectedSampleRange(from, to, length, sampleRate, channels, true))
+    {
+        showError("Select the part to keep first");
+        return;
+    }
+
+    if (applyDestructiveEdit("Trim audio", [from, to](const std::vector<float>& samples, int)
+        {
+            return engine::audioedits::keepRange(samples, from, to);
+        }))
+        showStatus("Trimmed to " + juce::String((double) (to - from) / sampleRate, 2) + "s");
+}
+
+void MainComponent::silenceAudioSelection()
+{
+    int    from = 0, to = 0, length = 0;
+    double sampleRate = 0.0;
+    std::vector<std::vector<float>> channels;
+
+    if (! selectedSampleRange(from, to, length, sampleRate, channels, false))
+    {
+        showError("Select part of the clip first");
+        return;
+    }
+
+    if (applyDestructiveEdit("Silence audio", [from, to](const std::vector<float>& samples, int)
+        {
+            return engine::audioedits::silenceRange(samples, from, to);
+        }))
+        showStatus("Silenced");
+}
+
+void MainComponent::fadeInAudioSelection()
+{
+    int    from = 0, to = 0, length = 0;
+    double sampleRate = 0.0;
+    std::vector<std::vector<float>> channels;
+
+    if (! selectedSampleRange(from, to, length, sampleRate, channels, false))
+    {
+        showError("Select the range to fade first");
+        return;
+    }
+
+    if (applyDestructiveEdit("Fade in", [from, to](const std::vector<float>& samples, int)
+        {
+            return engine::audioedits::fadeIn(samples, from, to);
+        }))
+        showStatus("Faded in");
+}
+
+void MainComponent::fadeOutAudioSelection()
+{
+    int    from = 0, to = 0, length = 0;
+    double sampleRate = 0.0;
+    std::vector<std::vector<float>> channels;
+
+    if (! selectedSampleRange(from, to, length, sampleRate, channels, false))
+    {
+        showError("Select the range to fade first");
+        return;
+    }
+
+    if (applyDestructiveEdit("Fade out", [from, to](const std::vector<float>& samples, int)
+        {
+            return engine::audioedits::fadeOut(samples, from, to);
+        }))
+        showStatus("Faded out");
+}
+
+void MainComponent::reverseAudioSelection()
+{
+    int    from = 0, to = 0, length = 0;
+    double sampleRate = 0.0;
+    std::vector<std::vector<float>> channels;
+
+    if (! selectedSampleRange(from, to, length, sampleRate, channels, true))
+    {
+        showError("Select part of the clip first");
+        return;
+    }
+
+    if (applyDestructiveEdit("Reverse audio", [from, to](const std::vector<float>& samples, int)
+        {
+            return engine::audioedits::reverseRange(samples, from, to);
+        }))
+        showStatus("Reversed");
+}
+
+/** Splits the clip in two at the selection's start.
+
+    Its own path rather than applyDestructiveEdit's, which repoints one clip:
+    a split produces two, so both halves are written and the second becomes a
+    new clip on the same track, butted against the first. Both lengths are
+    derived from their files, per ClipLengthRepair's rule. */
+void MainComponent::splitClipAtSelection()
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return;
+
+    const auto range = audioEditor_.selection();
+    if (range.isEmpty())
+    {
+        showError("Select where to split first");
+        return;
+    }
+
+    const juce::File source(clip->audioFile);
+    double           sampleRate = 0.0;
+    const auto       channels   = readAudioFileChannels(source, sampleRate);
+    if (channels.empty() || sampleRate <= 0.0)
+    {
+        showError("Could not read " + source.getFileName());
+        return;
+    }
+
+    const int length = (int) channels[0].size();
+    int       at     = juce::jlimit(0, length, (int) std::llround(range.startSeconds * sampleRate));
+    at = engine::audioedits::nearestZeroCrossing(channels[0], at);
+
+    if (at <= 0 || at >= length)
+    {
+        showError("That split point is at the very edge of the clip");
+        return;
+    }
+
+    // Both halves written before the document is touched, so a failure to
+    // write leaves the project exactly as it was.
+    auto writeHalf = [&](int from, int to) -> juce::File
+    {
+        juce::AudioBuffer<float> buffer((int) channels.size(), to - from);
+        for (int ch = 0; ch < (int) channels.size(); ++ch)
+        {
+            const auto part = engine::audioedits::keepRange(channels[(size_t) ch], from, to);
+            std::copy(part.begin(), part.end(), buffer.getWritePointer(ch));
+        }
+
+        const auto file = editsDirectory()
+                              .getNonexistentChildFile(source.getFileNameWithoutExtension(), ".wav");
+        return engine::OfflineRenderer::writeWav(file, buffer, sampleRate) ? file : juce::File{};
+    };
+
+    const auto firstFile  = writeHalf(0, at);
+    const auto secondFile = writeHalf(at, length);
+    if (firstFile == juce::File{} || secondFile == juce::File{})
+    {
+        showError("Could not write the split halves");
+        return;
+    }
+
+    const int    trackIndex   = selectedTrackIndex_;
+    const int    clipIndex    = selectedClipIndex_;
+    const double bpm          = history_.current().bpm;
+    const double firstBeats   = engine::beatsForSeconds((double) at / sampleRate, bpm);
+    const double secondBeats  = engine::beatsForSeconds((double) (length - at) / sampleRate, bpm);
+    const auto   firstPath    = firstFile.getFullPathName().toStdString();
+    const auto   secondPath   = secondFile.getFullPathName().toStdString();
+
+    history_.edit("Split audio", [=](model::Song& s)
+    {
+        auto& track = s.tracks[(size_t) trackIndex];
+        auto& first = track.clips[(size_t) clipIndex];
+
+        const double startBeats = first.startBeats;
+        first.audioFile   = firstPath;
+        first.lengthBeats = juce::jmax(0.25, firstBeats);
+
+        model::Clip second = first;
+        second.audioFile   = secondPath;
+        second.lengthBeats = juce::jmax(0.25, secondBeats);
+        second.startBeats  = startBeats + first.lengthBeats;
+
+        model::addClip(s, track.id, second); // reissues the id
+    });
+
+    noiseProfiles_.clear();
+    noiseProfileFile_  = juce::File{};
+    waveformPeaksFile_ = juce::File{};
+
+    engine_.stopPreview();
+    syncEngineTracks();
+    refreshAudioEditorForSelected();
+    arrangementView_.setSong(history_.current());
+    showStatus("Split at " + juce::String((double) at / sampleRate, 2) + "s");
+}
+
+/** Offers a scratch effect chain to render into the selection. */
+void MainComponent::showApplyEffectsDialog()
+{
+    if (selectedAudioClip() == nullptr)
+        return;
+
+    if (audioEditor_.selection().isEmpty())
+    {
+        showError("Select part of the clip first");
+        return;
+    }
+
+    auto dialog = std::make_unique<ApplyEffectsDialog>();
+    dialog->setSize(520, 460);
+
+    auto* raw = dialog.get();
+    raw->onApply = [this, raw](const std::vector<model::EffectSlot>& chain)
+    {
+        applyEffectsToSelection(chain);
+        if (auto* window = raw->findParentComponentOfClass<juce::DialogWindow>())
+            window->exitModalState(0);
+    };
+    raw->onCancel = [raw]
+    {
+        if (auto* window = raw->findParentComponentOfClass<juce::DialogWindow>())
+            window->exitModalState(0);
+    };
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(dialog.release());
+    options.dialogTitle                  = "Apply Effects to Selection";
+    options.dialogBackgroundColour       = getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId);
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar            = true;
+    options.resizable                    = true;
+    options.launchAsync();
+}
+
+/** Renders @p chain into the selected range.
+
+    The range is processed as its own buffer and written back over the
+    original, with a short crossfade at each boundary. Without the crossfade
+    an effect that changes level — any compressor, or a reverb's wet mix —
+    produces a step at the edges of the selection, heard as a click exactly
+    where the edit begins and ends. A few milliseconds of blend removes it
+    and is far too short to be heard as a fade.
+
+    Plugin slots are skipped: instantiating one needs the plugin host, which
+    lives in the engine, and a half-rendered chain would be worse than an
+    honest refusal. */
+void MainComponent::applyEffectsToSelection(const std::vector<model::EffectSlot>& chain)
+{
+    const auto range = audioEditor_.selection();
+    if (range.isEmpty())
+        return;
+
+    int builtIns = 0, plugins = 0;
+    for (const auto& slot : chain)
+    {
+        if (! slot.enabled)
+            continue;
+        (slot.kind == model::EffectKind::Plugin ? plugins : builtIns) += 1;
+    }
+
+    if (builtIns == 0)
+    {
+        showError(plugins > 0 ? "Plugins can't be rendered into a selection yet"
+                              : "Add an effect first");
+        return;
+    }
+
+    const double bpm = history_.current().bpm;
+
+    const bool applied = applyDestructiveEditToAllChannels("Apply effects",
+        [&chain, range, bpm](std::vector<std::vector<float>>& channels, double sampleRate)
+    {
+        const int total = (int) channels[0].size();
+        const int from  = juce::jlimit(0, total, (int) std::llround(range.startSeconds * sampleRate));
+        const int to    = juce::jlimit(from, total, (int) std::llround(range.endSeconds * sampleRate));
+        const int count = to - from;
+        if (count <= 0)
+            return;
+
+        const int numChannels = (int) channels.size();
+
+        juce::AudioBuffer<float> block(numChannels, count);
+        for (int ch = 0; ch < numChannels; ++ch)
+            std::copy(channels[(size_t) ch].begin() + from,
+                      channels[(size_t) ch].begin() + to,
+                      block.getWritePointer(ch));
+
+        engine::EffectChain built;
+        for (const auto& slot : chain)
+        {
+            if (! slot.enabled || slot.kind == model::EffectKind::Plugin)
+                continue;
+
+            if (auto node = makeEffectNode(slot.kind))
+            {
+                built.add(std::move(node));
+                built.applyParams(built.size() - 1, toSlotParams(slot));
+            }
+        }
+
+        built.prepare(sampleRate, count);
+        built.setBpm(bpm); // the wobble pedal is tempo-locked
+        built.process(block);
+
+        // Blend back over the original at both edges.
+        const int fade = juce::jmin(count / 2, (int) std::llround(sampleRate * kEffectEdgeFadeSeconds));
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            auto*       destination = channels[(size_t) ch].data() + from;
+            const auto* processed   = block.getReadPointer(ch);
+
+            for (int i = 0; i < count; ++i)
+            {
+                float wet = 1.0f;
+                if (fade > 0)
+                {
+                    if (i < fade)                 wet = (float) i / (float) fade;
+                    else if (i >= count - fade)   wet = (float) (count - 1 - i) / (float) fade;
+                }
+                destination[i] = destination[i] * (1.0f - wet) + processed[i] * wet;
+            }
+        }
+    });
+
+    if (applied)
+        showStatus(plugins > 0 ? "Applied effects (plugins skipped)" : "Applied effects");
+}
+
+/** Speed and pitch, on the whole clip.
+
+    Whole clip rather than a selection on purpose: both change the audio's
+    duration, and splicing a re-timed section back into the middle of a clip
+    would either leave a gap or overlap what follows. Audacity's own
+    Change Speed works this way for the same reason. */
+void MainComponent::showSpeedPitchDialog()
+{
+    if (selectedAudioClip() == nullptr)
+        return;
+
+    auto* window = new juce::AlertWindow("Speed and Pitch", {}, juce::MessageBoxIconType::NoIcon, this);
+
+    window->addComboBox("speed", { "0.5x (half)", "0.75x", "1x (unchanged)", "1.5x", "2x (double)" },
+                        "Speed (moves pitch with it):");
+    window->getComboBoxComponent("speed")->setSelectedItemIndex(2);
+
+    juce::StringArray semitones;
+    for (int i = -12; i <= 12; ++i)
+        semitones.add(i == 0 ? juce::String("0 (unchanged)") : juce::String(i > 0 ? "+" : "") + juce::String(i));
+    window->addComboBox("pitch", semitones, "Pitch, keeping the length:");
+    window->getComboBoxComponent("pitch")->setSelectedItemIndex(12); // 0
+
+    window->addButton("Apply", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    window->enterModalState(true, juce::ModalCallbackFunction::create(
+        [self = juce::Component::SafePointer<MainComponent>(this), window](int result)
+        {
+            std::unique_ptr<juce::AlertWindow> owned(window);
+            if (self == nullptr || result != 1)
+                return;
+
+            static const double kSpeeds[] = { 0.5, 0.75, 1.0, 1.5, 2.0 };
+            const int speedIndex = window->getComboBoxComponent("speed")->getSelectedItemIndex();
+            const int pitchIndex = window->getComboBoxComponent("pitch")->getSelectedItemIndex();
+
+            self->applySpeedAndPitch(kSpeeds[(size_t) juce::jlimit(0, 4, speedIndex)],
+                                     (double) (juce::jlimit(0, 24, pitchIndex) - 12));
+        }));
+}
+
+/** Applies a speed change and a pitch shift to the whole clip.
+
+    Speed first, then pitch: the pitch shift preserves length, so doing it
+    second means it operates on the already-retimed audio and the two
+    settings compose the way the dialog implies. */
+void MainComponent::applySpeedAndPitch(double speedFactor, double semitones)
+{
+    const bool changesSpeed = std::abs(speedFactor - 1.0) > 1.0e-9;
+    const bool changesPitch = std::abs(semitones) > 1.0e-9;
+
+    if (! changesSpeed && ! changesPitch)
+        return;
+
+    showBusy("Processing...");
+
+    const bool applied = applyDestructiveEditToAllChannels("Speed and pitch",
+        [speedFactor, semitones, changesSpeed, changesPitch](std::vector<std::vector<float>>& channels, double)
+    {
+        for (auto& channel : channels)
+        {
+            if (changesSpeed)
+                channel = engine::timestretch::changeSpeed(channel, speedFactor);
+            if (changesPitch)
+                channel = engine::timestretch::pitchShift(channel, semitones);
+        }
+    });
+
+    if (applied)
+    {
+        juce::String what;
+        if (changesSpeed) what += juce::String(speedFactor, 2) + "x speed";
+        if (changesSpeed && changesPitch) what += ", ";
+        if (changesPitch) what += juce::String(semitones > 0 ? "+" : "") + juce::String((int) semitones) + " semitones";
+        showStatus("Applied " + what);
+    }
+}
+
 /** Measures the noise in the selected range, per channel.
 
     Per channel rather than from a mono sum: a stereo recording's two sides
@@ -3698,6 +4293,151 @@ void MainComponent::reduceNoiseOnSelectedClip(float amountDb, float floorDb)
     refreshAudioEditorForSelected();
     arrangementView_.setSong(history_.current());
     showStatus("Noise reduced: " + destination.getFileName());
+}
+
+juce::File MainComponent::editsDirectory() const
+{
+    // Separate from Recordings: these are derived files, and mixing them in
+    // with takes makes it impossible to tell which is which when clearing
+    // out space later.
+    auto dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                  .getChildFile("Looper-Audio Edits");
+    dir.createDirectory();
+    return dir;
+}
+
+/** Reads the selected clip and resolves the editor's selection to sample
+    indices. Returns false — having reported why — when there's no selection,
+    which for a destructive edit must refuse rather than quietly mean "the
+    whole clip": a stray click before Cut would otherwise destroy the take. */
+bool MainComponent::selectedSampleRange(int& fromOut, int& toOut, int& lengthOut,
+                                        double& sampleRateOut,
+                                        std::vector<std::vector<float>>& channelsOut,
+                                        bool snapToZeroCrossings) const
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return false;
+
+    const auto range = audioEditor_.selection();
+    if (range.isEmpty())
+        return false;
+
+    channelsOut = readAudioFileChannels(juce::File(clip->audioFile), sampleRateOut);
+    if (channelsOut.empty() || sampleRateOut <= 0.0)
+        return false;
+
+    lengthOut = (int) channelsOut[0].size();
+    fromOut   = juce::jlimit(0, lengthOut, (int) std::llround(range.startSeconds * sampleRateOut));
+    toOut     = juce::jlimit(0, lengthOut, (int) std::llround(range.endSeconds * sampleRateOut));
+
+    if (snapToZeroCrossings)
+    {
+        // Decided once, from the first channel, and applied to all of them:
+        // snapping each channel to its own crossing would shear a stereo
+        // file apart at the edit point.
+        fromOut = engine::audioedits::nearestZeroCrossing(channelsOut[0], fromOut);
+        toOut   = engine::audioedits::nearestZeroCrossing(channelsOut[0], toOut);
+        if (toOut < fromOut)
+            std::swap(fromOut, toOut);
+    }
+
+    return true;
+}
+
+/** The one path every destructive edit takes.
+
+    Centralised because each step is easy to forget individually and each
+    failure is quiet: a clip whose lengthBeats no longer matches its file is
+    silently "repaired" by ClipLengthRepair (undoing the edit), and a stale
+    waveform-peaks cache draws the old audio over the new. */
+bool MainComponent::applyDestructiveEdit(
+    const juce::String& label,
+    const std::function<std::vector<float>(const std::vector<float>&, int channel)>& transform)
+{
+    return applyDestructiveEditToAllChannels(label,
+        [&transform](std::vector<std::vector<float>>& channels, double)
+        {
+            for (int ch = 0; ch < (int) channels.size(); ++ch)
+                channels[(size_t) ch] = transform(channels[(size_t) ch], ch);
+        });
+}
+
+bool MainComponent::applyDestructiveEditToAllChannels(
+    const juce::String& label,
+    const std::function<void(std::vector<std::vector<float>>&, double sampleRate)>& transform)
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return false;
+
+    const juce::File source(clip->audioFile);
+    double           sampleRate = 0.0;
+    auto             channels   = readAudioFileChannels(source, sampleRate);
+    if (channels.empty() || sampleRate <= 0.0)
+    {
+        showError("Could not read " + source.getFileName());
+        return false;
+    }
+
+    transform(channels, sampleRate);
+
+    const int newLength = channels.empty() ? 0 : (int) channels[0].size();
+    if (newLength <= 0)
+    {
+        // Editing a clip down to nothing would leave a clip referencing an
+        // unreadable file, which plays as silence with no explanation.
+        showError("That would leave the clip empty");
+        return false;
+    }
+
+    juce::AudioBuffer<float> buffer((int) channels.size(), newLength);
+    for (int ch = 0; ch < (int) channels.size(); ++ch)
+    {
+        // Channels can differ in length only if a transform is inconsistent,
+        // which is a bug — but writing past the buffer would be a crash, so
+        // it is clamped rather than trusted.
+        const int count = juce::jmin(newLength, (int) channels[(size_t) ch].size());
+        buffer.clear(ch, 0, newLength);
+        std::copy(channels[(size_t) ch].begin(), channels[(size_t) ch].begin() + count,
+                  buffer.getWritePointer(ch));
+    }
+
+    const auto destination = editsDirectory()
+                                 .getNonexistentChildFile(source.getFileNameWithoutExtension(), ".wav");
+    if (! engine::OfflineRenderer::writeWav(destination, buffer, sampleRate))
+    {
+        showError("Could not write " + destination.getFileName());
+        return false;
+    }
+
+    // lengthBeats is derived from the file's duration, not chosen — see
+    // ClipLengthRepair, which will "correct" any clip that disagrees. An
+    // edit that changed the duration without this would be silently undone.
+    const double newSeconds     = (double) newLength / sampleRate;
+    const int    trackIndex     = selectedTrackIndex_;
+    const int    clipIndex      = selectedClipIndex_;
+    const auto   newPath        = destination.getFullPathName().toStdString();
+    const double newLengthBeats = engine::beatsForSeconds(newSeconds, history_.current().bpm);
+
+    history_.edit(label.toStdString(), [trackIndex, clipIndex, newPath, newLengthBeats](model::Song& s)
+    {
+        auto& target       = s.tracks[(size_t) trackIndex].clips[(size_t) clipIndex];
+        target.audioFile   = newPath;
+        target.lengthBeats = juce::jmax(0.25, newLengthBeats);
+    });
+
+    // A noise print described the old file, and the peaks cache is keyed by
+    // path — without clearing it the editor keeps drawing the old audio.
+    noiseProfiles_.clear();
+    noiseProfileFile_  = juce::File{};
+    waveformPeaksFile_ = juce::File{};
+
+    engine_.stopPreview();
+    syncEngineTracks();
+    refreshAudioEditorForSelected();
+    arrangementView_.setSong(history_.current());
+    return true;
 }
 
 /** The selected track's index if it's a Drum track, or -1 — the one check
@@ -5768,6 +6508,7 @@ void MainComponent::timerCallback()
     meter_.setLevel(0, engine_.masterPeak(0));
     meter_.setLevel(1, engine_.masterPeak(1));
     masteringPane_.setReductionDb(engine_.masteringReductionDb());
+    audioEditor_.setPlaybackState(engine_.isPreviewPlaying(), engine_.previewPositionSeconds());
 
     const int n = trackCount();
     for (int i = 0; i < n; ++i)
@@ -6005,68 +6746,92 @@ void MainComponent::togglePanel(int index)
     plus keyboard across the bottom. Several panels are therefore visible at
     once out of the box; the rest (Synth, Drums) start as tabs alongside the
     ones they relate to. */
+/** The arrangement a workspace with no saved layout gets.
+
+    Built from the same definition the Layout menu uses (see
+    layouts::buildWorkspaceLayout) rather than by a second sequence of splits
+    here — two descriptions of "the default" would drift, and the imperative
+    one couldn't be checked by a headless test. */
 void MainComponent::buildDefaultDockLayout()
 {
-    workspace_.resetToSingleRegion();
-
-    // Splitting `centre` repeatedly is safe: a split moves the region into a
-    // deeper node but never moves the DockRegion object itself, so the
-    // reference stays good throughout.
-    auto& centre = workspace_.rootRegion();
-    workspace_.addPanel(centre, "Tracks");
-
-    if (auto* left = workspace_.splitRegion(centre, DropZone::Left, 0.18))
-        workspace_.addPanel(*left, "Files");
-
-    if (auto* right = workspace_.splitRegion(centre, DropZone::Right, 0.72))
+    if (! workspace_.restoreLayout(layouts::workspaceLayoutText(activeWorkspace_)))
     {
-        workspace_.addPanel(*right, "Mixer");
-
-        // Master applies to the whole song, not to any one track, so it gets
-        // its own region beside Mixer rather than nesting inside it.
-        if (auto* master = workspace_.splitRegion(*right, DropZone::Right, 0.72))
-            workspace_.addPanel(*master, "Master");
+        // Only reachable if a built-in layout stopped parsing, which the
+        // layout tests exist to prevent. An empty single region is still a
+        // usable workspace: every pane is reachable from the View menu.
+        workspace_.resetToSingleRegion();
+        workspace_.addPanel(workspace_.rootRegion(), "Tracks");
     }
+}
 
-    if (auto* bottom = workspace_.splitRegion(centre, DropZone::Bottom, 0.45))
-    {
-        workspace_.addPanel(*bottom, "Keys");
-        workspace_.addPanel(*bottom, "Synth");
-        workspace_.addPanel(*bottom, "Drums");
-        workspace_.addPanel(*bottom, "Session");
-        workspace_.addPanel(*bottom, "Guitar");
-        bottom->showPanel("Keys");
-
-        // Track FX gets its own region rather than joining the tab group
-        // above: it applies to every track type, but a distortion plugin
-        // living in it was otherwise invisible while tweaking a synth's
-        // oscillator on the "Synth" tab right next to it — a click away
-        // rather than in view.
-        if (auto* fx = workspace_.splitRegion(*bottom, DropZone::Right, 0.62))
-            workspace_.addPanel(*fx, "Track FX");
-
-        if (auto* transport = workspace_.splitRegion(*bottom, DropZone::Bottom, 0.68))
-        {
-            workspace_.addPanel(*transport, "Transport");
-            workspace_.addPanel(*transport, "Keyboard");
-            transport->showPanel("Transport");
-        }
-    }
+juce::String MainComponent::settingsKeyForWorkspace(layouts::Workspace workspace) const
+{
+    return juce::String("dockLayout.") + layouts::workspaceName(workspace);
 }
 
 void MainComponent::loadDockLayout()
 {
+    // Which layout was in use last. Absent on an existing install, where
+    // Music Creation is right: it is the arrangement the app already had.
+    const auto savedName = settings_.getValue("activeLayout");
+    for (int i = 0; i < layouts::kNumWorkspaces; ++i)
+    {
+        const auto workspace = (layouts::Workspace) i;
+        if (savedName == layouts::workspaceName(workspace))
+            activeWorkspace_ = workspace;
+    }
+
+    // That layout's own saved arrangement, then the flat "dockLayout" key an
+    // older build wrote (so an existing install keeps the workspace it had
+    // rather than being reset), then the built-in default.
+    //
     // A saved layout that no longer parses — an older format, or one naming a
-    // panel this build doesn't have — falls back to the default rather than
-    // leaving a half-built workspace.
-    if (! workspace_.restoreLayout(settings_.getValue("dockLayout")))
-        buildDefaultDockLayout();
+    // panel this build doesn't have — falls through rather than leaving a
+    // half-built workspace.
+    if (workspace_.restoreLayout(settings_.getValue(settingsKeyForWorkspace(activeWorkspace_))))
+        return;
+    if (workspace_.restoreLayout(settings_.getValue("dockLayout")))
+        return;
+
+    buildDefaultDockLayout();
 }
 
 void MainComponent::saveDockLayout()
 {
+    // Both the active layout's own slot and the flat key: the flat one is
+    // what an older build reads, so writing it keeps a downgrade from
+    // landing on an empty workspace.
     settings_.setValue("dockLayout", workspace_.saveLayout());
+    saveActiveWorkspaceLayout();
+}
+
+void MainComponent::saveActiveWorkspaceLayout()
+{
+    settings_.setValue(settingsKeyForWorkspace(activeWorkspace_), workspace_.saveLayout());
+    settings_.setValue("activeLayout", layouts::workspaceName(activeWorkspace_));
     settings_.saveIfNeeded();
+}
+
+/** Switches workspace. The outgoing arrangement is saved into its own slot
+    first, so coming back finds it as it was left rather than reset to the
+    built-in default. */
+void MainComponent::applyWorkspaceLayout(layouts::Workspace workspace)
+{
+    saveActiveWorkspaceLayout();
+
+    activeWorkspace_ = workspace;
+
+    // The incoming layout's remembered arrangement, or its built-in default
+    // the first time it's used. restoreLayout deliberately doesn't broadcast
+    // a layout change, so neither of these can write back over the slot we
+    // just saved.
+    const auto remembered = settings_.getValue(settingsKeyForWorkspace(workspace));
+    if (! workspace_.restoreLayout(remembered))
+        workspace_.restoreLayout(layouts::workspaceLayoutText(workspace));
+
+    resized();
+    saveActiveWorkspaceLayout();
+    showStatus("Layout: " + juce::String(layouts::workspaceName(workspace)));
 }
 
 /** Builds one of the zoom controls: icon, slider and editable multiplier.

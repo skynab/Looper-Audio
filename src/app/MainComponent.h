@@ -12,6 +12,8 @@
 #include "engine/DrumKitStyle.h"
 #include "engine/GuitarTone.h"
 #include "engine/MasteringPreset.h"
+#include "engine/AudioEdits.h"
+#include "engine/TimeStretch.h"
 #include "engine/NoiseReduction.h"
 #include "engine/SynthTone.h"
 #include "engine/TempoMap.h"
@@ -24,8 +26,10 @@
 #include "DrumsPane.h"
 #include "EffectChainPanel.h"
 #include "EqCurveView.h"
+#include "ApplyEffectsDialog.h"
 #include "AudioEditorPane.h"
 #include "MasteringPane.h"
+#include "WorkspaceLayouts.h"
 #include "FretboardPane.h"
 #include "FileBrowserPanel.h"
 #include "LevelMeter.h"
@@ -190,8 +194,55 @@ private:
     void                   beginClipGainDrag();
     void                   endClipGainDrag();
     void                   normaliseSelectedClip();
+    // The audio-editor edit actions. Each resolves the selection, transforms
+    // the samples and goes through applyDestructiveEdit.
+    void                   cutAudioSelection();
+    void                   copyAudioSelection();
+    void                   pasteAudioAtSelection();
+    void                   deleteAudioSelection();
+    void                   trimToAudioSelection();
+    void                   splitClipAtSelection();
+    void                   silenceAudioSelection();
+    void                   fadeInAudioSelection();
+    void                   fadeOutAudioSelection();
+    void                   reverseAudioSelection();
+
+    void                   showApplyEffectsDialog();
+    void                   showSpeedPitchDialog();
+    void                   applySpeedAndPitch(double speedFactor, double semitones);
+    void                   applyEffectsToSelection(const std::vector<model::EffectSlot>& chain);
+
     void                   captureNoisePrint();
     void                   reduceNoiseOnSelectedClip(float amountDb, float floorDb);
+
+    /** Where destructive edits write their output. */
+    juce::File             editsDirectory() const;
+
+    /** Runs @p transform over every channel of the selected clip's audio,
+        writes the result to a new file and repoints the clip at it in one
+        undo step. The single path every destructive edit goes through, so
+        none of them can forget to update lengthBeats or to invalidate the
+        caches. @p label names the undo step. */
+    bool                   applyDestructiveEdit(
+                               const juce::String& label,
+                               const std::function<std::vector<float>(const std::vector<float>&, int channel)>& transform);
+
+    /** As above, but handed every channel at once and the file's sample
+        rate. Effects are stereo processors — a reverb's width and a
+        compressor's linked detector both need both channels together — so
+        the per-channel signature above can't express them. */
+    bool                   applyDestructiveEditToAllChannels(
+                               const juce::String& label,
+                               const std::function<void(std::vector<std::vector<float>>&, double sampleRate)>& transform);
+
+    /** The selection in the audio editor as sample indices into @p clip's
+        file, or false when there isn't one. @p snapToZeroCrossings moves the
+        boundaries to the nearest zero crossing, which is what stops a cut
+        clicking. */
+    bool                   selectedSampleRange(int& fromOut, int& toOut, int& lengthOut,
+                                               double& sampleRateOut,
+                                               std::vector<std::vector<float>>& channelsOut,
+                                               bool snapToZeroCrossings) const;
     /** Reads @p file fully into per-channel float vectors, or an empty
         result if it can't be read. Message thread; used by the audio
         editor's offline operations. */
@@ -271,6 +322,12 @@ private:
     int                    panelMenuIndex(const juce::String& name) const;
     void                   togglePanel(int index);
     void                   buildDefaultDockLayout();
+    /** Switches to @p workspace, saving the arrangement being left into its
+        own slot first so each layout remembers your edits to it. */
+    void                   applyWorkspaceLayout(layouts::Workspace workspace);
+    /** Writes the current arrangement into the active layout's slot. */
+    void                   saveActiveWorkspaceLayout();
+    juce::String           settingsKeyForWorkspace(layouts::Workspace workspace) const;
     void                   loadDockLayout();
     void                   saveDockLayout();
     void                   layoutMixerView();
@@ -430,6 +487,7 @@ private:
     // say) rather than holding whichever device was default at launch.
     // Persisted, and switchable off for anyone deliberately running a fixed
     // interface — see the View menu.
+    layouts::Workspace                 activeWorkspace_ = layouts::Workspace::MusicCreation;
     bool                               followSystemOutput_ = true;
     bool                               switchingDevice_    = false;
 
@@ -441,6 +499,12 @@ private:
     // The captured noise print, one profile per channel, plus the file it
     // was measured from — a print is only meaningful for the recording it
     // came from, so it's dropped when the selection moves to another.
+    // Audio clipboard, deliberately separate from the note/clip/track ones
+    // above: Cmd-C already means Copy Notes, and this app's rule is that a
+    // command means one thing rather than depending on focus.
+    std::vector<std::vector<float>>    audioClipboard_;
+    double                             audioClipboardSampleRate_ = 0.0;
+
     std::vector<engine::NoiseProfile>  noiseProfiles_;
     juce::File                         noiseProfileFile_;
 

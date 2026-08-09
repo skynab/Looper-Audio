@@ -212,12 +212,18 @@ namespace noisereduction
         }
 
         // Normalising by the accumulated squared window is what makes this
-        // reconstruct exactly when no bin was changed. Without it the first
-        // and last few hops — where fewer frames overlap — come back quieter
-        // than the middle, which reads as a fade in and out.
+        // reconstruct exactly when no bin was changed. The floor is the other
+        // half of getting it right: at the first and last hops only a
+        // window's taper contributes, so windowSum is near zero there and
+        // dividing by it amplifies rather than corrects. Flooring at a
+        // fraction of the steady-state sum bounds that and lets the edges
+        // taper, which is what partial data should do. (Same fix, and the
+        // same reasoning, as TimeStretch's overlap-add.)
+        const float steadyState = *std::max_element(windowSum.begin(), windowSum.end());
+        const float floorValue  = std::max(1.0e-6f, steadyState * 0.1f);
+
         for (size_t i = 0; i < output.size(); ++i)
-            if (windowSum[i] > 1.0e-6f)
-                output[i] /= windowSum[i];
+            output[i] /= std::max(windowSum[i], floorValue);
 
         return output;
     }

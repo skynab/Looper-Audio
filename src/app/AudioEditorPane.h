@@ -47,6 +47,27 @@ public:
         MainComponent measures the file — this pane has no sample data. */
     std::function<void()> onNormaliseRequested;
 
+    /** Audition the clip. @p fromSeconds / @p toSeconds is the range to
+        play; an end at or before the start means "to the end". */
+    std::function<void(double fromSeconds, double toSeconds)> onPlayRequested;
+    std::function<void()>                                    onStopRequested;
+
+    /** The destructive edit actions. Named rather than one callback with an
+        enum so the owner's wiring reads as a list of commands, matching how
+        every other pane here reports intent. */
+    std::function<void()> onCutRequested;
+    std::function<void()> onCopyRequested;
+    std::function<void()> onPasteRequested;
+    std::function<void()> onDeleteRequested;
+    std::function<void()> onTrimRequested;
+    std::function<void()> onSplitRequested;
+    std::function<void()> onSilenceRequested;
+    std::function<void()> onFadeInRequested;
+    std::function<void()> onFadeOutRequested;
+    std::function<void()> onReverseRequested;
+    std::function<void()> onApplyEffectsRequested;
+    std::function<void()> onSpeedPitchRequested;
+
     /** Measure the noise in the current selection, to subtract later. Only
         offered when something is selected: a print taken from the whole clip
         would describe the material as much as the noise, and denoising with
@@ -90,6 +111,51 @@ public:
         normaliseButton_.setButtonText("Normalize");
         normaliseButton_.setTooltip("Set this clip's gain so its loudest point just reaches full scale");
         normaliseButton_.onClick = [this] { if (onNormaliseRequested) onNormaliseRequested(); };
+
+        playButton_.setButtonText("Play");
+        playButton_.setTooltip("Audition the selection, or the whole clip when nothing is selected");
+        playButton_.onClick = [this]
+        {
+            if (playing_)
+            {
+                if (onStopRequested) onStopRequested();
+                return;
+            }
+            if (onPlayRequested)
+            {
+                // An empty selection means "no selection", which for
+                // auditioning sensibly means the whole clip — unlike the
+                // destructive actions, where it must refuse.
+                const auto range = selection_;
+                onPlayRequested(range.isEmpty() ? 0.0 : range.startSeconds,
+                                range.isEmpty() ? 0.0 : range.endSeconds);
+            }
+        };
+
+        // Two rows of edit commands. Each fires its own callback; the owner
+        // decides what they mean and refuses when there's no selection.
+        struct EditButtonSpec { juce::TextButton* button; const char* text; std::function<void()>* callback; };
+        const EditButtonSpec editSpecs[] {
+            { &cutButton_,     "Cut",      &onCutRequested },
+            { &copyButton_,    "Copy",     &onCopyRequested },
+            { &pasteButton_,   "Paste",    &onPasteRequested },
+            { &deleteButton_,  "Delete",   &onDeleteRequested },
+            { &trimButton_,    "Trim",     &onTrimRequested },
+            { &splitButton_,   "Split",    &onSplitRequested },
+            { &silenceButton_, "Silence",  &onSilenceRequested },
+            { &fadeInButton_,  "Fade In",  &onFadeInRequested },
+            { &fadeOutButton_, "Fade Out", &onFadeOutRequested },
+            { &reverseButton_, "Reverse",  &onReverseRequested },
+            { &effectsButton_, "Effects...", &onApplyEffectsRequested },
+            { &speedPitchButton_, "Speed/Pitch...", &onSpeedPitchRequested },
+        };
+
+        for (const auto& spec : editSpecs)
+        {
+            spec.button->setButtonText(spec.text);
+            auto* callback = spec.callback;
+            spec.button->onClick = [callback] { if (*callback) (*callback)(); };
+        }
 
         captureNoiseButton_.setButtonText("Capture Noise Print");
         captureNoiseButton_.setTooltip("Select a passage with only background noise, then capture it");
@@ -191,6 +257,9 @@ public:
             // the worst kind of wrong.
             selection_          = {};
             noisePrintCaptured_ = false;
+            playing_            = false;
+            playheadSeconds_    = 0.0;
+            playButton_.setButtonText("Play");
             zoomToFit();
             notifySelection();
         }
@@ -218,6 +287,23 @@ public:
     {
         peaks_            = std::move(peaks);
         peaksSampleRate_  = sampleRate > 0.0 ? sampleRate : 0.0;
+        repaint();
+    }
+
+    /** Where the audition has reached, and whether it's running. Pushed by
+        the owner's timer — the pane has no access to the engine. */
+    void setPlaybackState(bool playing, double positionSeconds)
+    {
+        const bool stateChanged = playing != playing_;
+        if (! stateChanged && std::abs(positionSeconds - playheadSeconds_) < 1.0e-4)
+            return;
+
+        playing_         = playing;
+        playheadSeconds_ = positionSeconds;
+
+        if (stateChanged)
+            playButton_.setButtonText(playing_ ? "Stop" : "Play");
+
         repaint();
     }
 
@@ -259,6 +345,18 @@ public:
         }
 
         paintWaveform(g, area);
+
+        // Only while running: a parked playhead at zero is indistinguishable
+        // from the start-of-file edge and just adds a line to read past.
+        if (playing_)
+        {
+            const float x = geometry_.xForSeconds(playheadSeconds_);
+            if (x >= (float) area.getX() && x <= (float) area.getRight())
+            {
+                g.setColour(juce::Colours::yellow.withAlpha(0.9f));
+                g.drawVerticalLine((int) x, (float) area.getY(), (float) area.getBottom());
+            }
+        }
 
         if (! selection_.isEmpty())
         {
@@ -353,7 +451,8 @@ public:
 
         // Divide what's actually left rather than imposing minimums, so the
         // buttons shrink together instead of the last ones falling off.
-        juce::Component* toolButtons[] { &zoomOutButton_, &zoomInButton_, &zoomFitButton_,
+        juce::Component* toolButtons[] { &playButton_,
+                                         &zoomOutButton_, &zoomInButton_, &zoomFitButton_,
                                          &selectAllButton_, &clearSelectionButton_ };
         const int buttonCount = (int) std::size(toolButtons);
         for (int i = 0; i < buttonCount; ++i)
@@ -362,6 +461,46 @@ public:
             const int width     = juce::jmax(1, toolRow.getWidth() / remaining);
             toolButtons[i]->setBounds(toolRow.removeFromLeft(width).reduced(1));
         }
+
+        // Edit commands in two rows above the denoise row, so the ten of
+        // them stay readable rather than being squeezed into one strip.
+        //
+        // Hidden outright when the pane is too short for them *and* a usable
+        // waveform. A control laid out at zero height is present, clickable
+        // against nothing and indistinguishable from a broken one; hiding it
+        // is the honest outcome, and it comes straight back on resize.
+        const bool roomForEditRows = area.getHeight() >= kMinWaveformHeight + 2 * kToolRowHeight;
+        for (auto* button : editButtons())
+            button->setVisible(contentVisible_ && roomForEditRows);
+
+        if (roomForEditRows)
+        {
+            auto layoutButtonRow = [](juce::Rectangle<int> row, std::vector<juce::Component*> buttons)
+            {
+                for (size_t i = 0; i < buttons.size(); ++i)
+                {
+                    const int remaining = (int) (buttons.size() - i);
+                    const int width     = juce::jmax(1, row.getWidth() / remaining);
+                    buttons[i]->setBounds(row.removeFromLeft(width).reduced(1));
+                }
+            };
+
+            layoutButtonRow(area.removeFromBottom(kToolRowHeight),
+                            { &silenceButton_, &fadeInButton_, &fadeOutButton_, &reverseButton_,
+                          &splitButton_, &effectsButton_, &speedPitchButton_ });
+            layoutButtonRow(area.removeFromBottom(kToolRowHeight),
+                            { &cutButton_, &copyButton_, &pasteButton_, &deleteButton_, &trimButton_ });
+        }
+
+        // The denoise and gain rows get the same treatment, and are dropped
+        // first: they're refinements, where the edit commands are the pane's
+        // reason to exist.
+        const bool roomForToolRows = area.getHeight() >= kMinWaveformHeight + 2 * kToolRowHeight;
+        for (auto* control : toolRowControls())
+            control->setVisible(contentVisible_ && roomForToolRows);
+
+        if (! roomForToolRows)
+            return;
 
         // Denoise sits above the gain row, in workflow order: capture a
         // print, then reduce, then set the level.
@@ -409,6 +548,25 @@ public:
 
 private:
     static constexpr int kToolRowHeight = 24;
+
+    /** Below this the waveform stops being something you can select in, so
+        control rows are dropped rather than eating into it further. */
+    static constexpr int kMinWaveformHeight = 60;
+
+    std::vector<juce::Component*> editButtons()
+    {
+        return { &cutButton_, &copyButton_, &pasteButton_, &deleteButton_, &trimButton_,
+                 &splitButton_, &silenceButton_, &fadeInButton_, &fadeOutButton_, &reverseButton_,
+                 &effectsButton_, &speedPitchButton_ };
+    }
+
+    std::vector<juce::Component*> toolRowControls()
+    {
+        return { &captureNoiseButton_, &reduceNoiseButton_,
+                 &noiseAmountLabel_, &noiseAmountSlider_,
+                 &noiseFloorLabel_, &noiseFloorSlider_,
+                 &gainLabel_, &gainSlider_, &normaliseButton_ };
+    }
 
     /** The selection readout's width, and the row width below which it is
         dropped entirely so the buttons keep usable sizes. */
@@ -572,7 +730,11 @@ private:
         having. */
     std::vector<juce::Component*> managedControls()
     {
-        return { &selectionLabel_, &gainLabel_, &gainSlider_, &normaliseButton_,
+        return { &playButton_,
+                 &cutButton_, &copyButton_, &pasteButton_, &deleteButton_, &trimButton_,
+                 &splitButton_, &silenceButton_, &fadeInButton_, &fadeOutButton_, &reverseButton_,
+                 &effectsButton_, &speedPitchButton_,
+                 &selectionLabel_, &gainLabel_, &gainSlider_, &normaliseButton_,
                  &zoomInButton_, &zoomOutButton_, &zoomFitButton_,
                  &selectAllButton_, &clearSelectionButton_,
                  &captureNoiseButton_, &reduceNoiseButton_,
@@ -610,10 +772,16 @@ private:
     juce::Slider     gainSlider_;
     juce::TextButton normaliseButton_, zoomInButton_, zoomOutButton_, zoomFitButton_;
     juce::TextButton selectAllButton_, clearSelectionButton_;
+    juce::TextButton playButton_;
+    juce::TextButton cutButton_, copyButton_, pasteButton_, deleteButton_, trimButton_;
+    juce::TextButton splitButton_, silenceButton_, fadeInButton_, fadeOutButton_, reverseButton_;
+    juce::TextButton effectsButton_, speedPitchButton_;
     juce::TextButton captureNoiseButton_, reduceNoiseButton_;
     juce::Label      noiseAmountLabel_, noiseFloorLabel_;
     juce::Slider     noiseAmountSlider_, noiseFloorSlider_;
     bool             noisePrintCaptured_ = false;
+    bool             playing_            = false;
+    double           playheadSeconds_    = 0.0;
     WaveformPeaks    peaks_;
     double           peaksSampleRate_ = 0.0;
     float            gainDb_          = 0.0f;

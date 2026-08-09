@@ -25,6 +25,8 @@ add_executable(looper_tests
   engine/PedalDspTests.cpp
   engine/MasteringDspTests.cpp
   engine/NoiseReductionTests.cpp
+  engine/AudioEditsTests.cpp
+  engine/TimeStretchTests.cpp
   engine/DelayLineTests.cpp
   engine/StateVariableFilterTests.cpp
   engine/ShelfPeakFilterTests.cpp
@@ -42,6 +44,7 @@ add_executable(looper_tests
   app/TimelineGeometryTests.cpp
   app/PianoRollGeometryTests.cpp
   app/DockLayoutTreeTests.cpp
+  app/WorkspaceLayoutsTests.cpp
   app/ClipPreviewTests.cpp
   app/AudioSelectionTests.cpp
   app/WaveformPeaksTests.cpp
@@ -75,6 +78,7 @@ if (LOOPER_BUILD_APP)
     gui/ArrangementViewTests.cpp
   gui/AudioEditorPaneTests.cpp
   gui/AudioFileTypesTests.cpp
+  gui/AudioPreviewPlayerTests.cpp
     gui/IconsTests.cpp
     gui/PianoRollTests.cpp
     gui/ShortcutsTests.cpp
