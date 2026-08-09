@@ -145,6 +145,11 @@ public:
     bool canZoomOut() const noexcept { return geometry_.zoom > kMinZoom; }
 
     /** Highlights the clip currently open in the piano roll. */
+    /** Whether dragging and resizing clips snaps to whole beats. Alt still
+        inverts it for a single drag — see mouseDrag. */
+    void setSnapToGrid(bool shouldSnap) { snapToGrid_ = shouldSnap; }
+    bool snapsToGrid() const            { return snapToGrid_; }
+
     void setSelectedClip(int trackIndex, int clipIndex)
     {
         if (selectedTrackForEdit_ != trackIndex || selectedClipForEdit_ != clipIndex)
@@ -674,9 +679,12 @@ private:
 
         const double currentBeat = geometry_.beatForX(e.position.x);
 
-        // Snap to whole beats unless alt is held — the usual DAW convention,
-        // and without it a clip can't be given an exact length at all.
-        const bool snap = ! e.mods.isAltDown();
+        // Alt *inverts* the snap setting rather than only switching it off.
+        // With snapping on it's the usual "let me place this freely just this
+        // once"; with snapping off it's the way back to the grid without
+        // going to the menu. One modifier that always means "the other one"
+        // is easier to remember than one that only works in one direction.
+        const bool snap = snapToGrid_ != e.mods.isAltDown();
 
         if (resizing_)
         {
@@ -1046,6 +1054,7 @@ private:
     int selectedTrackForEdit_ = -1;
     int selectedClipForEdit_  = -1;
 
+    bool   snapToGrid_      = true;
     bool   fileDragActive_  = false;
     double dropPreviewBeat_ = 0.0;
 };

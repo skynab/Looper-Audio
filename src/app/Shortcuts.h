@@ -59,6 +59,15 @@ inline const juce::KeyPress redoAlt    = detail::with('Y', detail::cmd);
 // Notes and clips get separate shortcuts for the same reason they get
 // separate menu commands: one pair whose meaning depends on which pane has
 // focus is a coin toss at the moment you press it.
+//
+// The audio editor is the deliberate exception. Cut/copy/paste on a waveform
+// are the most standard shortcuts there are, and a user working in that pane
+// reaches for them without thinking — so cmd+C/X/V mean audio while the Audio
+// pane is the active one, and notes everywhere else. The discriminator is
+// which pane is in front, not which control has keyboard focus, so it's
+// visible on screen at the moment the key is pressed rather than being an
+// invisible piece of state.
+inline const juce::KeyPress cutAudio   = detail::with('X', detail::cmd);
 inline const juce::KeyPress copyNotes  = detail::with('C', detail::cmd);
 inline const juce::KeyPress pasteNotes = detail::with('V', detail::cmd);
 inline const juce::KeyPress copyClip   = detail::with('C', detail::cmd | detail::shift);

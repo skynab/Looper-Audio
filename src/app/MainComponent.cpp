@@ -263,6 +263,7 @@ MainComponent::MainComponent()
     // dragging its divider — this is what makes a one-row pane worth dragging
     // down to, rather than resizing the region from under them.
     followSystemOutput_ = settings_.getValue("followSystemOutput", "1") != "0";
+    arrangementView_.setSnapToGrid(settings_.getValue("snapClipsToGrid", "1") != "0");
     transportCollapsed_ = settings_.getValue("transportCollapsed", "0") != "0";
     collapseTransportButton_.onClick = [this]
     {
@@ -946,6 +947,15 @@ MainComponent::MainComponent()
         post(Cmd::SetPlaying, 1.0);
     };
     audioEditor_.onStopRequested = [this] { post(Cmd::SetPlaying, 0.0); };
+    audioEditor_.onFilesDropped = [this](const juce::Array<juce::File>& files)
+    {
+        // Each on its own new track, at the start. importAudioFileAtBeat
+        // selects what it creates, so the last one dropped is the one left
+        // open in the editor — which is where the file was dropped, and so
+        // where it's expected to appear.
+        for (const auto& file : files)
+            importAudioFileAtBeat(file, 0.0, -1);
+    };
     audioEditor_.onCutRequested     = [this] { cutAudioSelection(); };
     audioEditor_.onCopyRequested    = [this] { copyAudioSelection(); };
     audioEditor_.onPasteRequested   = [this] { pasteAudioAtSelection(); };
@@ -1184,9 +1194,13 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
             const bool hasAudio     = selectedAudioClip() != nullptr;
             const bool hasSelection = hasAudio && ! audioEditor_.selection().isEmpty();
 
-            menu.addItem(50, "Cut Audio",      hasSelection, false);
-            menu.addItem(51, "Copy Audio",     hasSelection, false);
-            menu.addItem(52, "Paste Audio",    hasAudio && ! audioClipboard_.empty(), false);
+            // The shortcuts are shown because they really do work here —
+            // but only while the Audio pane is in front, which is why they
+            // are attached to these items rather than promised globally.
+            addItem(menu, 50, "Cut Audio",   keys::cutAudio,   hasSelection);
+            addItem(menu, 51, "Copy Audio",  keys::copyNotes,  hasSelection);
+            addItem(menu, 52, "Paste Audio", keys::pasteNotes,
+                    hasAudio && ! audioClipboard_.empty());
             menu.addItem(53, "Delete Audio",   hasSelection, false);
             menu.addItem(54, "Trim to Selection", hasSelection, false);
             menu.addItem(55, "Split at Cursor",   hasSelection, false);
@@ -1239,6 +1253,12 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         }
         menu.addSubMenu("Layout", layoutMenu);
 
+        // Alt inverts this for a single drag, so it's a default rather than
+        // a lock — worth saying, since a user who finds it off will otherwise
+        // hunt for the menu every time they want one clip on the grid.
+        menu.addItem(33, "Snap Clips to Grid   (hold Alt to invert)",
+                     true, arrangementView_.snapsToGrid());
+
         // Splitting is a drag gesture (drop a tab on a pane's edge), so the
         // only layout command left is a way back to this one's default.
         menu.addItem(14, "Reset Layout");
@@ -1276,6 +1296,16 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 57: fadeInAudioSelection(); break;
         case 58: fadeOutAudioSelection(); break;
         case 59: reverseAudioSelection(); break;
+
+        case 33:
+        {
+            const bool snap = ! arrangementView_.snapsToGrid();
+            arrangementView_.setSnapToGrid(snap);
+            settings_.setValue("snapClipsToGrid", snap ? "1" : "0");
+            settings_.saveIfNeeded();
+            showStatus(snap ? "Clips snap to the grid" : "Clips move freely");
+            break;
+        }
 
         case 32:
             followSystemOutput_ = ! followSystemOutput_;
@@ -3789,11 +3819,26 @@ void MainComponent::pasteAudioAtSelection()
 
     const auto range = audioEditor_.selection();
 
+    // With no selection, paste lands at the cursor — not at the start. It
+    // used to read startSeconds off an *empty* range, which is always zero,
+    // so every paste without a selection went to the beginning of the clip
+    // however far along the cursor had been placed.
+    const double atSeconds = range.isEmpty() ? audioEditor_.cursorSeconds() : range.startSeconds;
+
     const bool applied = applyDestructiveEditToAllChannels("Paste audio",
-        [this, range](std::vector<std::vector<float>>& channels, double sampleRate)
+        [this, range, atSeconds](std::vector<std::vector<float>>& channels, double sampleRate)
     {
+        const int wanted = juce::jmax(0, (int) std::llround(atSeconds * sampleRate));
+
+        // A cursor past the end of the file is a request to paste *after* the
+        // recording, so the gap is filled with silence rather than the paste
+        // being dragged back to the last sample.
+        for (auto& channel : channels)
+            if (wanted > (int) channel.size())
+                channel.resize((size_t) wanted, 0.0f);
+
         const int length = (int) channels[0].size();
-        const int at     = juce::jlimit(0, length, (int) std::llround(range.startSeconds * sampleRate));
+        const int at     = juce::jlimit(0, length, wanted);
         const int until  = range.isEmpty()
                              ? at
                              : juce::jlimit(at, length, (int) std::llround(range.endSeconds * sampleRate));
@@ -5310,6 +5355,17 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     if (key == keys::save)       { saveProject();      return true; }
     if (key == keys::saveAs)     { saveProjectAs();    return true; }
     if (key == keys::bounce)     { bounceProject();    return true; }
+
+    // While the Audio pane is in front, the standard shortcuts act on the
+    // waveform. Everywhere else they keep their existing note meaning — see
+    // the note in Shortcuts.h on why this one command is context-sensitive
+    // when none of the others are.
+    if (workspace_.isPanelActive("Audio") && selectedAudioClip() != nullptr)
+    {
+        if (key == keys::cutAudio)   { cutAudioSelection();     return true; }
+        if (key == keys::copyNotes)  { copyAudioSelection();    return true; }
+        if (key == keys::pasteNotes) { pasteAudioAtSelection(); return true; }
+    }
 
     if (key == keys::copyNotes)  { copyNotes();        return true; }
     if (key == keys::pasteNotes) { pasteNotes();       return true; }

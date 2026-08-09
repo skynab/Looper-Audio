@@ -23,6 +23,21 @@ struct AudioSelection
     float  contentLeft         = 0.0f; // x of the first drawn pixel
     double fileLengthSeconds   = 0.0;
 
+    /** How far the view extends, which is deliberately *past* the end of the
+        file. Without room beyond the last sample there is nowhere to put the
+        cursor to paste after the recording ends — the click would clamp back
+        onto the final sample. Selections still clamp to the file; only the
+        cursor may go past it, because a selection of nothing is meaningless
+        while a paste position past the end is not. */
+    double viewLengthSeconds   = 0.0;
+
+    /** The greater of the file and the view — everything that scrolls,
+        zooms or hit-tests works against this. */
+    double spanSeconds() const
+    {
+        return std::max(fileLengthSeconds, std::max(0.0, viewLengthSeconds));
+    }
+
     /** x-coordinate for a position in the file. Not clamped — callers draw
         into a clipped region, and clamping here would silently pile
         off-screen content onto the edges. */
@@ -32,14 +47,15 @@ struct AudioSelection
         return contentLeft + (float) ((seconds - visibleStartSeconds) / perPixel);
     }
 
-    /** Position in the file for an x-coordinate, clamped into the file. A
-        drag that leaves the component is the normal case, not an error, so
-        this saturates rather than returning something out of range. */
+    /** Position for an x-coordinate, clamped into the *view* rather than the
+        file — so the cursor can be placed past the last sample. A drag that
+        leaves the component is the normal case, not an error, so this
+        saturates rather than returning something out of range. */
     double secondsForX(float x) const
     {
         const double perPixel = secondsPerPixel > 0.0 ? secondsPerPixel : 1.0e-9;
         const double raw      = visibleStartSeconds + (double) (x - contentLeft) * perPixel;
-        return clampToFile(raw);
+        return std::clamp(raw, 0.0, spanSeconds());
     }
 
     double clampToFile(double seconds) const
@@ -54,23 +70,25 @@ struct AudioSelection
     }
 
     /** The scroll offset clamped so the view can't be scrolled past either
-        end of the file — and so a file shorter than the view sits at 0
-        rather than floating. */
+        end — and so content shorter than the view sits at 0 rather than
+        floating. */
     double clampedStart(double desiredStart, float widthPixels) const
     {
         const double span = visibleSeconds(widthPixels);
-        const double most = fileLengthSeconds - span;
+        const double most = spanSeconds() - span;
         if (most <= 0.0)
             return 0.0;
         return std::clamp(desiredStart, 0.0, most);
     }
 
-    /** The zoom that fits the whole file across @p widthPixels. */
+    /** The zoom that fits everything across @p widthPixels — including the
+        room past the end of the file, so "Fit" shows the space you can paste
+        into rather than hiding it. */
     double secondsPerPixelToFit(float widthPixels) const
     {
-        if (widthPixels <= 0.0f || fileLengthSeconds <= 0.0)
+        if (widthPixels <= 0.0f || spanSeconds() <= 0.0)
             return 0.01;
-        return fileLengthSeconds / (double) widthPixels;
+        return spanSeconds() / (double) widthPixels;
     }
 };
 

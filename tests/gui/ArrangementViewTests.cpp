@@ -525,3 +525,71 @@ TEST_CASE("Dragging a clip onto an incompatible track is refused", "[gui][arrang
     // which is the property under test.
     REQUIRE_FALSE(movedSameTrack);
 }
+
+namespace
+{
+    /** Drags the one clip on track 0 sideways by @p pixels and reports where
+        it was dropped, or a negative number if the drag never landed. */
+    double dragClipSideways(ArrangementView& view, float pixels)
+    {
+        double landedOn = -1.0;
+        view.onClipMoved = [&](int, int, double startBeats) { landedOn = startBeats; };
+
+        const float laneY = view.rulerHeightForTesting() + view.laneHeightForTesting() * 0.5f;
+        const float clipX = view.gutterWidthForTesting() + 20.0f;
+
+        const juce::Point<float> grab { clipX, laneY };
+        const juce::Point<float> to   { clipX + pixels, laneY };
+
+        sendMouseDown(view, dragEventAt(view, grab, grab));
+        sendMouseDrag(view, dragEventAt(view, to, grab));
+        sendMouseUp(view, dragEventAt(view, to, grab));
+
+        return landedOn;
+    }
+
+    std::unique_ptr<ArrangementView> viewForSnapTest()
+    {
+        auto view = std::make_unique<ArrangementView>();
+        view->setVisible(true);
+        view->setSize(900, 500);
+        view->setSong(mixedTypeSongWithTracks(2));
+        view->setZoom(1.0f);
+        return view;
+    }
+}
+
+TEST_CASE("Snapping is on by default and rounds a drag to whole beats",
+          "[gui][arrangement]")
+{
+    JuceFixture fixture;
+    auto        view = viewForSnapTest();
+
+    REQUIRE(view->snapsToGrid());
+
+    // A deliberately fractional distance: at the default zoom this is not a
+    // whole number of beats, so an unsnapped drag could not land on one by
+    // accident.
+    const double landedOn = dragClipSideways(*view, 37.0f);
+
+    INFO("landed on beat " << landedOn);
+    REQUIRE(landedOn >= 0.0); // the drag really happened
+    REQUIRE(std::abs(landedOn - std::round(landedOn)) < 1.0e-9);
+}
+
+TEST_CASE("Turning snapping off lets a clip land off the grid", "[gui][arrangement]")
+{
+    // The whole point of the option: the same drag that rounded before must
+    // now be able to stop between beats.
+    JuceFixture fixture;
+    auto        view = viewForSnapTest();
+    view->setSnapToGrid(false);
+
+    REQUIRE_FALSE(view->snapsToGrid());
+
+    const double landedOn = dragClipSideways(*view, 37.0f);
+
+    INFO("landed on beat " << landedOn);
+    REQUIRE(landedOn >= 0.0);
+    REQUIRE(std::abs(landedOn - std::round(landedOn)) > 1.0e-9);
+}

@@ -7,6 +7,7 @@
 
 #include "model/Track.h"
 
+#include "AudioFileTypes.h"
 #include "AudioSelection.h"
 #include "TrackColours.h"
 #include "WaveformPeaks.h"
@@ -24,11 +25,17 @@ namespace looper
     second is more than a pixel wide. Hence a pane of its own rather than
     another gesture layered onto the timeline.
 
+    Also a drop target for audio files from the OS, like the timeline and the
+    mastering pane. Dropping a file here means "I want to edit this one", so
+    the owner imports it and selects it — the file appears in this editor
+    rather than only landing somewhere on the timeline.
+
     Owns no document state: it draws from a file path plus a length, and
     reports the selection through the callbacks. The actions themselves live
     in MainComponent, the same separation every other pane here keeps.
 */
-class AudioEditorPane final : public juce::Component
+class AudioEditorPane final : public juce::Component,
+                              public juce::FileDragAndDropTarget
 {
 public:
     /** The selected range, in seconds into the file. An empty range means the
@@ -72,6 +79,11 @@ public:
     std::function<void()> onReverseRequested;
     std::function<void()> onApplyEffectsRequested;
     std::function<void()> onSpeedPitchRequested;
+
+    /** Audio files dropped onto the pane. The owner decides what that means
+        (import and select, so it opens here) — this pane has no document
+        access. */
+    std::function<void(const juce::Array<juce::File>&)> onFilesDropped;
 
     /** Measure the noise in the current selection, to subtract later. Only
         offered when something is selected: a print taken from the whole clip
@@ -241,6 +253,10 @@ public:
 
         geometry_.fileLengthSeconds = juce::jmax(0.0, fileLengthSeconds);
 
+        // Room past the last sample to put the cursor in, so audio can be
+        // pasted after the end of the recording rather than only inside it.
+        geometry_.viewLengthSeconds = geometry_.fileLengthSeconds + kTailRoomSeconds;
+
         updating_ = true;
         gainSlider_.setValue(gainDb, juce::dontSendNotification);
         updating_ = false;
@@ -278,6 +294,10 @@ public:
     /** The current selection, or an empty range. Read by the owner when an
         action fires rather than tracked separately. */
     AudioRange selection() const { return selection_; }
+
+    /** Where the cursor sits, in seconds into the file. May be past the end
+        of the file — that's how audio gets pasted after the recording. */
+    double cursorSeconds() const { return playheadSeconds_; }
 
     /** The decoded peaks for the clip on show. Built by the owner (which is
         what reads files) and pushed in only when the file actually changes —
@@ -395,6 +415,49 @@ public:
             auto lane = area.withY(area.getY() + ch * laneH).withHeight(laneH);
             paintChannel(g, lane, ch, gain);
         }
+    }
+
+    /** Over the children so the highlight isn't hidden behind the button
+        rows, which cover a good part of the pane. */
+    void paintOverChildren(juce::Graphics& g) override
+    {
+        if (! fileDragActive_)
+            return;
+
+        g.setColour(juce::Colours::cyan.withAlpha(0.12f));
+        g.fillAll();
+        g.setColour(juce::Colours::cyan.withAlpha(0.9f));
+        g.drawRect(getLocalBounds(), 2);
+        g.setFont(juce::FontOptions(15.0f));
+        g.drawText("Drop audio to open it here", getLocalBounds(), juce::Justification::centred);
+    }
+
+    // juce::FileDragAndDropTarget
+    bool isInterestedInFileDrag(const juce::StringArray& files) override
+    {
+        return audiofiles::containsImportableAudio(files);
+    }
+
+    void fileDragEnter(const juce::StringArray&, int, int) override
+    {
+        fileDragActive_ = true;
+        repaint();
+    }
+
+    void fileDragExit(const juce::StringArray&) override
+    {
+        fileDragActive_ = false;
+        repaint();
+    }
+
+    void filesDropped(const juce::StringArray& files, int, int) override
+    {
+        fileDragActive_ = false;
+        repaint();
+
+        const auto importable = audiofiles::importableFilesIn(files);
+        if (! importable.isEmpty() && onFilesDropped)
+            onFilesDropped(importable);
     }
 
     void mouseDown(const juce::MouseEvent& e) override
@@ -574,6 +637,11 @@ private:
 
     /** Travel that turns a click into a drag-select. */
     static constexpr int kDragThresholdPixels = 3;
+
+    /** How far past the end of the file the view extends. Enough to be
+        obviously there and to click into, without making a short clip look
+        lost in empty space. */
+    static constexpr double kTailRoomSeconds = 2.0;
 
     /** Below this the waveform stops being something you can select in, so
         control rows are dropped rather than eating into it further. */
@@ -808,6 +876,7 @@ private:
     bool             noisePrintCaptured_ = false;
     bool             playing_            = false;
     bool             draggedFar_         = false;
+    bool             fileDragActive_     = false;
     double           playheadSeconds_    = 0.0;
     WaveformPeaks    peaks_;
     double           peaksSampleRate_ = 0.0;

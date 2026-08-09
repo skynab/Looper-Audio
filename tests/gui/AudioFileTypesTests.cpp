@@ -107,6 +107,7 @@ TEST_CASE("importableFilesIn keeps real files, in order", "[app][audiofiles]")
 // --- drop targets ----------------------------------------------------------
 
 #include <app/ArrangementView.h>
+#include <app/AudioEditorPane.h>
 #include <app/MasteringPane.h>
 
 namespace
@@ -214,6 +215,49 @@ TEST_CASE("A multi-file drop on the timeline spaces the clips out", "[gui][filed
 
     REQUIRE(beats.size() == 2);
     REQUIRE(beats[1] > beats[0]);
+
+    directory.deleteRecursively();
+}
+
+TEST_CASE("The audio editor accepts audio dragged from the OS", "[gui][filedrop]")
+{
+    JuceFixture fixture;
+
+    AudioEditorPane pane;
+    pane.setVisible(true);
+    pane.setSize(800, 300);
+
+    auto& target = static_cast<juce::FileDragAndDropTarget&>(pane);
+    REQUIRE(target.isInterestedInFileDrag({ "/tmp/take.wav" }));
+    REQUIRE_FALSE(target.isInterestedInFileDrag({ "/tmp/notes.txt" }));
+}
+
+TEST_CASE("Dropping files on the audio editor reports the audio ones", "[gui][filedrop]")
+{
+    JuceFixture fixture;
+
+    auto directory = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                         .getChildFile("looper-audioeditor-drop");
+    directory.deleteRecursively();
+    directory.createDirectory();
+
+    const auto wav   = directory.getChildFile("take.wav");
+    const auto notes = directory.getChildFile("notes.txt");
+    for (const auto& file : { wav, notes })
+        file.replaceWithText("x");
+
+    AudioEditorPane pane;
+    pane.setVisible(true);
+    pane.setSize(800, 300);
+
+    juce::Array<juce::File> reported;
+    pane.onFilesDropped = [&](const juce::Array<juce::File>& files) { reported = files; };
+
+    static_cast<juce::FileDragAndDropTarget&>(pane).filesDropped(
+        { notes.getFullPathName(), wav.getFullPathName() }, 10, 10);
+
+    REQUIRE(reported.size() == 1);
+    REQUIRE(reported[0] == wav);
 
     directory.deleteRecursively();
 }

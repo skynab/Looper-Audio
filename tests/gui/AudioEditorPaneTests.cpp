@@ -92,11 +92,16 @@ TEST_CASE("A drag across the waveform selects a range", "[gui][audioeditor]")
     REQUIRE(pane->selection() == reported);
     REQUIRE(callbacks > 0);
 
-    // Roughly the middle half of a 10s file. Loose bounds on purpose: the
-    // exact pixels depend on the pane's internal margins, and pinning them
-    // would make this a layout test rather than a gesture one.
+    // Roughly the middle of the view. Loose bounds on purpose: the exact
+    // pixels depend on the pane's margins, and pinning them would make this a
+    // layout test rather than a gesture one.
+    //
+    // Note the view is longer than the file — it extends past the end so the
+    // cursor can be placed there to paste after the recording — so a fraction
+    // across the view maps to a later time than the same fraction of the
+    // file. The selection itself still clamps to the file.
     REQUIRE(pane->selection().startSeconds > 1.0);
-    REQUIRE(pane->selection().endSeconds < 9.0);
+    REQUIRE(pane->selection().endSeconds <= 10.0);
     REQUIRE(pane->selection().lengthSeconds() > 2.0);
 }
 
@@ -451,4 +456,59 @@ TEST_CASE("The playhead is drawn even when stopped", "[gui][audioeditor]")
 
     INFO(differingPixels(atStart, moved) << " pixels changed");
     REQUIRE(differingPixels(atStart, moved) > 20);
+}
+
+TEST_CASE("The cursor can be placed past the end of the file", "[gui][audioeditor]")
+{
+    // Without room past the last sample there is nowhere to put the cursor to
+    // paste after the recording — the click clamps back onto the end and the
+    // paste lands in the wrong place.
+    JuceFixture fixture;
+    auto        pane = makeReadyPane(800, 300, 10.0);
+
+    double requested = -1.0;
+    pane->onSeekRequested = [&](double seconds) { requested = seconds; };
+
+    // Fit shows the whole span including the tail room, so the far right of
+    // the view is past the end of the file.
+    const auto farRight = waveformPoint(*pane, 0.99f);
+    sendMouseDown(*pane, eventAt(*pane, farRight, farRight));
+    sendMouseUp(*pane, eventAt(*pane, farRight, farRight));
+
+    INFO("cursor at " << requested << "s in a 10s file");
+    REQUIRE(requested > 10.0);
+    REQUIRE(pane->cursorSeconds() > 10.0);
+}
+
+TEST_CASE("A selection still can't run past the end of the file", "[gui][audioeditor]")
+{
+    // The cursor may go past the end; a selection may not. Selecting silence
+    // that isn't in the file would make every destructive command act on a
+    // range that doesn't exist.
+    JuceFixture fixture;
+    auto        pane = makeReadyPane(800, 300, 10.0);
+
+    const auto from = waveformPoint(*pane, 0.5f);
+    const auto to   = waveformPoint(*pane, 0.99f);
+    sendMouseDown(*pane, eventAt(*pane, from, from));
+    sendMouseDrag(*pane, eventAt(*pane, to, from));
+    sendMouseUp(*pane, eventAt(*pane, to, from));
+
+    REQUIRE(pane->selection().endSeconds <= 10.0);
+}
+
+TEST_CASE("The cursor starts at zero for a fresh clip", "[gui][audioeditor]")
+{
+    // Paste with no selection uses the cursor, so a stale one carried from
+    // another file would drop audio at an arbitrary point.
+    JuceFixture fixture;
+    auto        pane = makeReadyPane(800, 300, 10.0);
+
+    const auto point = waveformPoint(*pane, 0.6f);
+    sendMouseDown(*pane, eventAt(*pane, point, point));
+    sendMouseUp(*pane, eventAt(*pane, point, point));
+    REQUIRE(pane->cursorSeconds() > 1.0);
+
+    pane->setClip(juce::File("/nonexistent/other.wav"), 4.0, 0.0f, "Audio 2", 0xff30ff80);
+    REQUIRE(pane->cursorSeconds() == 0.0);
 }
