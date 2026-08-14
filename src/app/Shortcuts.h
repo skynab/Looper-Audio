@@ -50,7 +50,7 @@ inline const juce::KeyPress newProject = detail::with('N', detail::cmd);
 inline const juce::KeyPress open       = detail::with('O', detail::cmd);
 inline const juce::KeyPress save       = detail::with('S', detail::cmd);
 inline const juce::KeyPress saveAs     = detail::with('S', detail::cmd | detail::shift);
-inline const juce::KeyPress bounce     = detail::with('B', detail::cmd | detail::shift);
+inline const juce::KeyPress exportAudio = detail::with('B', detail::cmd | detail::shift);
 
 inline const juce::KeyPress undo       = detail::with('Z', detail::cmd);
 inline const juce::KeyPress redo       = detail::with('Z', detail::cmd | detail::shift);
@@ -120,7 +120,7 @@ inline std::vector<NamedShortcut> all()
         { "Open",            open },
         { "Save",            save },
         { "Save As",         saveAs },
-        { "Bounce",          bounce },
+        { "Export Audio",    exportAudio },
 
         { "Undo",            undo },
         { "Redo",            redo },

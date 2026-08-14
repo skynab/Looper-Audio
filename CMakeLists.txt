@@ -46,6 +46,12 @@ if(LOOPER_BUILD_APP)
     GITHUB_REPOSITORY juce-framework/JUCE
     GIT_TAG 8.0.14
     VERSION 8.0.14)
+
+  # The MP3 encoder. JUCE can write every other export format but not this one
+  # — see cmake/lame.cmake. Included here rather than in src/app because the
+  # bounce tool and the GUI tests link the same export code.
+  include(cmake/lame.cmake)
+
   add_subdirectory(src/app)
 
   # Tools link JUCE, so they build only when the app (and thus JUCE) is enabled.

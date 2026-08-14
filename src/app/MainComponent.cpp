@@ -8,6 +8,7 @@
 #include "engine/ClipSlot.h"
 #include "engine/DefaultContent.h"
 #include "engine/DrumSynth.h"
+#include "app/ExportAudioDialog.h"
 #include "engine/EffectSlotFactory.h"
 #include "engine/GenerativeLoop.h"
 #include "engine/GuitarChords.h"
@@ -1175,7 +1176,7 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
         menu.addItem(7, "Import Audio to Track...   (or drag files in)");
         menu.addItem(8, "Import MIDI...");
         menu.addItem(9, "Export MIDI...");
-        addItem(menu, 5, "Bounce to WAV...", keys::bounce);
+        addItem(menu, 5, "Export Audio...", keys::exportAudio);
         menu.addSeparator();
         menu.addItem(13, "Set Project Root Folder...");
         menu.addItem(31, "Repair Recorded Clip Lengths...");
@@ -1296,7 +1297,7 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 30: duplicateTrackAt(selectedTrackIndex_); break;
         case 31: repairRecordedClipLengths(); break;
         case 4:  chooseFile(); break; // preview only - see chooseFile
-        case 5:  bounceProject(); break;
+        case 5:  exportAudioDialog(); break;
         case 6:  showAudioSettings(); break;
         case 7:  importAudioToNewTrack(); break;
         case 50: cutAudioSelection(); break;
@@ -5307,7 +5308,7 @@ bool MainComponent::keyPressed(const juce::KeyPress& key)
     if (key == keys::open)       { openProject();      return true; }
     if (key == keys::save)       { saveProject();      return true; }
     if (key == keys::saveAs)     { saveProjectAs();    return true; }
-    if (key == keys::bounce)     { bounceProject();    return true; }
+    if (key == keys::exportAudio) { exportAudioDialog(); return true; }
 
     // While the Audio pane is in front, the standard shortcuts act on the
     // waveform. Everywhere else they keep their existing note meaning — see
@@ -6426,23 +6427,45 @@ void MainComponent::chooseProjectToOpen()
     });
 }
 
-void MainComponent::bounceProject()
+/** Asks what kind of file to write, then where to put it, then writes it.
+
+    Two dialogs in sequence rather than one: the format decides the file
+    extension, so the save dialog can't filter correctly until the format is
+    known. Asking for the location first would mean either an unfiltered
+    chooser or one that lies about what it is about to write.
+
+    This replaced a WAV-only "Bounce" that hardcoded both the extension and
+    24-bit depth. */
+void MainComponent::exportAudioDialog()
 {
-    chooser_ = std::make_unique<juce::FileChooser>("Bounce to WAV", juce::File{}, "*.wav");
+    const double deviceRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 48000.0;
+
+    app::ExportAudioDialog::show(this, deviceRate,
+        [self = juce::Component::SafePointer<MainComponent>(this)](engine::ExportOptions options)
+        {
+            if (self != nullptr)
+                self->exportProject(options);
+        });
+}
+
+void MainComponent::exportProject(const engine::ExportOptions& options)
+{
+    const auto extension = engine::extensionFor(options.format);
+
+    chooser_ = std::make_unique<juce::FileChooser>("Export " + extension.toUpperCase(),
+                                                   juce::File{}, "*." + extension);
     const auto flags = juce::FileBrowserComponent::saveMode
                      | juce::FileBrowserComponent::canSelectFiles
                      | juce::FileBrowserComponent::warnAboutOverwriting;
 
-    chooser_->launchAsync(flags, [this](const juce::FileChooser& fc)
+    chooser_->launchAsync(flags, [this, options, extension](const juce::FileChooser& fc)
     {
         auto file = fc.getResult();
         if (file == juce::File{})
             return;
 
-        file = file.withFileExtension("wav");
-        showBusy("Rendering to WAV...");
-
-        const double sampleRate = engine_.sampleRate() > 0.0 ? engine_.sampleRate() : 44100.0;
+        file = file.withFileExtension(extension);
+        showBusy("Rendering to " + extension.toUpperCase() + "...");
 
         // Everything the mix contains, rendered by the mixer itself — see
         // AudioEngine::renderOffline. This used to be a hand-written second
@@ -6454,19 +6477,24 @@ void MainComponent::bounceProject()
         //
         // A tail past the last clip so reverb and delay decay into the file
         // rather than being cut off mid-ring at the final beat.
+        //
+        // Rendered natively at the export rate rather than resampled after —
+        // the engine re-prepares itself for it, so a 44.1k export from a 48k
+        // device runs the synths and effects at 44.1k rather than putting the
+        // mix through a linear interpolator.
         const double lengthBeats = songEndBeats() + kBounceTailBeats;
-        auto buffer = engine_.renderOffline(0.0, lengthBeats);
+        auto buffer = engine_.renderOffline(0.0, lengthBeats, options.sampleRate);
 
         if (buffer.getNumSamples() == 0)
         {
-            showError("Nothing to bounce");
+            showError("Nothing to export");
             return;
         }
 
-        if (engine::OfflineRenderer::writeWav(file, buffer, sampleRate))
-            showStatus("Bounced: " + file.getFileName());
+        if (engine::writeAudioFile(file, buffer, options))
+            showStatus("Exported: " + file.getFileName());
         else
-            showError("Bounce failed");
+            showError("Export failed (could not write " + extension.toUpperCase() + ")");
     });
 }
 

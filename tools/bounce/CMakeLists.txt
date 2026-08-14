@@ -2,7 +2,9 @@
 # audio device, so the synth + sequencer audio path can be verified in CI / by hand.
 juce_add_console_app(looper_bounce PRODUCT_NAME "looper-bounce")
 
-target_sources(looper_bounce PRIVATE main.cpp)
+target_sources(looper_bounce PRIVATE
+  main.cpp
+  ${PROJECT_SOURCE_DIR}/src/engine/Mp3Encoder.cpp)
 
 # Plugin hosting is enabled here too so the smoke tool can verify it against a
 # real plugin rather than a mock — see the pluginHost* checks in main.cpp. It
@@ -22,6 +24,7 @@ target_compile_definitions(looper_bounce PRIVATE
 target_link_libraries(looper_bounce
   PRIVATE
     looper::rt
+    lame::mp3
     juce::juce_audio_formats
     juce::juce_audio_processors_headless
   PUBLIC

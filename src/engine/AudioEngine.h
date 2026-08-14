@@ -343,8 +343,16 @@ public:
         transport is restored afterwards.
 
         Deliberately excludes the metronome, matching what you'd want exported
-        and what the device callback already keeps outside the master bus. */
-    juce::AudioBuffer<float> renderOffline(double startBeats, double lengthBeats, int blockSize = 512);
+        and what the device callback already keeps outside the master bus.
+
+        @p renderSampleRate renders at that rate instead of the device's; 0
+        means the device's. The whole engine is re-prepared for it, so the
+        synths, effects and any hosted plugins all run natively at the export
+        rate rather than the mix being resampled afterwards - which is both
+        simpler and better, since the only resampler here is the linear one in
+        AudioEdits, fine for placing a clip and not fine for a master. */
+    juce::AudioBuffer<float> renderOffline(double startBeats, double lengthBeats,
+                                           double renderSampleRate = 0.0, int blockSize = 512);
 
     juce::String loadedClipName() const             { return loadedClipName_; }
     double       loadedClipSeconds() const noexcept { return loadedClipSeconds_; }

@@ -22,7 +22,8 @@ juce_add_gui_app(LooperAudio
 target_sources(LooperAudio PRIVATE
   Main.cpp
   MainComponent.cpp
-  ${PROJECT_SOURCE_DIR}/src/engine/AudioEngine.cpp)
+  ${PROJECT_SOURCE_DIR}/src/engine/AudioEngine.cpp
+  ${PROJECT_SOURCE_DIR}/src/engine/Mp3Encoder.cpp)
 
 # Trim JUCE features we don't need yet — this also removes system dependencies
 # (WebKit, libcurl) that would otherwise be required to build on Linux.
@@ -53,6 +54,7 @@ target_compile_options(looper_no_float_equal_warning INTERFACE -Wno-float-equal)
 target_link_libraries(LooperAudio
   PRIVATE
     looper::rt
+    lame::mp3
     juce::juce_audio_utils
   PUBLIC
     juce::juce_recommended_config_flags

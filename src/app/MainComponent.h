@@ -13,6 +13,7 @@
 #include "engine/GuitarTone.h"
 #include "engine/MasteringPreset.h"
 #include "engine/AudioEdits.h"
+#include "engine/AudioExport.h"
 #include "engine/TimeStretch.h"
 #include "engine/NoiseReduction.h"
 #include "engine/SynthTone.h"
@@ -138,7 +139,8 @@ private:
     void                   openProject();
     void                   chooseProjectToOpen();
     void                   updateWindowTitle();
-    void                   bounceProject();
+    void                   exportAudioDialog();
+    void                   exportProject(const engine::ExportOptions& options);
     void                   showAudioSettings();
     void                   importAudioToNewTrack();
     void                   importAudioFileAtBeat(const juce::File& file, double startBeats, int targetTrackIndex = -1);

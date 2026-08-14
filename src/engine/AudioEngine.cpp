@@ -641,13 +641,15 @@ void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffe
     transport_.advance(numSamples);
 }
 
-juce::AudioBuffer<float> AudioEngine::renderOffline(double startBeats, double lengthBeats, int blockSize)
+juce::AudioBuffer<float> AudioEngine::renderOffline(double startBeats, double lengthBeats,
+                                                    double renderSampleRate, int blockSize)
 {
-    const double sampleRate = sampleRate_.load(std::memory_order_relaxed);
+    const double deviceRate = sampleRate_.load(std::memory_order_relaxed);
+    const double sampleRate = renderSampleRate > 0.0 ? renderSampleRate : deviceRate;
     const double bpm        = transport_.tempoMap().tempo();
 
     juce::AudioBuffer<float> output(2, 0);
-    if (sampleRate <= 0.0 || bpm <= 0.0 || lengthBeats <= 0.0)
+    if (deviceRate <= 0.0 || sampleRate <= 0.0 || bpm <= 0.0 || lengthBeats <= 0.0)
         return output;
 
     blockSize = juce::jmax(1, blockSize);
@@ -674,7 +676,9 @@ juce::AudioBuffer<float> AudioEngine::renderOffline(double startBeats, double le
     const int64_t wasPlayhead = transport_.playhead();
 
     // Fresh state, so a render is reproducible instead of inheriting whatever
-    // tails happened to be ringing when the user hit Bounce.
+    // tails happened to be ringing when the user hit Export - and prepared for
+    // the *render* rate, which is what makes exporting at 44.1 from a 48k
+    // device a native render rather than a resample.
     prepareAll(sampleRate, blockSize);
 
     // Looping off for the duration: a loop region set for auditioning would
@@ -702,13 +706,20 @@ juce::AudioBuffer<float> AudioEngine::renderOffline(double startBeats, double le
         processBlock(view, noLiveMidi, context);
     }
 
+    // Back to the *device* rate, not the render rate: everything above was
+    // prepared for the export, and leaving it that way would have live
+    // playback running at the wrong rate the moment the callback returns.
+    // Also again on the way out at all, so playback doesn't start up holding
+    // the render's delay and reverb tails.
+    prepareAll(deviceRate, blockSize);
+
+    // After that prepare, because wasPlayhead is a sample count at the device
+    // rate and prepareAll is what puts the transport's tempo map back on that
+    // rate. Restoring it first would place the playhead using the render's
+    // clock.
     transport_.setPlaying(wasPlaying);
     transport_.setLooping(wasLooping);
     transport_.seek(wasPlayhead);
-
-    // Again on the way out, so live playback doesn't start up holding the
-    // render's delay and reverb tails.
-    prepareAll(sampleRate, blockSize);
 
     deviceManager_.addAudioCallback(this);
     return output;

@@ -80,6 +80,7 @@ if (LOOPER_BUILD_APP)
   add_executable(looper_gui_tests
     gui/FretboardPaneTests.cpp
     gui/ArrangementViewTests.cpp
+    gui/AudioExportTests.cpp
   gui/AudioEditorPaneTests.cpp
   gui/AudioFileTypesTests.cpp
     gui/IconsTests.cpp
@@ -87,7 +88,8 @@ if (LOOPER_BUILD_APP)
     gui/ShortcutsTests.cpp
     gui/WaveformCacheTests.cpp
     gui/PaneLayoutTests.cpp
-    gui/PaneWiringTests.cpp)
+    gui/PaneWiringTests.cpp
+    ${PROJECT_SOURCE_DIR}/src/engine/Mp3Encoder.cpp)
 
   target_include_directories(looper_gui_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
@@ -106,6 +108,7 @@ if (LOOPER_BUILD_APP)
   target_link_libraries(looper_gui_tests
     PRIVATE
       looper::rt
+      lame::mp3
       juce::juce_audio_utils
       Catch2::Catch2WithMain
       juce::juce_recommended_config_flags

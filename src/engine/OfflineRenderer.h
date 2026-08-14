@@ -9,6 +9,7 @@
 #include <juce_audio_formats/juce_audio_formats.h>
 
 #include "engine/AudioClipSlot.h"
+#include "engine/AudioExport.h"
 #include "engine/DrumKitNode.h"
 #include "engine/ClipData.h"
 #include "engine/ClipSlot.h"
@@ -425,25 +426,21 @@ public:
         return output;
     }
 
-    /** Writes a buffer to a 24-bit WAV. Returns false on failure. */
+    /** Writes a buffer to a 24-bit WAV. Returns false on failure.
+
+        Kept as the name the recording path and the bounce tool already call,
+        but the writing itself now goes through engine::writeAudioFile so
+        there is one place that knows how to produce a file. 24-bit because
+        that is what this has always produced and what those callers expect;
+        the export dialog is where a depth gets chosen. */
     static bool writeWav(const juce::File& file, const juce::AudioBuffer<float>& buffer, double sampleRate)
     {
-        file.deleteFile();
+        ExportOptions options;
+        options.format        = ExportFormat::Wav;
+        options.bitsPerSample = 24;
+        options.sampleRate    = sampleRate;
 
-        std::unique_ptr<juce::OutputStream> stream(file.createOutputStream());
-        if (stream == nullptr)
-            return false;
-
-        juce::WavAudioFormat format;
-        auto writer = format.createWriterFor(stream, // consumed on success, left alone on failure
-            juce::AudioFormatWriterOptions{}
-                .withSampleRate(sampleRate)
-                .withNumChannels(buffer.getNumChannels())
-                .withBitsPerSample(24));
-        if (writer == nullptr)
-            return false;
-
-        return writer->writeFromAudioSampleBuffer(buffer, 0, buffer.getNumSamples());
+        return writeAudioFile(file, buffer, options);
     }
 };
 
