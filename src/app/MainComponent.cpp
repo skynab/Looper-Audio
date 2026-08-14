@@ -5693,6 +5693,16 @@ void MainComponent::finishRecordingIfReady()
     for (int ch = 0; ch < takeBuffer.getNumChannels(); ++ch)
         trimmed.copyFrom(ch, 0, takeBuffer, ch, 0, length);
 
+    // A take of pure digital silence means the input device handed us zeros
+    // for its whole length, which is a different failure from "no input
+    // device" and used to be reported as a success: the track appeared, the
+    // status bar said "Recorded:", and only playing it back revealed nothing
+    // was there. On macOS the usual cause is microphone permission - the OS
+    // grants none and CoreAudio delivers zeros rather than an error - so the
+    // message names that first. `trimmed` is the take exactly as it will be
+    // written, so this can't disagree with the file.
+    const bool silent = trimmed.getMagnitude(0, length) <= 0.0f;
+
     const auto file = recordingsDirectory().getNonexistentChildFile("Recording", ".wav");
     if (! engine::OfflineRenderer::writeWav(file, trimmed, engine_.sampleRate()))
     {
@@ -5732,7 +5742,15 @@ void MainComponent::finishRecordingIfReady()
     });
 
     selectTrackAndRefreshAll(newTrackIndex);
-    showStatus("Recorded: " + file.getFileName());
+
+    // The take is kept either way. Silence may be what was in front of the
+    // microphone, and throwing away a recording the user just made would be a
+    // far worse failure than an unhelpful one.
+    if (silent)
+        showError("Recorded silence - check microphone permission "
+                  "(System Settings > Privacy & Security > Microphone) and the input device");
+    else
+        showStatus("Recorded: " + file.getFileName());
 }
 
 juce::File MainComponent::recordingsDirectory() const

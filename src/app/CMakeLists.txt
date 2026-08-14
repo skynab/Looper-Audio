@@ -2,11 +2,22 @@
 # opens a window and plays a test tone through the audio device — proof that the
 # whole path (device manager → audio callback → output) works on every platform.
 
+# MICROPHONE_PERMISSION_ENABLED is what puts NSMicrophoneUsageDescription into
+# the bundle's Info.plist, and on macOS 10.14+ that key is the whole of whether
+# an app can record. Without it the OS never shows the permission prompt and
+# never grants access - but CoreAudio still opens the input device and still
+# delivers buffers, full of zeros. So recording appeared to work: the transport
+# rolled, a take was written, a track appeared, and it was silent. JUCE does not
+# request the permission itself on macOS (RuntimePermissions::request is an
+# Android-only implementation and returns true everywhere else), so there is no
+# runtime fallback for a missing key.
 juce_add_gui_app(LooperAudio
   PRODUCT_NAME "Looper-Audio"
   COMPANY_NAME "Anthony Lazzaro"
   BUNDLE_ID    "com.anthonylazzaro.looperaudio"
-  VERSION      "${PROJECT_VERSION}")
+  VERSION      "${PROJECT_VERSION}"
+  MICROPHONE_PERMISSION_ENABLED TRUE
+  MICROPHONE_PERMISSION_TEXT    "Looper-Audio needs the microphone to record audio tracks.")
 
 target_sources(LooperAudio PRIVATE
   Main.cpp
