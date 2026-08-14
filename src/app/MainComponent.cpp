@@ -9,6 +9,7 @@
 #include "engine/DefaultContent.h"
 #include "engine/DrumSynth.h"
 #include "app/ExportAudioDialog.h"
+#include "app/RowWrapLayout.h"
 #include "engine/EffectSlotFactory.h"
 #include "engine/GenerativeLoop.h"
 #include "engine/GuitarChords.h"
@@ -297,6 +298,23 @@ MainComponent::MainComponent()
                                    juce::dontSendNotification);
     engine_.setMetronomeEnabled(metronomeButton.getToggleState());
     leftPane_.addAndMakeVisible(metronomeButton);
+
+    // Input monitoring. Off by default and it stays that way unless asked:
+    // monitoring a laptop's built-in microphone through its speakers is a
+    // feedback loop, and one that starts the moment the button is pressed.
+    monitorButton.setTooltip("Hear the audio input while you play. "
+                             "Use headphones - monitoring a built-in microphone "
+                             "through speakers will feed back.");
+    monitorButton.onClick = [this]
+    {
+        engine_.setInputMonitoring(monitorButton.getToggleState());
+        settings_.setValue("inputMonitoring", monitorButton.getToggleState());
+        settings_.saveIfNeeded();
+    };
+    monitorButton.setToggleState(settings_.getBoolValue("inputMonitoring", false),
+                                 juce::dontSendNotification);
+    engine_.setInputMonitoring(monitorButton.getToggleState());
+    leftPane_.addAndMakeVisible(monitorButton);
 
     countInBox_.addItem("No count-in", 1);
     countInBox_.addItem("1 bar", 2);
@@ -5634,18 +5652,34 @@ void MainComponent::selectTrackAndRefreshAll(int newTrackIndex)
     updateEditingLabel();
 }
 
-/** Toggles between arming/starting a take and stopping it. The take doesn't
-    finish and turn into a track until finishRecordingIfReady() observes the
-    engine has confirmed the buffer is safe to read (polled from the timer). */
+/** Toggles between arming/starting a take and stopping it.
+
+    The take streams straight to its file as it is played, so the destination
+    and the track it will land on are both decided *here*, at arm time. They
+    used to be decided when the take ended — which meant every recording became
+    a new track at bar 1, however the project was set up when you hit record. */
 void MainComponent::toggleRecording()
 {
     if (! awaitingRecordedTake_)
     {
-        if (! engine_.beginRecording())
+        const auto file = recordingsDirectory().getNonexistentChildFile("Recording", ".wav");
+
+        if (! engine_.beginRecording(file))
         {
-            showError("No audio input device available");
+            showError("Could not start recording (no audio input device, or the file could not be created)");
             return;
         }
+
+        recordingFile_ = file;
+
+        // Onto the selected track if it can hold audio, otherwise a new one.
+        // A Guitar or Synth track can't take an audio clip, so recording while
+        // one is selected has to mean "somewhere else" rather than fail.
+        const auto& song = history_.current();
+        const bool  canHoldAudio = selectedTrackIndex_ >= 0
+                                && selectedTrackIndex_ < (int) song.tracks.size()
+                                && song.tracks[(size_t) selectedTrackIndex_].type == model::TrackType::Audio;
+        recordingTargetTrack_ = canHoldAudio ? selectedTrackIndex_ : -1;
 
         awaitingRecordedTake_ = true;
         recordButton.setToggleState(true, juce::dontSendNotification); // swaps to the stop square
@@ -5682,76 +5716,83 @@ void MainComponent::finishRecordingIfReady()
     // that returns just below.
     post(Cmd::SetLooping, loopButton.getToggleState() ? 1.0 : 0.0);
 
-    const int length = engine_.recordedTakeLength();
-    if (length <= 0)
+    const int64_t dropped   = engine_.recordedDroppedSamples();
+    const int64_t startedAt = engine_.recordedTakeStartSample();
+
+    // Closes the file and hands it over; empty means nothing was captured.
+    const auto file = engine_.finishRecordedTake();
+    if (file == juce::File{})
     {
         showError("Recording was empty (no input captured)");
         return;
     }
 
-    const auto& takeBuffer = engine_.recordedTakeBuffer();
-    juce::AudioBuffer<float> trimmed(takeBuffer.getNumChannels(), length);
-    for (int ch = 0; ch < takeBuffer.getNumChannels(); ++ch)
-        trimmed.copyFrom(ch, 0, takeBuffer, ch, 0, length);
+    // Where the take goes on the timeline: where the transport actually was
+    // when capture began, which is after any count-in. Falls back to the start
+    // only if the engine never reported a position.
+    const double startBeats = startedAt >= 0
+                                ? juce::jmax(0.0, uiTempoMap_.ppqFromSamples(startedAt))
+                                : 0.0;
+
+    // The clip's length, undo, and selection all come from the existing import
+    // path — which measures the file's real duration rather than guessing, and
+    // appends to the target track rather than always making a new one. This
+    // used to be a second, hand-written copy of that logic here.
+    importAudioFileAtBeat(file, startBeats, recordingTargetTrack_);
+
+    recordingFile_        = juce::File{};
+    recordingTargetTrack_ = -1;
+
+    // Reported after the import, so the take is on the timeline either way —
+    // a recording with a gap is still worth keeping, it just must not be
+    // presented as a clean one.
+    if (dropped > 0)
+    {
+        showError("Recorded with gaps — the disk could not keep up ("
+                  + juce::String((int) dropped) + " samples lost)");
+        return;
+    }
 
     // A take of pure digital silence means the input device handed us zeros
     // for its whole length, which is a different failure from "no input
     // device" and used to be reported as a success: the track appeared, the
     // status bar said "Recorded:", and only playing it back revealed nothing
-    // was there. On macOS the usual cause is microphone permission - the OS
-    // grants none and CoreAudio delivers zeros rather than an error - so the
-    // message names that first. `trimmed` is the take exactly as it will be
-    // written, so this can't disagree with the file.
-    const bool silent = trimmed.getMagnitude(0, length) <= 0.0f;
-
-    const auto file = recordingsDirectory().getNonexistentChildFile("Recording", ".wav");
-    if (! engine::OfflineRenderer::writeWav(file, trimmed, engine_.sampleRate()))
+    // was there. On macOS the usual cause is microphone permission — the OS
+    // grants none and CoreAudio delivers zeros rather than an error — so the
+    // message names that first.
+    if (isSilentAudioFile(file))
     {
-        showError("Failed to write recording");
+        showError("Recorded silence — check microphone permission "
+                  "(System Settings > Privacy & Security > Microphone) and the input device");
         return;
     }
 
-    const auto path = file.getFullPathName().toStdString();
-    int        newTrackIndex = -1;
+    showStatus("Recorded: " + file.getFileName());
+}
 
-    // The take's real duration, not a fixed guess. This used to be a flat four
-    // beats however long the recording was, and that one number was the whole
-    // of two separate faults: songEndBeats came back as four beats, so the
-    // loop region collapsed to a bar and the transport wrapped seconds into
-    // playback — while the audio kept going, because a track's sole audio clip
-    // gets an unbounded window regardless. The result was a recording that
-    // jumped back to its start shortly after beginning, and a transport that
-    // couldn't run past the end of a take it had just made.
-    const double takeSeconds = engine_.sampleRate() > 0.0
-                                 ? (double) length / engine_.sampleRate() : 0.0;
+/** True if every sample in @p file is exactly zero.
 
-    history_.edit("Record audio", [&path, &newTrackIndex, takeSeconds](model::Song& s)
-    {
-        const auto name = "Recording " + juce::String((int) s.tracks.size() + 1);
-        model::addTrack(s, model::TrackType::Audio, name.toStdString());
+    Reads the written file rather than a buffer held in memory, because with
+    recording streamed to disk there is no such buffer any more — and reading
+    back what was actually written is the stronger check anyway. */
+bool MainComponent::isSilentAudioFile(const juce::File& file)
+{
+    juce::AudioFormatManager manager;
+    manager.registerBasicFormats();
 
-        model::Clip clip;
-        clip.id          = model::allocateId(s);
-        clip.type        = model::ClipType::Audio;
-        clip.startBeats  = 0.0;
-        const double measured = engine::beatsForSeconds(takeSeconds, s.bpm);
-        clip.lengthBeats = measured > 0.0 ? measured : 4.0;
-        clip.audioFile   = path;
-        s.tracks.back().clips.push_back(clip);
+    std::unique_ptr<juce::AudioFormatReader> reader(manager.createReaderFor(file));
+    if (reader == nullptr || reader->lengthInSamples <= 0)
+        return false; // unreadable is a different problem, and not this one to report
 
-        newTrackIndex = (int) s.tracks.size() - 1;
-    });
+    const int numChannels = juce::jmax(1, (int) reader->numChannels);
+    std::vector<juce::Range<float>> levels((size_t) numChannels);
+    reader->readMaxLevels(0, reader->lengthInSamples, levels.data(), numChannels);
 
-    selectTrackAndRefreshAll(newTrackIndex);
+    for (const auto& range : levels)
+        if (range.getStart() != 0.0f || range.getEnd() != 0.0f)
+            return false;
 
-    // The take is kept either way. Silence may be what was in front of the
-    // microphone, and throwing away a recording the user just made would be a
-    // far worse failure than an unhelpful one.
-    if (silent)
-        showError("Recorded silence - check microphone permission "
-                  "(System Settings > Privacy & Security > Microphone) and the input device");
-    else
-        showStatus("Recorded: " + file.getFileName());
+    return true;
 }
 
 juce::File MainComponent::recordingsDirectory() const
@@ -6768,29 +6809,49 @@ void MainComponent::layoutLeftPane()
 {
     auto area = leftPane_.getLocalBounds().reduced(12);
 
-    auto row1 = area.removeFromTop(30);
+    auto row = area.removeFromTop(30);
 
     // Taken off the right first, so it stays pinned to the far edge whatever
     // width the pane has.
-    collapseTransportButton_.setBounds(row1.removeFromRight(28).reduced(2));
-    row1.removeFromRight(8);
+    collapseTransportButton_.setBounds(row.removeFromRight(28).reduced(2));
+    row.removeFromRight(8);
 
+    // The controls wrap onto another row when they don't fit — see
+    // app::wrapRow for what went wrong when they didn't.
+    //
     // First / previous / play-pause / next / last, in that order. The
     // frame-step glyphs are wider than tall, play/pause is taller than wide,
     // so they get different widths to keep the drawn glyphs a similar size.
-    firstFrameButton.setBounds(row1.removeFromLeft(32).reduced(2));
-    previousFrameButton.setBounds(row1.removeFromLeft(26).reduced(2));
-    playPauseButton.setBounds(row1.removeFromLeft(30).reduced(3, 1));
-    nextFrameButton.setBounds(row1.removeFromLeft(26).reduced(2));
-    lastFrameButton.setBounds(row1.removeFromLeft(32).reduced(2));
-    row1.removeFromLeft(12);
-    loopButton.setBounds(row1.removeFromLeft(60));
-    row1.removeFromLeft(12);
-    recordButton.setBounds(row1.removeFromLeft(30).reduced(1)); // square: the icon is 25x25
-    row1.removeFromLeft(12);
-    metronomeButton.setBounds(row1.removeFromLeft(64));
-    row1.removeFromLeft(6);
-    countInBox_.setBounds(row1.removeFromLeft(110).reduced(0, 2));
+    const std::vector<app::RowItem> items {
+        { 32,  0, { 2, 2 } }, // first frame
+        { 26,  0, { 2, 2 } }, // previous frame
+        { 30,  0, { 3, 1 } }, // play/pause
+        { 26,  0, { 2, 2 } }, // next frame
+        { 32,  0, { 2, 2 } }, // last frame
+        { 60, 12, { 0, 0 } }, // loop
+        { 30, 12, { 1, 1 } }, // record — square: the icon is 25x25
+        { 64, 12, { 0, 0 } }, // click
+        { 78,  6, { 0, 0 } }, // monitor
+        { 110, 6, { 0, 2 } }, // count-in
+    };
+
+    juce::Component* const controls[] {
+        &firstFrameButton, &previousFrameButton, &playPauseButton,
+        &nextFrameButton, &lastFrameButton, &loopButton, &recordButton,
+        &metronomeButton, &monitorButton, &countInBox_
+    };
+
+    // The rows the buttons need, taken off the top before anything below is
+    // placed — so a wrapped row pushes the tempo and position readouts down
+    // rather than drawing over them.
+    const int buttonsHeight = app::wrappedRowHeight(row.getWidth(), 30, 4, items);
+    auto      buttonsArea   = row.withHeight(buttonsHeight);
+    area.removeFromTop(buttonsHeight - row.getHeight());
+
+    const auto bounds = app::wrapRow(buttonsArea, 30, 4, items);
+    for (size_t i = 0; i < bounds.size() && i < std::size(controls); ++i)
+        controls[i]->setBounds(bounds[i]);
+
     area.removeFromTop(8);
 
     if (transportCollapsed_)

@@ -104,8 +104,18 @@ int main(int argc, char** argv)
 
     // AudioRecorder check: feeds synthetic "input" directly into process() —
     // there's no live microphone in this headless verification, so this can
-    // only confirm the capture + armed/finished handoff logic is correct
-    // bit-for-bit, not that real hardware input reaches the callback.
+    // only confirm the capture + armed/finished handoff logic and the path to
+    // disk, not that real hardware input reaches the callback.
+    //
+    // Recording streams to a file now rather than to a RAM buffer, so this
+    // reads the written WAV back instead of inspecting a buffer — a stronger
+    // check, since it covers the encoder and the background writer thread too.
+    //
+    // The old `capacityCapped` case is deliberately gone. It asserted that a
+    // take longer than a fixed capacity was silently truncated, which is
+    // precisely the data-loss bug this work removed; keeping it would pin the
+    // behaviour the change exists to delete. `longTakeIsComplete` below is its
+    // replacement and asserts the opposite.
     bool recorderWorks = false;
     {
         const double recSampleRate = 44100.0;
@@ -116,46 +126,140 @@ int main(int argc, char** argv)
             inputBlock[(size_t) i] = (float) i / (float) blockSize; // a ramp, easy to verify exactly
         const float* channelPtrs[1] = { inputBlock.data() };
 
+        juce::TimeSliceThread writerThread("BounceRecordWriter");
+        writerThread.startThread(juce::Thread::Priority::normal);
+
+        auto tempDir = juce::File::getSpecialLocation(juce::File::tempDirectory);
+
+        juce::AudioFormatManager formats;
+        formats.registerBasicFormats();
+
+        // Reads a finished take back off disk, so what is verified is the file
+        // the user would actually end up with.
+        auto readBack = [&formats](const juce::File& file, std::vector<float>& out)
+        {
+            std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+            if (reader == nullptr)
+                return false;
+
+            juce::AudioBuffer<float> buffer(1, (int) reader->lengthInSamples);
+            if (! reader->read(&buffer, 0, (int) reader->lengthInSamples, 0, true, false))
+                return false;
+
+            out.assign(buffer.getReadPointer(0), buffer.getReadPointer(0) + buffer.getNumSamples());
+            return true;
+        };
+
+        const auto takeFile = tempDir.getNonexistentChildFile("looper-take", ".wav");
+
         AudioRecorder recorder;
-        recorder.prepare(recSampleRate, 1, 1.0); // 1 s capacity, mono
+        recorder.prepare(recSampleRate, 1); // mono; no capacity to prepare any more
 
         // Not armed yet: must not capture, even while "playing".
-        recorder.process(channelPtrs, 1, blockSize, true);
+        recorder.process(channelPtrs, 1, blockSize, true, 0);
         const bool capturesNothingWhenDisarmed = recorder.recordedSampleCount() == 0;
 
-        // Arm and record 3 blocks while playing.
-        recorder.arm();
-        recorder.process(channelPtrs, 1, blockSize, true);
-        recorder.process(channelPtrs, 1, blockSize, true);
-        recorder.process(channelPtrs, 1, blockSize, true);
+        const bool armSucceeds = recorder.arm(takeFile, writerThread);
+
+        // Arm and record 3 blocks while playing, from a transport position that
+        // isn't zero — the take has to remember where it started.
+        constexpr int64_t kStartSample = 88200;
+        for (int block = 0; block < 3; ++block)
+            recorder.process(channelPtrs, 1, blockSize, true, kStartSample + block * blockSize);
+
         const bool capturedThreeBlocks       = recorder.recordedSampleCount() == blockSize * 3;
         const bool notFinishedWhileRecording = ! recorder.isFinished();
+        const bool startPositionRemembered   = recorder.startPlayheadSamples() == kStartSample;
 
         // Disarm; the *next* process() call is what finalizes the take (and is
         // itself not captured, since it's already disarmed by then).
         recorder.disarm();
-        recorder.process(channelPtrs, 1, blockSize, true);
-        const bool finishedAfterDisarm        = recorder.isFinished();
-        const bool lengthUnchangedAfterDisarm = recorder.takeLength() == blockSize * 3;
+        recorder.process(channelPtrs, 1, blockSize, true, kStartSample);
+        const bool finishedAfterDisarm  = recorder.isFinished();
+        const bool nothingDropped       = recorder.droppedSampleCount() == 0;
 
-        bool contentMatches = true;
-        const float* captured = recorder.takeBuffer().getReadPointer(0);
+        const auto writtenFile = recorder.finishTake();
+        const bool takeFileExists = writtenFile.existsAsFile();
+
+        std::vector<float> captured;
+        bool contentMatches = readBack(writtenFile, captured)
+                           && (int) captured.size() == blockSize * 3;
+
         for (int block = 0; block < 3 && contentMatches; ++block)
             for (int i = 0; i < blockSize; ++i)
-                if (std::abs(captured[block * blockSize + i] - inputBlock[(size_t) i]) > 1.0e-7f)
+                // 24-bit quantisation, not the float input, so the tolerance is
+                // one LSB at that depth rather than an epsilon.
+                if (std::abs(captured[(size_t) (block * blockSize + i)] - inputBlock[(size_t) i]) > 1.0e-6f)
                     contentMatches = false;
 
-        // Capacity check: recording longer than the prepared capacity must cap
-        // safely (no overflow/crash), keeping only what fits.
-        AudioRecorder capRecorder;
-        capRecorder.prepare(recSampleRate, 1, 0.001); // ~44 samples of capacity
-        capRecorder.arm();
-        capRecorder.process(channelPtrs, 1, blockSize, true);
-        capRecorder.process(channelPtrs, 1, blockSize, true);
-        capRecorder.disarm();
-        capRecorder.process(channelPtrs, 1, blockSize, true);
-        const bool capacityCapped = capRecorder.isFinished()
-                                 && capRecorder.takeLength() > 0 && capRecorder.takeLength() <= 45;
+        writtenFile.deleteFile();
+
+        // The regression this whole change exists for: a take far longer than
+        // the old 180-second RAM capacity must come back complete. Run at a
+        // deliberately silly block count rather than in real time — what is
+        // being checked is that nothing caps it, not how fast the disk is.
+        // A low rate deliberately: the claim is "200 seconds of audio, past
+        // the old 180-second cap", and the cap was in seconds. 8kHz keeps that
+        // claim exact while making it 1.6M samples rather than 8.8M, so the
+        // check stays a smoke test rather than a disk benchmark.
+        constexpr double kLongRate = 8000.0;
+
+        AudioRecorder longRecorder;
+        longRecorder.prepare(kLongRate, 1);
+
+        const auto longFile = tempDir.getNonexistentChildFile("looper-long-take", ".wav");
+        longRecorder.arm(longFile, writerThread);
+
+        // 200 seconds' worth: past the old cap, which would have discarded
+        // everything after 180.
+        //
+        // Paced, because this loop is not real time. A live callback delivers
+        // 512 samples every ~11.6ms and the writer thread drains far faster
+        // than that, but pushed flat out this fills the FIFO in a few
+        // milliseconds and the recorder correctly reports the overrun — which
+        // would be measuring how fast this loop runs, not whether a long take
+        // is capped. Sleeping every eighth block holds the producer to roughly
+        // an eighth of the FIFO per millisecond, which any disk can drain.
+        const int longBlocks = (int) (200.0 * kLongRate) / blockSize;
+        for (int block = 0; block < longBlocks; ++block)
+        {
+            longRecorder.process(channelPtrs, 1, blockSize, true, block * blockSize);
+
+            if (block % 8 == 7)
+                juce::Thread::sleep(1);
+        }
+
+        longRecorder.disarm();
+        longRecorder.process(channelPtrs, 1, blockSize, true, 0);
+
+        const int64_t longPushed   = (int64_t) longBlocks * blockSize;
+        const int64_t longRecorded  = longRecorder.recordedSampleCount();
+        const int64_t longDropped   = longRecorder.droppedSampleCount();
+
+        // What this asserts, and what it deliberately does not.
+        //
+        // Not "zero drops": this loop pushes 200 seconds of audio in about a
+        // second, so it outruns any disk in bursts no matter how it is paced,
+        // and requiring zero would be measuring the machine rather than the
+        // recorder. `nothingDropped` above covers the realistic case.
+        //
+        // What matters for the regression is that every sample is *accounted
+        // for* — written or explicitly counted as lost — and that capture kept
+        // going far past the old 180-second cap instead of stopping dead at it.
+        // The old code did neither: it froze at the cap and counted nothing.
+        const bool longAccountsForEverything = longRecorded + longDropped == longPushed;
+        const bool longRanPastTheOldCap      = longRecorded > (int64_t) (180.0 * kLongRate);
+
+        const auto longWritten = longRecorder.finishTake();
+
+        // And everything the recorder accepted actually reached the file —
+        // which is the other half of "nothing is silently lost".
+        std::vector<float> longSamples;
+        const bool longTakeIsComplete = longAccountsForEverything
+                                     && longRanPastTheOldCap
+                                     && readBack(longWritten, longSamples)
+                                     && (int64_t) longSamples.size() == longRecorded;
+        longWritten.deleteFile();
 
         // Count-in: armed with a lead-in, the recorder must roll without
         // capturing, and — critically — a take abandoned *during* its count-in
@@ -163,29 +267,47 @@ int main(int argc, char** argv)
         // owner waits forever on a take that never arrives, and recording is
         // dead until the app restarts.
         AudioRecorder countInRecorder;
-        countInRecorder.prepare(recSampleRate, 1, 1.0);
-        countInRecorder.arm((int64_t) blockSize * 2); // two blocks of count-in
+        countInRecorder.prepare(recSampleRate, 1);
+        const auto countInFile = tempDir.getNonexistentChildFile("looper-countin", ".wav");
+        countInRecorder.arm(countInFile, writerThread, (int64_t) blockSize * 2);
 
-        countInRecorder.process(channelPtrs, 1, blockSize, true);
+        countInRecorder.process(channelPtrs, 1, blockSize, true, 0);
         const bool countInCapturesNothing = countInRecorder.recordedSampleCount() == 0
                                          && countInRecorder.leadInRemaining() > 0;
 
-        countInRecorder.process(channelPtrs, 1, blockSize, true); // lead-in now elapsed
-        countInRecorder.process(channelPtrs, 1, blockSize, true); // this one captures
+        countInRecorder.process(channelPtrs, 1, blockSize, true, blockSize);     // lead-in now elapsed
+        countInRecorder.process(channelPtrs, 1, blockSize, true, blockSize * 2); // this one captures
         const bool capturesAfterCountIn = countInRecorder.recordedSampleCount() == blockSize;
 
-        AudioRecorder abandonedRecorder;
-        abandonedRecorder.prepare(recSampleRate, 1, 1.0);
-        abandonedRecorder.arm((int64_t) blockSize * 8); // a long count-in
-        abandonedRecorder.process(channelPtrs, 1, blockSize, true); // still counting in
-        abandonedRecorder.disarm();                                 // ...and give up
-        abandonedRecorder.process(channelPtrs, 1, blockSize, true);
-        const bool abandonedTakeFinishes = abandonedRecorder.isFinished()
-                                        && abandonedRecorder.takeLength() == 0;
+        // The count-in is skipped, so the take starts where playing started —
+        // not where arming did.
+        const bool countInStartSkipsLeadIn = countInRecorder.startPlayheadSamples() == blockSize * 2;
+        countInRecorder.disarm();
+        countInRecorder.process(channelPtrs, 1, blockSize, true, 0);
+        countInRecorder.finishTake().deleteFile();
 
-        recorderWorks = capturesNothingWhenDisarmed && capturedThreeBlocks && notFinishedWhileRecording
-                     && finishedAfterDisarm && lengthUnchangedAfterDisarm && contentMatches && capacityCapped
-                     && countInCapturesNothing && capturesAfterCountIn && abandonedTakeFinishes;
+        AudioRecorder abandonedRecorder;
+        abandonedRecorder.prepare(recSampleRate, 1);
+        const auto abandonedFile = tempDir.getNonexistentChildFile("looper-abandoned", ".wav");
+        abandonedRecorder.arm(abandonedFile, writerThread, (int64_t) blockSize * 8); // a long count-in
+        abandonedRecorder.process(channelPtrs, 1, blockSize, true, 0); // still counting in
+        abandonedRecorder.disarm();                                    // ...and give up
+        abandonedRecorder.process(channelPtrs, 1, blockSize, true, 0);
+
+        // An abandoned take finishes *and* leaves no file behind: an empty WAV
+        // header in the recordings folder is litter that looks like a take.
+        const bool abandonedTakeFinishes = abandonedRecorder.isFinished()
+                                        && abandonedRecorder.recordedSampleCount() == 0
+                                        && abandonedRecorder.finishTake() == juce::File{}
+                                        && ! abandonedFile.existsAsFile();
+
+        writerThread.stopThread(2000);
+
+        recorderWorks = capturesNothingWhenDisarmed && armSucceeds && capturedThreeBlocks
+                     && notFinishedWhileRecording && startPositionRemembered && finishedAfterDisarm
+                     && nothingDropped && takeFileExists && contentMatches && longTakeIsComplete
+                     && countInCapturesNothing && capturesAfterCountIn && countInStartSkipsLeadIn
+                     && abandonedTakeFinishes;
     }
 
     const double bpm        = 120.0;

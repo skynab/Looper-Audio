@@ -139,6 +139,7 @@ private:
     void                   openProject();
     void                   chooseProjectToOpen();
     void                   updateWindowTitle();
+    static bool            isSilentAudioFile(const juce::File& file);
     void                   exportAudioDialog();
     void                   exportProject(const engine::ExportOptions& options);
     void                   showAudioSettings();
@@ -371,6 +372,13 @@ private:
     bool                        recordAutomation_   = false;
     bool                        awaitingRecordedTake_ = false;
 
+    // Chosen when the take is armed, not when it ends: the destination has to
+    // exist before a note is played now that recording streams to it, and the
+    // target track is whatever was selected then rather than whatever happens
+    // to be selected by the time the user hits stop.
+    juce::File                  recordingFile_;
+    int                         recordingTargetTrack_ = -1; // -1 = a new track
+
     // App-level preferences (not project data): which panel lives in which
     // dock region, and the file browser's user bookmarks. Saved on the
     // panel-move/bookmark-change that produces them, not the project.
@@ -453,6 +461,7 @@ private:
     juce::TextButton   collapseTransportButton_;
     bool               transportCollapsed_ = false;
     juce::ToggleButton metronomeButton { "Click" };
+    juce::ToggleButton monitorButton { "Monitor" };
     juce::ComboBox     countInBox_;
     juce::ComboBox     timeSigBox_;
     juce::Label        timeSigLabel_;

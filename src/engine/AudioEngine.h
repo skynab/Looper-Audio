@@ -157,7 +157,9 @@ public:
         audio device has no active input channels. Capturing only actually
         happens while the transport is playing, and only after any count-in
         (see setCountInBars) has elapsed. */
-    bool beginRecording();
+    /** Arms a take, streamed to @p destination as it is played. Returns false
+        if there is no input device or the file could not be opened. */
+    bool beginRecording(const juce::File& destination);
 
     /** True while a count-in is still running — the transport is rolling but
         nothing is being captured yet. */
@@ -165,10 +167,25 @@ public:
     /** Stops capturing; the take becomes readable once isRecordingFinished(). */
     void stopRecording() { recorder_.disarm(); }
     bool isRecordingFinished() const noexcept { return recorder_.isFinished(); }
-    int  recordedSampleCount() const noexcept { return recorder_.recordedSampleCount(); }
-    /** Valid only after isRecordingFinished() is observed true. */
-    const juce::AudioBuffer<float>& recordedTakeBuffer() const noexcept { return recorder_.takeBuffer(); }
-    int recordedTakeLength() const noexcept { return recorder_.takeLength(); }
+    int64_t recordedSampleCount() const noexcept { return recorder_.recordedSampleCount(); }
+
+    /** Samples lost because the disk could not keep up. Non-zero means the
+        take has a gap in it — see AudioRecorder::droppedSampleCount. */
+    int64_t recordedDroppedSamples() const noexcept { return recorder_.droppedSampleCount(); }
+
+    /** Where the transport was when capture began, in samples, or -1. */
+    int64_t recordedTakeStartSample() const noexcept { return recorder_.startPlayheadSamples(); }
+
+    /** Closes the take's file and returns it; empty if nothing was captured.
+        Valid only after isRecordingFinished() is observed true. */
+    juce::File finishRecordedTake() { return recorder_.finishTake(); }
+
+    /** Dry input monitoring: input summed straight to the output, after the
+        master bus. Off by default — monitoring a built-in microphone through
+        speakers is a feedback loop. Message thread. */
+    void setInputMonitoring(bool on) { inputMonitoring_.store(on, std::memory_order_relaxed); }
+    bool isInputMonitoring() const noexcept { return inputMonitoring_.load(std::memory_order_relaxed); }
+    void setInputMonitorGain(float gain) { inputMonitorGain_.store(gain, std::memory_order_relaxed); }
 
     // ---- multi-track control (message thread) ----
     int  maxTracks() const noexcept { return kMaxTracks; }
@@ -392,6 +409,12 @@ public:
                                           int numOutputChannels,
                                           int numSamples,
                                           const juce::AudioIODeviceCallbackContext& context) override;
+    /** Dry input straight to the output, ramped. Called from the device
+        callback after processBlock — see the comment there. */
+    void mixInputMonitoring(juce::AudioBuffer<float>& output,
+                            const float* const* inputChannelData,
+                            int numInputChannels, int numSamples) noexcept;
+
     void audioDeviceAboutToStart(juce::AudioIODevice* device) override;
     void audioDeviceStopped() override;
 
@@ -462,6 +485,15 @@ private:
     std::atomic<double> sampleRate_ { 0.0 };
 
     AudioRecorder recorder_;
+
+    // Drains the recorder's FIFO to disk. Started once and left running: it
+    // idles when nothing is recording, and starting a thread at the moment the
+    // user hits record is exactly when not to be doing it.
+    juce::TimeSliceThread recordWriterThread_ { "LooperRecordWriter" };
+
+    std::atomic<bool>  inputMonitoring_  { false };
+    std::atomic<float> inputMonitorGain_ { 1.0f };
+    float              monitorGainRamp_  = 0.0f; // audio thread only; see the callback
     Metronome     metronome_;
     int           countInBars_ = 0; // message thread only; read when arming
     std::atomic<double> launchQuantumBeats_ { 4.0 }; // one bar of 4/4

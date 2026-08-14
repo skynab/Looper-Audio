@@ -11,13 +11,16 @@ namespace looper::engine
 {
 namespace
 {
-    // Recorder buffer capacity: a v1 limit (RAM-only, no disk streaming yet).
-    constexpr double kMaxRecordSeconds = 180.0;
 }
 
 AudioEngine::AudioEngine()
 {
     formatManager_.registerBasicFormats();
+
+    // Started once and left running for the engine's lifetime. It idles when
+    // nothing is recording, and spinning a thread up at the instant the user
+    // hits record is exactly the wrong moment to be doing it.
+    recordWriterThread_.startThread(juce::Thread::Priority::normal);
 
     // Request up to 2 input channels too (for recording); JUCE falls back to
     // however many the device actually has, including zero.
@@ -192,7 +195,7 @@ void AudioEngine::setTrackDrumKit(int index, const std::vector<DrumPadSpec>& pad
     track.drumKit.setPadMap(map);
 }
 
-bool AudioEngine::beginRecording()
+bool AudioEngine::beginRecording(const juce::File& destination)
 {
     auto* device = deviceManager_.getCurrentAudioDevice();
     if (device == nullptr || device->getActiveInputChannels().countNumberOfSetBits() == 0)
@@ -205,8 +208,9 @@ bool AudioEngine::beginRecording()
     const double samplesPerBar = tempoMap.samplesPerBeat() * tempoMap.quartersPerBar();
     const auto   leadIn        = (int64_t) std::llround(samplesPerBar * (double) countInBars_);
 
-    recorder_.arm(leadIn);
-    return true;
+    // Opening the file is part of arming: a take that was never going to be
+    // written should fail before the user plays it, not after.
+    return recorder_.arm(destination, recordWriterThread_, leadIn);
 }
 
 void AudioEngine::setActiveTrackCount(int count)
@@ -576,15 +580,68 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
     context.numSamples = numSamples;
     context.transport  = transport_.snapshot();
 
-    recorder_.process(inputChannelData, numInputChannels, numSamples, context.transport.playing);
+    recorder_.process(inputChannelData, numInputChannels, numSamples,
+                      context.transport.playing, context.transport.playheadSamples);
 
     processBlock(output, incomingMidi_, context);
+
+    // Dry input monitoring, mixed in *after* the master bus for the same
+    // reasons the metronome is: it stays out of the meter, out of the master
+    // effects, and — because renderOffline only ever calls processBlock — it
+    // can never end up in an exported file.
+    mixInputMonitoring(output, inputChannelData, numInputChannels, numSamples);
 
     // After the master bus deliberately: the click bypasses the master
     // effects and gain, stays off the meter, and can never be exported (it
     // sits outside processBlock, which is what renderOffline renders).
     // `force` sounds it through a count-in even when it's otherwise off.
     metronome_.process(output, context, isCountingIn());
+}
+
+void AudioEngine::mixInputMonitoring(juce::AudioBuffer<float>& output,
+                                     const float* const* inputChannelData,
+                                     int numInputChannels, int numSamples) noexcept
+{
+    const float target = inputMonitoring_.load(std::memory_order_relaxed)
+                             ? juce::jlimit(0.0f, 2.0f, inputMonitorGain_.load(std::memory_order_relaxed))
+                             : 0.0f;
+
+    // Nothing to do, and nothing to ramp down from.
+    if (target <= 0.0f && monitorGainRamp_ <= 0.0f)
+        return;
+
+    if (inputChannelData == nullptr || numInputChannels <= 0 || numSamples <= 0)
+    {
+        monitorGainRamp_ = target;
+        return;
+    }
+
+    // Ramped across the block rather than switched: toggling monitoring
+    // mid-take would otherwise put a step in the output, which through
+    // headphones at tracking level is unpleasant.
+    const float startGain = monitorGainRamp_;
+    const float step      = (target - startGain) / (float) numSamples;
+
+    const int channels = output.getNumChannels();
+    for (int ch = 0; ch < channels; ++ch)
+    {
+        // A mono source is heard on both sides rather than only the left.
+        const int   source = juce::jmin(ch, numInputChannels - 1);
+        const auto* input  = inputChannelData[source];
+        if (input == nullptr)
+            continue;
+
+        auto* out = output.getWritePointer(ch);
+        float gain = startGain;
+
+        for (int n = 0; n < numSamples; ++n)
+        {
+            out[n] += input[n] * gain;
+            gain += step;
+        }
+    }
+
+    monitorGainRamp_ = target;
 }
 
 void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffer& midi,
@@ -770,7 +827,7 @@ void AudioEngine::prepareAll(double sampleRate, int blockSize)
     sendBusDelay_.setEnabled(true); // same convention as sendBusReverb_ above
     sendBusDelay_.setMix(1.0f);     // a return bus is always fully wet
 
-    recorder_.prepare(sampleRate, 2, kMaxRecordSeconds);
+    recorder_.prepare(sampleRate, 2);
     metronome_.prepare(sampleRate);
 }
 
