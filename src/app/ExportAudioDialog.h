@@ -11,12 +11,12 @@ namespace looper::app
 /**
     The "what kind of file?" step of an audio export.
 
-    An `AlertWindow` with four combo boxes, following showSpeedPitchDialog's
+    An `AlertWindow` with five combo boxes, following showSpeedPitchDialog's
     pattern rather than building a Component of its own — this is a
-    pick-four-things-and-go dialog, and a bespoke pane would be more code to
+    pick-a-few-things-and-go dialog, and a bespoke pane would be more code to
     lay out, parent and audit for no gain.
 
-    The three dependent boxes are rebuilt from `engine::AudioExport`'s
+    The dependent boxes are rebuilt from `engine::AudioExport`'s
     capability queries every time the format changes, rather than from a second
     list kept here. That is the whole reason those queries exist: an export
     that offers an impossible combination doesn't fail loudly, it returns a
@@ -37,23 +37,7 @@ public:
         auto* window = new juce::AlertWindow ("Export Audio", {},
                                               juce::MessageBoxIconType::NoIcon, parent);
 
-        juce::StringArray formatNames;
-        for (auto format : engine::allExportFormats())
-            formatNames.add (engine::displayNameFor (format));
-
-        window->addComboBox ("format", formatNames, "Format:");
-        window->addComboBox ("rate", {}, "Sample rate:");
-        window->addComboBox ("bits", {}, "Bit depth:");
-        window->addComboBox ("quality", {}, "Quality:");
-
-        auto* formatBox = window->getComboBoxComponent ("format");
-        formatBox->setSelectedItemIndex (0, juce::dontSendNotification);
-
-        refreshDependentBoxes (*window, defaultSampleRate);
-        formatBox->onChange = [window, defaultSampleRate]
-        {
-            refreshDependentBoxes (*window, defaultSampleRate);
-        };
+        buildControls (*window, defaultSampleRate);
 
         window->addButton ("Export", 1, juce::KeyPress (juce::KeyPress::returnKey));
         window->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
@@ -67,6 +51,46 @@ public:
 
                 onAccepted (readOptions (*window));
             }));
+    }
+
+    /**
+        Adds every control the dialog has and wires them together.
+
+        Public, and the *only* way the boxes get built, so a test drives the
+        real dialog rather than a hand-made replica of it. It was a replica
+        once: adding the dither box left the copy a box short, and the first
+        thing that asked for it dereferenced a null and took the test binary
+        down with a segfault.
+    */
+    static void buildControls (juce::AlertWindow& window, double defaultSampleRate)
+    {
+        juce::StringArray formatNames;
+        for (auto format : engine::allExportFormats())
+            formatNames.add (engine::displayNameFor (format));
+
+        window.addComboBox ("format", formatNames, "Format:");
+        window.addComboBox ("rate", {}, "Sample rate:");
+        window.addComboBox ("bits", {}, "Bit depth:");
+        window.addComboBox ("quality", {}, "Quality:");
+        window.addComboBox ("dither", { "On (TPDF)", "Off" }, "Dither:");
+
+        auto* formatBox = window.getComboBoxComponent ("format");
+        formatBox->setSelectedItemIndex (0, juce::dontSendNotification);
+
+        refreshDependentBoxes (window, defaultSampleRate);
+
+        formatBox->onChange = [&window, defaultSampleRate]
+        {
+            refreshDependentBoxes (window, defaultSampleRate);
+        };
+
+        // Switching between 24-bit and 32-bit float changes whether anything is
+        // quantised at all, so the dither box has to follow the depth as well
+        // as the format.
+        window.getComboBoxComponent ("bits")->onChange = [&window]
+        {
+            refreshDitherEnablement (window);
+        };
     }
 
     /** The options currently shown. Public so a test can drive the boxes and
@@ -99,6 +123,9 @@ public:
         if (! qualities.isEmpty())
             options.qualityIndex = juce::jlimit (0, qualities.size() - 1,
                                                  window.getComboBoxComponent ("quality")->getSelectedItemIndex());
+
+        if (auto* ditherBox = window.getComboBoxComponent ("dither"))
+            options.dither = ditherBox->getSelectedItemIndex() == 0;
 
         return options;
     }
@@ -138,6 +165,39 @@ public:
         // Near the top of the range rather than the middle: someone exporting
         // a finished mix to a lossy format wants it to sound like the mix.
         fill (*qualityBox, qualities, (qualities.size() * 3) / 4);
+
+        // Dither only means anything where something is quantised: not for the
+        // lossy formats, and not at 32-bit float. Enabled/disabled rather than
+        // removed, so the dialog keeps its shape as the format changes.
+        if (auto* ditherBox = window.getComboBoxComponent ("dither"))
+            ditherBox->setSelectedItemIndex (0, juce::dontSendNotification); // On
+
+        refreshDitherEnablement (window);
+    }
+
+    /** Dither applies only where the export quantises. Split out from
+        refreshDependentBoxes so changing the bit depth can call it without
+        rebuilding — and resetting — every other box. */
+    static void refreshDitherEnablement (juce::AlertWindow& window)
+    {
+        auto* formatBox = window.getComboBoxComponent ("format");
+        auto* bitsBox   = window.getComboBoxComponent ("bits");
+        auto* ditherBox = window.getComboBoxComponent ("dither");
+
+        if (formatBox == nullptr || bitsBox == nullptr || ditherBox == nullptr)
+            return;
+
+        const int formatIndex = juce::jlimit (0, engine::kNumExportFormats - 1,
+                                              formatBox->getSelectedItemIndex());
+        const auto format = engine::allExportFormats()[(size_t) formatIndex];
+        const auto depths = engine::possibleBitDepths (format);
+
+        const int selectedDepth = depths.isEmpty()
+                                    ? 0
+                                    : depths[juce::jlimit (0, depths.size() - 1,
+                                                           bitsBox->getSelectedItemIndex())];
+
+        ditherBox->setEnabled (! depths.isEmpty() && selectedDepth < 32);
     }
 
 private:

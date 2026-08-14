@@ -4,6 +4,7 @@
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
+#include "engine/Dither.h"
 #include "engine/Mp3Encoder.h"
 
 namespace looper::engine
@@ -53,6 +54,17 @@ struct ExportOptions
 
     /** Index into qualityOptionsFor(format). Ignored where that is empty. */
     int          qualityIndex  = 3;
+
+    /** Adds TPDF dither before the writer quantises - see engine::TpdfDither.
+        On by default, because reducing a float mix to a fixed word length
+        without it adds distortion rather than noise, and the place it is heard
+        is fades and reverb tails.
+
+        Worth turning off in one case: when the file is going to be processed
+        again somewhere else, since dithering twice adds the noise twice. It is
+        ignored where nothing is quantised - 32-bit float, and the lossy
+        formats, which do their own thing entirely. */
+    bool         dither        = true;
 };
 
 /** The file extension, without the dot. */
@@ -169,6 +181,68 @@ inline juce::StringArray qualityOptionsFor (ExportFormat format)
     return {};
 }
 
+namespace detail
+{
+    /** Whether the export will actually quantise, which is the only case where
+        dither means anything. 32-bit is float, and the lossy formats discard
+        the concept of a sample depth altogether. */
+    inline bool willQuantise (const ExportOptions& options, int bits)
+    {
+        return usesBitDepth (options.format) && bits < 32;
+    }
+
+    /**
+        Pushes @p buffer through @p writer, dithering on the way if the export
+        is going to quantise.
+
+        Block at a time rather than in one call, because dither has to be added
+        to a *copy* - the caller's mix is const, and rightly so - and copying a
+        whole export doubles its memory for as long as the write takes. A
+        ten-minute stereo master at 96k is over 400MB, so the difference
+        between a block and the lot is not academic.
+    */
+    inline bool writeSamples (juce::AudioFormatWriter& writer,
+                              const juce::AudioBuffer<float>& buffer,
+                              const ExportOptions& options)
+    {
+        const int total = buffer.getNumSamples();
+
+        if (! willQuantise (options, options.bitsPerSample) || ! options.dither)
+            return writer.writeFromAudioSampleBuffer (buffer, 0, total);
+
+        constexpr int kBlock = 8192;
+
+        const int  channels = buffer.getNumChannels();
+        TpdfDither dither (options.bitsPerSample);
+
+        juce::AudioBuffer<float> block (channels, juce::jmin (kBlock, total));
+
+        for (int pos = 0; pos < total; pos += kBlock)
+        {
+            const int n = juce::jmin (kBlock, total - pos);
+            block.setSize (channels, n, false, false, true);
+
+            for (int ch = 0; ch < channels; ++ch)
+            {
+                const auto* in  = buffer.getReadPointer (ch, pos);
+                auto*       out = block.getWritePointer (ch);
+
+                // One draw per sample per channel, so the channels get
+                // independent noise. Sharing it would put a correlated hiss
+                // dead centre in the stereo image, which is exactly where a
+                // listener notices it.
+                for (int i = 0; i < n; ++i)
+                    out[i] = dither.processSample (in[i]);
+            }
+
+            if (! writer.writeFromAudioSampleBuffer (block, 0, n))
+                return false;
+        }
+
+        return true;
+    }
+}
+
 /**
     Writes @p buffer to @p file. Returns false, and leaves no file behind, on
     any failure.
@@ -194,6 +268,11 @@ inline bool writeAudioFile (const juce::File& file,
     if (stream == nullptr)
         return false;
 
+    // The depth the writer will really use, which is not always the one asked
+    // for — possibleBitDepths clamps it. Dither has to be scaled to what is
+    // actually written or it is the wrong size.
+    int resolvedBits = options.bitsPerSample;
+
     auto writerOptions = juce::AudioFormatWriterOptions{}
                              .withSampleRate (options.sampleRate)
                              .withNumChannels (buffer.getNumChannels())
@@ -206,6 +285,7 @@ inline bool writeAudioFile (const juce::File& file,
                                                                     : depths.getLast();
 
         writerOptions = writerOptions.withBitsPerSample (bits);
+        resolvedBits  = bits;
 
         // 32-bit means *float* for WAV and AIFF. Written as 32-bit integer
         // instead, a mix that touches full scale would come back subtly
@@ -231,7 +311,10 @@ inline bool writeAudioFile (const juce::File& file,
         return false;
     }
 
-    const bool ok = writer->writeFromAudioSampleBuffer (buffer, 0, buffer.getNumSamples());
+    ExportOptions resolved = options;
+    resolved.bitsPerSample = resolvedBits;
+
+    const bool ok = detail::writeSamples (*writer, buffer, resolved);
 
     // Before the file is judged: the writer flushes its last frame and closes
     // the stream in its destructor, and for the compressed formats that is

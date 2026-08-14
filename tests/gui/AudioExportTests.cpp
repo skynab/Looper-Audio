@@ -315,15 +315,7 @@ TEST_CASE ("The export dialog offers no combination that fails to write", "[gui]
     // and exports what it produces, so the two can't drift apart into a UI that
     // offers something the writer then refuses at the end of a render.
     juce::AlertWindow window ("Export Audio", {}, juce::MessageBoxIconType::NoIcon);
-
-    juce::StringArray formatNames;
-    for (auto format : allExportFormats())
-        formatNames.add (displayNameFor (format));
-
-    window.addComboBox ("format", formatNames, "Format:");
-    window.addComboBox ("rate", {}, "Sample rate:");
-    window.addComboBox ("bits", {}, "Bit depth:");
-    window.addComboBox ("quality", {}, "Quality:");
+    looper::app::ExportAudioDialog::buildControls (window, 48000.0);
 
     const auto source = makeTestBuffer();
 
@@ -379,15 +371,7 @@ TEST_CASE ("The export dialog defaults to the device sample rate", "[gui][export
     // The common export is "what I am hearing, as a file". Defaulting to
     // anything else would resample it by default.
     juce::AlertWindow window ("Export Audio", {}, juce::MessageBoxIconType::NoIcon);
-
-    juce::StringArray formatNames;
-    for (auto format : allExportFormats())
-        formatNames.add (displayNameFor (format));
-
-    window.addComboBox ("format", formatNames, "Format:");
-    window.addComboBox ("rate", {}, "Sample rate:");
-    window.addComboBox ("bits", {}, "Bit depth:");
-    window.addComboBox ("quality", {}, "Quality:");
+    looper::app::ExportAudioDialog::buildControls (window, 48000.0);
 
     for (double deviceRate : { 44100.0, 48000.0, 96000.0 })
     {
@@ -401,4 +385,128 @@ TEST_CASE ("The export dialog defaults to the device sample rate", "[gui][export
         // choice at all.
         CHECK (options.bitsPerSample == 24);
     }
+}
+
+
+TEST_CASE ("Dither reaches the exported file", "[engine][export][dither]")
+{
+    // The end-to-end version of DitherTests' central claim, through the real
+    // export path — so this fails if the dither is built but never wired in,
+    // which the unit tests cannot see.
+    //
+    // A tone below one 16-bit quantisation step. Measured, JUCE's writer
+    // truncates toward negative infinity rather than rounding, so undithered
+    // this sine comes back as a *square wave* alternating between 0 and -1
+    // LSB: the fundamental arrives about 59% too loud (4/pi times half a step)
+    // and drags a full harmonic series in with it. Truncation does not merely
+    // lose quiet material, it replaces it with something that was never
+    // played, which is the case for dither in one measurement.
+    juce::AudioFormatManager manager;
+    manager.registerBasicFormats();
+
+    constexpr int    bits      = 16;
+    const float      lsb       = 1.0f / 32768.0f;
+    const float      amplitude = lsb * 0.4f;
+    constexpr int    samples   = 1 << 16;
+    constexpr double tone      = 48000.0 * 512.0 / (double) samples;
+
+    juce::AudioBuffer<float> quiet (2, samples);
+    for (int n = 0; n < samples; ++n)
+    {
+        const auto v = (float) (amplitude * std::sin (2.0 * kPi * tone * n / kSampleRate));
+        quiet.setSample (0, n, v);
+        quiet.setSample (1, n, v);
+    }
+
+    struct Result { double fundamental, thirdHarmonic; };
+
+    auto exportAndMeasure = [&] (bool dither)
+    {
+        auto options = optionsFor (ExportFormat::Wav, bits);
+        options.dither = dither;
+
+        const auto file = scratchFile (ExportFormat::Wav);
+        REQUIRE (writeAudioFile (file, quiet, options));
+
+        std::unique_ptr<juce::AudioFormatReader> reader (manager.createReaderFor (file));
+        REQUIRE (reader != nullptr);
+
+        juce::AudioBuffer<float> decoded (2, samples);
+        REQUIRE (reader->read (&decoded, 0, samples, 0, true, true));
+        file.deleteFile();
+
+        return Result { magnitudeAt (decoded, 0, tone, kSampleRate),
+                        magnitudeAt (decoded, 0, tone * 3.0, kSampleRate) };
+    };
+
+    const auto   plain    = exportAndMeasure (false);
+    const auto   dithered = exportAndMeasure (true);
+    const double expected = amplitude * 0.5;
+
+    INFO ("expected " << expected
+          << "  undithered " << plain.fundamental << " (3rd " << plain.thirdHarmonic << ")"
+          << "  dithered " << dithered.fundamental << " (3rd " << dithered.thirdHarmonic << ")");
+
+    // Dithered, the level that comes back is the level that went in.
+    CHECK (dithered.fundamental > expected * 0.9);
+    CHECK (dithered.fundamental < expected * 1.1);
+
+    // Undithered, it is not — the square wave's fundamental is well above it.
+    CHECK (plain.fundamental > expected * 1.3);
+
+    // And the harmonic truncation invented is gone, which is the part that
+    // actually sounds like distortion rather than like a level error.
+    CHECK (dithered.thirdHarmonic < plain.thirdHarmonic * 0.2);
+}
+
+TEST_CASE ("Dither is not applied where nothing is quantised", "[engine][export][dither]")
+{
+    // 32-bit float writes the samples as they are. Adding noise there would be
+    // damage with no benefit — there is no quantisation error to decorrelate.
+    juce::AudioFormatManager manager;
+    manager.registerBasicFormats();
+
+    const auto source = makeTestBuffer();
+
+    auto options = optionsFor (ExportFormat::Wav, 32);
+    options.dither = true;
+
+    const auto file = scratchFile (ExportFormat::Wav);
+    REQUIRE (writeAudioFile (file, source, options));
+
+    std::unique_ptr<juce::AudioFormatReader> reader (manager.createReaderFor (file));
+    REQUIRE (reader != nullptr);
+
+    juce::AudioBuffer<float> decoded (2, kNumSamples);
+    REQUIRE (reader->read (&decoded, 0, kNumSamples, 0, true, true));
+    file.deleteFile();
+
+    // Bit-identical, dither flag or not.
+    for (int ch = 0; ch < 2; ++ch)
+        for (int n = 0; n < kNumSamples; ++n)
+            REQUIRE (decoded.getSample (ch, n) == source.getSample (ch, n));
+}
+
+TEST_CASE ("Dithered exports are reproducible", "[engine][export][dither]")
+{
+    // Two exports of the same mix produce the same bytes. Dither seeded from a
+    // clock would make every export different, which quietly breaks any
+    // workflow that compares or caches renders.
+    const auto source = makeTestBuffer();
+    const auto options = [] { auto o = optionsFor (ExportFormat::Wav, 16); o.dither = true; return o; }();
+
+    const auto first  = scratchFile (ExportFormat::Wav);
+    const auto second = scratchFile (ExportFormat::Wav);
+
+    REQUIRE (writeAudioFile (first, source, options));
+    REQUIRE (writeAudioFile (second, source, options));
+
+    juce::MemoryBlock a, b;
+    REQUIRE (first.loadFileAsData (a));
+    REQUIRE (second.loadFileAsData (b));
+
+    CHECK (a == b);
+
+    first.deleteFile();
+    second.deleteFile();
 }
