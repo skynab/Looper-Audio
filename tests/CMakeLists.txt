@@ -89,6 +89,7 @@ if (LOOPER_BUILD_APP)
     gui/ShortcutsTests.cpp
     gui/WaveformCacheTests.cpp
     gui/RowWrapLayoutTests.cpp
+    gui/StemNamingTests.cpp
     gui/PaneLayoutTests.cpp
     gui/PaneWiringTests.cpp
     ${PROJECT_SOURCE_DIR}/src/engine/Mp3Encoder.cpp)

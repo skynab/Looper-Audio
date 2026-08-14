@@ -142,6 +142,10 @@ private:
     static bool            isSilentAudioFile(const juce::File& file);
     void                   exportAudioDialog();
     void                   exportProject(const engine::ExportOptions& options);
+    int                    exportStems(const juce::File& masterFile,
+                                       const engine::ExportOptions& options,
+                                       double lengthBeats,
+                                       bool& anyFailure);
     void                   showAudioSettings();
     void                   importAudioToNewTrack();
     void                   importAudioFileAtBeat(const juce::File& file, double startBeats, int targetTrackIndex = -1);

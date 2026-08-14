@@ -238,6 +238,27 @@ void AudioEngine::setTrackSolo(int index, bool solo)
         tracks_[(size_t) index].solo.store(solo, std::memory_order_relaxed);
 }
 
+bool AudioEngine::trackContributesToMix(int index) const noexcept
+{
+    if (index < 0 || index >= kMaxTracks)
+        return false;
+
+    const auto& track = tracks_[(size_t) index];
+
+    if (! track.active.load(std::memory_order_relaxed))
+        return false;
+
+    // Mute always wins, whatever solo says.
+    if (track.muted.load(std::memory_order_relaxed))
+        return false;
+
+    bool anySolo = false;
+    for (const auto& other : tracks_)
+        anySolo |= other.solo.load(std::memory_order_relaxed);
+
+    return ! anySolo || track.solo.load(std::memory_order_relaxed);
+}
+
 void AudioEngine::setTrackGainDb(int index, float gainDb)
 {
     if (index >= 0 && index < kMaxTracks)
@@ -645,7 +666,8 @@ void AudioEngine::mixInputMonitoring(juce::AudioBuffer<float>& output,
 }
 
 void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffer& midi,
-                               const ProcessContext& context) noexcept
+                               const ProcessContext& context,
+                               int soloTrack, bool applyMasterBus) noexcept
 {
     const int numSamples = context.numSamples;
 
@@ -665,6 +687,13 @@ void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffe
     const int armed = armedTrack_.load(std::memory_order_relaxed);
     for (int i = 0; i < kMaxTracks; ++i)
     {
+        // A stem renders one track. Note that anySolo is still whatever the
+        // whole pool says, and the track still applies mute/solo itself — this
+        // only decides who gets *asked*, so a stem is that track exactly as it
+        // sounds in the mix rather than a special case of it.
+        if (soloTrack >= 0 && i != soloTrack)
+            continue;
+
         if (tracks_[(size_t) i].active.load(std::memory_order_relaxed))
             tracks_[(size_t) i].render(output, sendBus_, midi, context, i == armed, anySolo,
                                        launchQuantumSamples);
@@ -683,33 +712,38 @@ void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffe
             output.addFrom(ch, 0, sendBus_, ch, 0, numSamples, returnGain);
     }
 
-    // The file player and master ignore the MIDI buffer.
-    filePlayer_.process(output, midi, context);
-    masterFilter_.process(output);
-    masterDelay_.process(output);
-    masterReverb_.process(output);
-    masterEq_.process(output);
-    // The mastering rack sits between the master EQ and the output node, so
-    // its limiter is the last thing to touch level before the meter reads it
-    // — a ceiling that something after it could exceed wouldn't be one.
-    mastering_.process(output);
-    master_.process(output, midi, context);
+    if (applyMasterBus)
+    {
+        // The file player and master ignore the MIDI buffer.
+        filePlayer_.process(output, midi, context);
+        masterFilter_.process(output);
+        masterDelay_.process(output);
+        masterReverb_.process(output);
+        masterEq_.process(output);
+        // The mastering rack sits between the master EQ and the output node, so
+        // its limiter is the last thing to touch level before the meter reads it
+        // — a ceiling that something after it could exceed wouldn't be one.
+        mastering_.process(output);
+        master_.process(output, midi, context);
+    }
 
     transport_.advance(numSamples);
 }
 
-juce::AudioBuffer<float> AudioEngine::renderOffline(double startBeats, double lengthBeats,
-                                                    double renderSampleRate, int blockSize)
+juce::AudioBuffer<float> AudioEngine::renderOffline(const OfflineRenderOptions& options)
 {
+    const double startBeats  = options.startBeats;
+    const double lengthBeats = options.lengthBeats;
+
     const double deviceRate = sampleRate_.load(std::memory_order_relaxed);
-    const double sampleRate = renderSampleRate > 0.0 ? renderSampleRate : deviceRate;
+    const double sampleRate = options.sampleRate > 0.0 ? options.sampleRate : deviceRate;
     const double bpm        = transport_.tempoMap().tempo();
 
     juce::AudioBuffer<float> output(2, 0);
     if (deviceRate <= 0.0 || sampleRate <= 0.0 || bpm <= 0.0 || lengthBeats <= 0.0)
         return output;
 
-    blockSize = juce::jmax(1, blockSize);
+    const int blockSize = juce::jmax(1, options.blockSize);
 
     const double  samplesPerBeat = sampleRate * 60.0 / bpm;
     const int64_t startSample    = (int64_t) std::llround(startBeats * samplesPerBeat);
@@ -760,7 +794,7 @@ juce::AudioBuffer<float> AudioEngine::renderOffline(double startBeats, double le
 
         juce::AudioBuffer<float> view(output.getArrayOfWritePointers(), 2, pos, n);
         noLiveMidi.clear();
-        processBlock(view, noLiveMidi, context);
+        processBlock(view, noLiveMidi, context, options.soloTrack, options.applyMasterBus);
     }
 
     // Back to the *device* rate, not the render rate: everything above was

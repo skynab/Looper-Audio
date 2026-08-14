@@ -40,9 +40,41 @@ inline const std::array<ExportFormat, kNumExportFormats>& allExportFormats()
     return formats;
 }
 
+/** What an export writes: the master mix, the individual tracks, or both. */
+enum class ExportContents
+{
+    MasterMix = 0,
+    MasterMixAndStems,
+    StemsOnly
+};
+
+inline constexpr int kNumExportContents = 3;
+
+inline juce::String displayNameFor (ExportContents contents)
+{
+    switch (contents)
+    {
+        case ExportContents::MasterMix:         return "Master mix";
+        case ExportContents::MasterMixAndStems: return "Master mix + stems";
+        case ExportContents::StemsOnly:         return "Stems only";
+    }
+    return "Master mix";
+}
+
+inline bool writesMasterMix (ExportContents contents)
+{
+    return contents != ExportContents::StemsOnly;
+}
+
+inline bool writesStems (ExportContents contents)
+{
+    return contents != ExportContents::MasterMix;
+}
+
 struct ExportOptions
 {
-    ExportFormat format        = ExportFormat::Wav;
+    ExportFormat   format   = ExportFormat::Wav;
+    ExportContents contents = ExportContents::MasterMix;
 
     /** 16, 24, or 32. For WAV and AIFF, 32 means IEEE float rather than
         32-bit integer - a float file is what you want when the mix will be

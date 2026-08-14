@@ -510,3 +510,56 @@ TEST_CASE ("Dithered exports are reproducible", "[engine][export][dither]")
     first.deleteFile();
     second.deleteFile();
 }
+
+TEST_CASE ("The export dialog's Contents option round-trips", "[gui][export][stems]")
+{
+    // The dialog is the only way a user selects stems, so what readOptions
+    // hands back has to be what was picked — and the three modes have to be
+    // distinguishable, since two of them writing the same thing would be a
+    // silent no-op rather than a visible bug.
+    juce::AlertWindow window ("Export Audio", {}, juce::MessageBoxIconType::NoIcon);
+    looper::app::ExportAudioDialog::buildControls (window, 48000.0);
+
+    auto* contentsBox = window.getComboBoxComponent ("contents");
+    REQUIRE (contentsBox != nullptr);
+    REQUIRE (contentsBox->getNumItems() == kNumExportContents);
+
+    for (int i = 0; i < kNumExportContents; ++i)
+    {
+        contentsBox->setSelectedItemIndex (i, juce::dontSendNotification);
+        const auto options = looper::app::ExportAudioDialog::readOptions (window);
+
+        INFO ("contents index " << i << ": " << displayNameFor (options.contents));
+        CHECK ((int) options.contents == i);
+    }
+
+    // The default is the plain master mix — adding stems is opting in, not
+    // something an ordinary export starts doing by surprise.
+    contentsBox->setSelectedItemIndex (0, juce::dontSendNotification);
+    CHECK (looper::app::ExportAudioDialog::readOptions (window).contents
+           == ExportContents::MasterMix);
+}
+
+TEST_CASE ("Export contents modes say what they write", "[engine][export][stems]")
+{
+    // writesMasterMix/writesStems are what exportProject branches on, so
+    // getting one of them backwards would either skip the mix or skip the
+    // stems with nothing to show for it.
+    CHECK (writesMasterMix (ExportContents::MasterMix));
+    CHECK_FALSE (writesStems (ExportContents::MasterMix));
+
+    CHECK (writesMasterMix (ExportContents::MasterMixAndStems));
+    CHECK (writesStems (ExportContents::MasterMixAndStems));
+
+    CHECK_FALSE (writesMasterMix (ExportContents::StemsOnly));
+    CHECK (writesStems (ExportContents::StemsOnly));
+
+    // Every mode writes something. A mode that wrote nothing would look like a
+    // failed export with no error.
+    for (int i = 0; i < kNumExportContents; ++i)
+    {
+        const auto contents = (ExportContents) i;
+        INFO (displayNameFor (contents));
+        CHECK ((writesMasterMix (contents) || writesStems (contents)));
+    }
+}

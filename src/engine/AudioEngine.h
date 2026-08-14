@@ -196,6 +196,16 @@ public:
     void setTrackClips(int index, const std::vector<ClipSlot>& clips);
     void setTrackMuted(int index, bool muted);
     void setTrackSolo(int index, bool solo);
+
+    /** Whether track @p index currently produces sound in the mix: active, not
+        muted, and either soloed or with nothing else soloed.
+
+        The rule itself lives in InstrumentTrack::render — "solo overrides, mute
+        always wins" — and this reports the same answer from the same atomics
+        rather than restating it. Anything deciding *which* tracks to export as
+        stems needs exactly this, and a second copy of the rule would be one
+        more thing to drift. */
+    bool trackContributesToMix(int index) const noexcept;
     void setTrackGainDb(int index, float gainDb);
     void setTrackPan(int index, float pan);
     void setTrackSendLevel(int index, float level);
@@ -362,14 +372,43 @@ public:
         Deliberately excludes the metronome, matching what you'd want exported
         and what the device callback already keeps outside the master bus.
 
-        @p renderSampleRate renders at that rate instead of the device's; 0
-        means the device's. The whole engine is re-prepared for it, so the
-        synths, effects and any hosted plugins all run natively at the export
-        rate rather than the mix being resampled afterwards - which is both
-        simpler and better, since the only resampler here is the linear one in
-        AudioEdits, fine for placing a clip and not fine for a master. */
-    juce::AudioBuffer<float> renderOffline(double startBeats, double lengthBeats,
-                                           double renderSampleRate = 0.0, int blockSize = 512);
+        A struct rather than a growing list of positional arguments: rendering
+        a stem differs from rendering the mix in two more ways, and five
+        anonymous values at a call site is where transposition bugs live. */
+    struct OfflineRenderOptions
+    {
+        double startBeats  = 0.0;
+        double lengthBeats = 0.0;
+
+        /** Renders at this rate instead of the device's; 0 means the device's.
+            The whole engine is re-prepared for it, so the synths, effects and
+            any hosted plugins all run natively at the export rate rather than
+            the mix being resampled afterwards — which is both simpler and
+            better, since the only resampler here is the linear one in
+            AudioEdits: fine for placing a clip, not fine for a master. */
+        double sampleRate = 0.0;
+
+        int blockSize = 512;
+
+        /** Renders only this track, for a stem; -1 renders the whole mix.
+
+            The track still decides for itself whether it sounds — mute, solo
+            and gain all apply exactly as they do live, because this only
+            changes *which* tracks are asked to render, not what they do when
+            asked. */
+        int soloTrack = -1;
+
+        /** Whether the master bus runs: the master filter, delay, reverb, EQ,
+            the mastering rack and the master gain.
+
+            False for stems. Running the mastering rack's limiter on each stem
+            separately would limit the material once per stem and leave the set
+            summing to something quite unlike the mix — stems are pre-master by
+            definition, and the master file is where that processing belongs. */
+        bool applyMasterBus = true;
+    };
+
+    juce::AudioBuffer<float> renderOffline(const OfflineRenderOptions& options);
 
     juce::String loadedClipName() const             { return loadedClipName_; }
     double       loadedClipSeconds() const noexcept { return loadedClipSeconds_; }
@@ -433,8 +472,12 @@ private:
         @p midi is the live input for this block (empty when rendering
         offline). The metronome is deliberately *not* here: it sits outside
         the master bus so it stays off the meter and out of exports. */
+    /** @p soloTrack renders only that track (-1 = all), and @p applyMasterBus
+        runs the master chain. Both defaulted, so the device callback's call is
+        unchanged — this exists for offline stem rendering. */
     void processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffer& midi,
-                      const ProcessContext& context) noexcept;
+                      const ProcessContext& context,
+                      int soloTrack = -1, bool applyMasterBus = true) noexcept;
 
     /** Prepares every node for @p sampleRate / @p blockSize. Called on device
         start, and again either side of an offline render — re-preparing

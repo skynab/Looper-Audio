@@ -347,6 +347,45 @@ int main(int argc, char** argv)
     const float rmsSoloArp         = soloArp.getRMSLevel(0, 0, soloArp.getNumSamples());
     const bool  soloMatchesArpOnly = std::abs(rmsSoloArp - rmsFull) < 1.0e-4f;
 
+    // Stems sum to the mix.
+    //
+    // The property the whole stem export rests on: a stem is one track's share
+    // of the mix, so putting them back together has to reconstruct it. If they
+    // don't sum, they aren't stems — they are eight files that happen to have
+    // come from the same project.
+    //
+    // Checked here rather than through AudioEngine because that needs an audio
+    // device; OfflineRenderer takes the same per-track solo flags, so the
+    // isolation mechanism being tested is the same one.
+    //
+    // Note this deliberately compares against the render *without* a send bus
+    // or master bus, matching what a stem export writes — the master chain is
+    // excluded from stems precisely so this sum holds.
+    const auto stemArp  = OfflineRenderer::render({ arp, bass }, { 0.0f, 0.0f }, { true, false },
+                                                  bpm, sampleRate, seconds);
+    const auto stemBass = OfflineRenderer::render({ arp, bass }, { 0.0f, 0.0f }, { false, true },
+                                                  bpm, sampleRate, seconds);
+    const auto bothTracks = OfflineRenderer::render({ arp, bass }, { 0.0f, 0.0f }, { false, false },
+                                                    bpm, sampleRate, seconds);
+
+    juce::AudioBuffer<float> summedStems(bothTracks.getNumChannels(), bothTracks.getNumSamples());
+    summedStems.clear();
+    for (int ch = 0; ch < summedStems.getNumChannels(); ++ch)
+    {
+        summedStems.addFrom(ch, 0, stemArp,  ch, 0, summedStems.getNumSamples());
+        summedStems.addFrom(ch, 0, stemBass, ch, 0, summedStems.getNumSamples());
+    }
+
+    // Both stems must actually contain something, or a pair of silent buffers
+    // would sum to a silent mix and pass without proving anything.
+    const float stemArpRms  = stemArp.getRMSLevel(0, 0, stemArp.getNumSamples());
+    const float stemBassRms = stemBass.getRMSLevel(0, 0, stemBass.getNumSamples());
+
+    const bool stemsSumToMix = stemArpRms > 1.0e-4f
+                            && stemBassRms > 1.0e-4f
+                            && worstBufferDifference(summedStems, bothTracks) < 1.0e-6f;
+
+
     // Clip-start check: delaying a track's clip start by 2 beats (1s at 120bpm)
     // must produce silence before that point and real signal after it.
     const auto  delayedStart      = OfflineRenderer::render(one, std::vector<float> { 0.0f }, std::vector<bool>{},
@@ -2404,6 +2443,7 @@ int main(int argc, char** argv)
               << "  automationFades=" << (automationFades ? 1 : 0)
               << "  perTrackAutomationWorks=" << (perTrackAutomationWorks ? 1 : 0)
               << "  soloMatchesArpOnly=" << (soloMatchesArpOnly ? 1 : 0)
+              << "  stemsSumToMix=" << (stemsSumToMix ? 1 : 0)
               << "  clipStartGates=" << (clipStartGates ? 1 : 0)
               << "  sendBusChanged=" << (sendBusChanged ? 1 : 0)
               << "  sendBusDelayWorks=" << (sendBusDelayWorks ? 1 : 0)
@@ -2470,7 +2510,7 @@ int main(int argc, char** argv)
                  && gainRatio > 0.47f && gainRatio < 0.53f
                  && delayChanged && filterAttenuates && reverbChanged && automationFades
                  && perTrackAutomationWorks
-                 && soloMatchesArpOnly && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
+                 && soloMatchesArpOnly && stemsSumToMix && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && generativeLoopWorks
                  && drumPadMixWorks && drumPadPitchWorks

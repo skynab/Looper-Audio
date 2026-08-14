@@ -68,7 +68,12 @@ public:
         for (auto format : engine::allExportFormats())
             formatNames.add (engine::displayNameFor (format));
 
+        juce::StringArray contentsNames;
+        for (int i = 0; i < engine::kNumExportContents; ++i)
+            contentsNames.add (engine::displayNameFor ((engine::ExportContents) i));
+
         window.addComboBox ("format", formatNames, "Format:");
+        window.addComboBox ("contents", contentsNames, "Contents:");
         window.addComboBox ("rate", {}, "Sample rate:");
         window.addComboBox ("bits", {}, "Bit depth:");
         window.addComboBox ("quality", {}, "Quality:");
@@ -126,6 +131,11 @@ public:
 
         if (auto* ditherBox = window.getComboBoxComponent ("dither"))
             options.dither = ditherBox->getSelectedItemIndex() == 0;
+
+        if (auto* contentsBox = window.getComboBoxComponent ("contents"))
+            options.contents = (engine::ExportContents)
+                                   juce::jlimit (0, engine::kNumExportContents - 1,
+                                                 contentsBox->getSelectedItemIndex());
 
         return options;
     }

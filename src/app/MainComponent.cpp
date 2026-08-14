@@ -10,6 +10,7 @@
 #include "engine/DrumSynth.h"
 #include "app/ExportAudioDialog.h"
 #include "app/RowWrapLayout.h"
+#include "app/StemNaming.h"
 #include "engine/EffectSlotFactory.h"
 #include "engine/GenerativeLoop.h"
 #include "engine/GuitarChords.h"
@@ -6506,37 +6507,140 @@ void MainComponent::exportProject(const engine::ExportOptions& options)
             return;
 
         file = file.withFileExtension(extension);
-        showBusy("Rendering to " + extension.toUpperCase() + "...");
 
-        // Everything the mix contains, rendered by the mixer itself — see
-        // AudioEngine::renderOffline. This used to be a hand-written second
-        // copy of the signal path, and it had drifted badly: audio clips were
-        // absent entirely, only each track's first clip was rendered, every
-        // per-track effect chain was skipped, the master EQ was skipped, and
-        // the length was hardcoded to eight seconds. Calling the engine means
-        // none of those can come back.
-        //
         // A tail past the last clip so reverb and delay decay into the file
-        // rather than being cut off mid-ring at the final beat.
-        //
-        // Rendered natively at the export rate rather than resampled after —
-        // the engine re-prepares itself for it, so a 44.1k export from a 48k
-        // device runs the synths and effects at 44.1k rather than putting the
-        // mix through a linear interpolator.
+        // rather than being cut off mid-ring at the final beat. Shared by the
+        // mix and every stem, so they all come out the same length and line up
+        // when dropped into another session.
         const double lengthBeats = songEndBeats() + kBounceTailBeats;
-        auto buffer = engine_.renderOffline(0.0, lengthBeats, options.sampleRate);
 
-        if (buffer.getNumSamples() == 0)
+        int  stemsWritten = 0;
+        bool anyFailure   = false;
+
+        if (engine::writesMasterMix(options.contents))
         {
-            showError("Nothing to export");
-            return;
+            showBusy("Rendering to " + extension.toUpperCase() + "...");
+
+            // Everything the mix contains, rendered by the mixer itself — see
+            // AudioEngine::renderOffline. This used to be a hand-written second
+            // copy of the signal path, and it had drifted badly: audio clips
+            // were absent entirely, only each track's first clip was rendered,
+            // every per-track effect chain was skipped, the master EQ was
+            // skipped, and the length was hardcoded to eight seconds. Calling
+            // the engine means none of those can come back.
+            //
+            // Rendered natively at the export rate rather than resampled after
+            // — the engine re-prepares itself for it, so a 44.1k export from a
+            // 48k device runs the synths and effects at 44.1k rather than
+            // putting the mix through a linear interpolator.
+            engine::AudioEngine::OfflineRenderOptions render;
+            render.lengthBeats = lengthBeats;
+            render.sampleRate  = options.sampleRate;
+
+            auto buffer = engine_.renderOffline(render);
+
+            if (buffer.getNumSamples() == 0)
+            {
+                showError("Nothing to export");
+                return;
+            }
+
+            if (! engine::writeAudioFile(file, buffer, options))
+            {
+                showError("Export failed (could not write " + extension.toUpperCase() + ")");
+                return;
+            }
         }
 
-        if (engine::writeAudioFile(file, buffer, options))
-            showStatus("Exported: " + file.getFileName());
+        if (engine::writesStems(options.contents))
+            stemsWritten = exportStems(file, options, lengthBeats, anyFailure);
+
+        // Said plainly, including the count, because the count is the only
+        // place the mute/solo rule becomes visible: stems are the tracks that
+        // sound in the mix, so exporting with solo left on legitimately writes
+        // a single stem. A number makes that obvious instead of mysterious.
+        if (anyFailure)
+            showError("Exported with errors — " + juce::String(stemsWritten)
+                      + " stem(s) written, some failed");
+        else if (engine::writesStems(options.contents) && stemsWritten == 0)
+            showError("No stems written — every track is muted or silenced by a solo");
+        else if (engine::writesStems(options.contents))
+            showStatus("Exported: " + file.getFileName() + " + "
+                       + juce::String(stemsWritten) + " stem(s)");
         else
-            showError("Export failed (could not write " + extension.toUpperCase() + ")");
+            showStatus("Exported: " + file.getFileName());
     });
+}
+
+/** Renders one file per track that sounds in the mix, into a folder beside
+    @p masterFile. Returns how many were written and sets @p anyFailure if any
+    could not be.
+
+    Which tracks those are is asked of the engine rather than worked out here —
+    see AudioEngine::trackContributesToMix. A stem is that track exactly as it
+    sounds in the mix, so the rule deciding it has to be the mixer's own. */
+int MainComponent::exportStems(const juce::File& masterFile,
+                               const engine::ExportOptions& options,
+                               double lengthBeats,
+                               bool& anyFailure)
+{
+    const auto folder = app::stemFolderFor(masterFile);
+    if (! folder.createDirectory())
+    {
+        anyFailure = true;
+        return 0;
+    }
+
+    const auto& song      = history_.current();
+    const auto  extension = engine::extensionFor(options.format);
+    const int   tracks    = juce::jmin((int) song.tracks.size(), engine_.maxTracks());
+
+    // Gathered first so the busy messages can say "2 of 5" rather than
+    // counting up to a total nobody knows.
+    std::vector<int> contributing;
+    for (int i = 0; i < tracks; ++i)
+        if (engine_.trackContributesToMix(i))
+            contributing.push_back(i);
+
+    int written = 0;
+
+    for (size_t n = 0; n < contributing.size(); ++n)
+    {
+        const int index = contributing[n];
+        const auto name = juce::String(song.tracks[(size_t) index].name);
+
+        // The render blocks the message thread, so this is the only feedback
+        // there is — see the note in the plan. showBusy forces a repaint before
+        // returning, so each message does actually reach the screen.
+        showBusy("Rendering stem " + juce::String((int) n + 1) + " of "
+                 + juce::String((int) contributing.size()) + ": " + name + "...");
+
+        engine::AudioEngine::OfflineRenderOptions render;
+        render.lengthBeats    = lengthBeats;
+        render.sampleRate     = options.sampleRate;
+        render.soloTrack      = index;
+        render.applyMasterBus = false; // stems are pre-master — see OfflineRenderOptions
+
+        auto buffer = engine_.renderOffline(render);
+        if (buffer.getNumSamples() == 0)
+        {
+            anyFailure = true;
+            continue;
+        }
+
+        // Numbered by the track's position in the song, not by how many stems
+        // have been written — so the file names line up with the tracks on
+        // screen even when a muted track in the middle has been skipped.
+        const auto stemFile = folder.getChildFile(
+            app::stemFileName(index + 1, song.tracks[(size_t) index].name, extension));
+
+        if (engine::writeAudioFile(stemFile, buffer, options))
+            ++written;
+        else
+            anyFailure = true;
+    }
+
+    return written;
 }
 
 /** Moves the playhead to @p beat, clamped at zero. */
