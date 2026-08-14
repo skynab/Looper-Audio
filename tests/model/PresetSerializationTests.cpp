@@ -31,6 +31,8 @@ namespace
         drive.drive.level    = 0.55f;
         drive.drive.hardClip = true;
         drive.drive.cabinet  = false;
+        drive.drive.asymmetry  = 0.35f;
+        drive.drive.oversample = true;
 
         EffectSlot plugin;
         plugin.kind             = EffectKind::Plugin;

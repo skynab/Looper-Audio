@@ -140,6 +140,8 @@ static Song makeSampleSong()
         driveSlot.drive.level    = 0.44f;
         driveSlot.drive.hardClip = true;
         driveSlot.drive.cabinet  = false;
+        driveSlot.drive.asymmetry  = 0.35f;
+        driveSlot.drive.oversample = true;
 
         EffectSlot compSlot;
         compSlot.kind                    = EffectKind::Compressor;
@@ -227,6 +229,8 @@ static Song makeSampleSong()
     guitar.pickPosition  = 0.11f;
     guitar.pickHardness  = 0.9f;
     guitar.muteOnNoteOff = 0.25f;
+    guitar.pickupResonanceHz = 4200.0f;
+    guitar.pickupQ           = 2.25f;
 
     return s;
 }
@@ -293,6 +297,8 @@ TEST_CASE("Guitar settings round-trip, tuning included", "[model][io]")
     REQUIRE(guitar.decaySeconds == 4.5f);
     REQUIRE(guitar.pickPosition == 0.11f);
     REQUIRE(guitar.muteOnNoteOff == 0.25f);
+    REQUIRE(guitar.pickupResonanceHz == 4200.0f);
+    REQUIRE(guitar.pickupQ == 2.25f);
 }
 
 TEST_CASE("An effect chain round-trips with its order and mixed kinds", "[model][io]")
@@ -316,6 +322,8 @@ TEST_CASE("An effect chain round-trips with its order and mixed kinds", "[model]
     REQUIRE(chain[3].drive.level == 0.44f);
     REQUIRE(chain[3].drive.hardClip);
     REQUIRE_FALSE(chain[3].drive.cabinet);
+    REQUIRE(chain[3].drive.asymmetry == 0.35f);
+    REQUIRE(chain[3].drive.oversample);
 
     REQUIRE(chain[4].kind == EffectKind::Compressor);
     REQUIRE(chain[4].compressor.thresholdDb == -23.5f);
@@ -568,6 +576,49 @@ TEST_CASE("A project from before the mastering rack opens neutral", "[model][io]
     REQUIRE_FALSE(song.mastering.enabled);
     REQUIRE(song.mastering.peakQ > 0.0f);
     REQUIRE(song.mastering.lowShelfHz > 0.0f);
+}
+
+TEST_CASE("A v29 guitar track opens with a real pickup, not a 0Hz one", "[model][io]")
+{
+    // v29's GUITAR line ends after muteOnNoteOff. The two pickup fields are
+    // read from the same istringstream, so they must be seeded with the
+    // defaults before the extraction - left at 0 they would give a 0Hz, 0-Q
+    // resonance, i.e. a broken filter on every project made before v30.
+    const std::string v29 =
+        "LOOPER 29\n"
+        "BPM 120\n"
+        "TSNUM 4\n"
+        "TSDEN 4\n"
+        "NEXTID 3\n"
+        "FILTER 0 0 1000 0.707\n"
+        "DELAY 0 300 0.35 0.3\n"
+        "REVERB 0 0.5 0.5 0.3\n"
+        "SENDBUS 0 0 0.5 0.5 300 0.35 0.5\n"
+        "EQ 0 0 0 0\n"
+        "MASTERING 0 0 0 0 0 0 0 0 0 0 200 0.707 1000 0.707 4000 0.707\n"
+        "PROJECTROOT \n"
+        "AUTO 0\n"
+        "SCENES 0\n"
+        "TRACKS 1\n"
+        "TRACK 1 0 0 0 0 2 Guitar\n"
+        "TAUTOS 0\n"
+        "GUITAR 40 45 50 55 59 64 3 0.7 0.22 0.6 0.25\n"
+        "FXCHAIN 0\n"
+        "SESSION 0\n"
+        "CLIPS 1\n"
+        "CLIP 2 0 0 4 4 \n"
+        "CLIPGAIN 0\n"
+        "NOTES 0\n";
+
+    Song        song;
+    std::string error;
+    REQUIRE(deserialize(v29, song, &error));
+    REQUIRE(song.tracks.size() == 1);
+
+    const auto& guitar = song.tracks.front().guitarSettings;
+    REQUIRE(guitar.muteOnNoteOff == 0.25f); // the last field the old line had
+    REQUIRE(guitar.pickupResonanceHz == GuitarSettings {}.pickupResonanceHz);
+    REQUIRE(guitar.pickupQ == GuitarSettings {}.pickupQ);
 }
 
 TEST_CASE("Per-clip gain round-trips", "[model][io]")

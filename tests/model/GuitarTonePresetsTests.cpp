@@ -101,6 +101,7 @@ TEST_CASE("Each guitar tone slot's active settings are enabled, matching its kin
                 case model::EffectKind::Chorus:     REQUIRE(slot.chorus.enabled); break;
                 case model::EffectKind::Wobble:     REQUIRE(slot.wobble.enabled); break;
                 case model::EffectKind::Gate:       REQUIRE(slot.gate.enabled); break;
+                case model::EffectKind::Eq:         REQUIRE(slot.eqPedal.enabled); break;
                 case model::EffectKind::Plugin:     break; // no on/off flag of its own
             }
         }

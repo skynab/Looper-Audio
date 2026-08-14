@@ -23,11 +23,16 @@ namespace looper::model
     change has to consider the other's constraints. JUCE-free for the same
     reason Serialization.h is: headless round-trip tests.
 */
-inline constexpr int kPresetFormatVersion = 3; // v2: SYNTH gains the filter-envelope,
+inline constexpr int kPresetFormatVersion = 4; // v2: SYNTH gains the filter-envelope,
                                                 // sub-oscillator, and unison fields
                                                 // (see Serialization.h's matching v26)
                                                 // v3: FXSLOT gains the gate pedal
                                                 // (see Serialization.h's matching v27)
+                                                // v4: FXSLOT gains drive asymmetry
+                                                // and oversampling, plus the EQ
+                                                // pedal, appended at the end of
+                                                // the line
+                                                // (see Serialization.h's matching v30)
 
 namespace preset_detail
 {
@@ -112,7 +117,19 @@ inline std::string serializePreset(const SynthPreset& preset)
             << num((double) slot.gate.rangeDb) << " "
             << num((double) slot.gate.attackMs) << " "
             << num((double) slot.gate.holdMs) << " "
-            << num((double) slot.gate.releaseMs) << "\n";
+            << num((double) slot.gate.releaseMs) << " "
+            // Appended, not placed with the other drive fields: the line is
+            // positional, so a mid-line insert would make every older preset
+            // read its values into the wrong slots.
+            << num((double) slot.drive.asymmetry) << " "
+            << (slot.drive.oversample ? 1 : 0) << " "
+            << num((double) slot.eqPedal.lowShelfHz) << " "
+            << num((double) slot.eqPedal.lowShelfDb) << " "
+            << num((double) slot.eqPedal.midHz) << " "
+            << num((double) slot.eqPedal.midDb) << " "
+            << num((double) slot.eqPedal.midQ) << " "
+            << num((double) slot.eqPedal.highShelfHz) << " "
+            << num((double) slot.eqPedal.highShelfDb) << "\n";
 
         if (slot.kind == EffectKind::Plugin)
         {
@@ -242,6 +259,11 @@ inline bool deserializePreset(const std::string& text, SynthPreset& result, std:
         double wobbleResonance = 0.9, wobbleMix = 1.0;
         double gateThreshold = -40.0, gateRange = 60.0, gateAttack = 2.0;
         double gateHold = 20.0, gateRelease = 150.0;
+        double driveAsymmetry = 0.0;
+        int    driveOversample = 0;
+        double eqLowHz = 100.0, eqLowDb = 0.0;
+        double eqMidHz = 800.0, eqMidDb = 0.0, eqMidQ = 1.0;
+        double eqHighHz = 4000.0, eqHighDb = 0.0;
 
         ss >> kind >> enabled >> filterMode >> cutoff >> resonance
            >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix
@@ -250,7 +272,9 @@ inline bool deserializePreset(const std::string& text, SynthPreset& result, std:
            >> tremRate >> tremDepth
            >> chorusRate >> chorusDepth >> chorusMix
            >> wobbleRateBeats >> wobbleDepth >> wobbleBaseCutoffHz >> wobbleResonance >> wobbleMix
-           >> gateThreshold >> gateRange >> gateAttack >> gateHold >> gateRelease;
+           >> gateThreshold >> gateRange >> gateAttack >> gateHold >> gateRelease
+           >> driveAsymmetry >> driveOversample
+           >> eqLowHz >> eqLowDb >> eqMidHz >> eqMidDb >> eqMidQ >> eqHighHz >> eqHighDb;
 
         EffectSlot slot;
         slot.kind              = (EffectKind) kind;
@@ -273,6 +297,8 @@ inline bool deserializePreset(const std::string& text, SynthPreset& result, std:
         slot.drive.level       = (float) driveLevel;
         slot.drive.hardClip    = driveHard != 0;
         slot.drive.cabinet     = driveCab != 0;
+        slot.drive.asymmetry   = (float) driveAsymmetry;
+        slot.drive.oversample  = driveOversample != 0;
         slot.compressor.enabled     = slot.enabled && slot.kind == EffectKind::Compressor;
         slot.compressor.thresholdDb = (float) compThreshold;
         slot.compressor.ratio       = (float) compRatio;
@@ -292,6 +318,14 @@ inline bool deserializePreset(const std::string& text, SynthPreset& result, std:
         slot.wobble.baseCutoffHz    = (float) wobbleBaseCutoffHz;
         slot.wobble.resonance       = (float) wobbleResonance;
         slot.wobble.mix             = (float) wobbleMix;
+        slot.eqPedal.enabled     = slot.enabled && slot.kind == EffectKind::Eq;
+        slot.eqPedal.lowShelfHz  = (float) eqLowHz;
+        slot.eqPedal.lowShelfDb  = (float) eqLowDb;
+        slot.eqPedal.midHz       = (float) eqMidHz;
+        slot.eqPedal.midDb       = (float) eqMidDb;
+        slot.eqPedal.midQ        = (float) eqMidQ;
+        slot.eqPedal.highShelfHz = (float) eqHighHz;
+        slot.eqPedal.highShelfDb = (float) eqHighDb;
         slot.gate.enabled           = slot.enabled && slot.kind == EffectKind::Gate;
         slot.gate.thresholdDb       = (float) gateThreshold;
         slot.gate.rangeDb           = (float) gateRange;

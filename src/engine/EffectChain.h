@@ -29,7 +29,8 @@ enum class EffectNodeKind
     Tremolo    = 6,
     Chorus     = 7,
     Wobble     = 8,
-    Gate       = 9
+    Gate       = 9,
+    Eq         = 10
 };
 
 /** What a chain slot should be. Carries plugin identity as plain strings —
@@ -77,6 +78,8 @@ struct EffectSlotParams
     float driveLevel    = 0.7f;
     bool  driveHardClip = false;
     bool  driveCabinet  = true;
+    float driveAsymmetry = 0.0f;
+    bool  driveOversample = false;
 
     float compThresholdDb = -18.0f;
     float compRatio       = 4.0f;
@@ -102,6 +105,14 @@ struct EffectSlotParams
     float gateAttackMs    = 2.0f;
     float gateHoldMs      = 20.0f;
     float gateReleaseMs   = 150.0f;
+
+    float eqLowShelfHz  = 100.0f;
+    float eqLowShelfDb  = 0.0f;
+    float eqMidHz       = 800.0f;
+    float eqMidDb       = 0.0f;
+    float eqMidQ        = 1.0f;
+    float eqHighShelfHz = 4000.0f;
+    float eqHighShelfDb = 0.0f;
 };
 
 /** One effect in a track's chain. Virtual dispatch costs one indirect call
@@ -210,6 +221,16 @@ struct GateNode final : EffectProcessor
     void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
 };
 
+struct EqNode final : EffectProcessor
+{
+    EqPedalEffect effect;
+
+    EffectNodeKind kind() const noexcept override { return EffectNodeKind::Eq; }
+    void prepare(double sampleRate, int blockSize) override { effect.prepare(sampleRate, blockSize); }
+    void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
+    void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
+};
+
 struct ReverbNode final : EffectProcessor
 {
     ReverbEffect effect;
@@ -219,6 +240,92 @@ struct ReverbNode final : EffectProcessor
     void process(juce::AudioBuffer<float>& buffer) override { effect.process(buffer); }
     void setEnabled(bool enabled) override { effect.setEnabled(enabled); }
 };
+
+/** Applies one slot's parameters to a node, by dynamic kind.
+
+    A free function rather than only an EffectChain member because a node is
+    also configured outside a chain - the offline "apply effects to a
+    selection" path and the bounce tool both build a single node and need it
+    set up exactly as the live chain would. Having the dispatch in one place
+    is what stops those from drifting, which they had. */
+inline void applyParams(EffectProcessor& node, const EffectSlotParams& params)
+{
+        node.setEnabled(params.enabled);
+
+        if (auto* filter = dynamic_cast<FilterNode*>(&node))
+        {
+            filter->effect.setMode(params.filterMode);
+            filter->effect.setCutoff(params.filterCutoff);
+            filter->effect.setResonance(params.filterResonance);
+        }
+        else if (auto* delay = dynamic_cast<DelayNode*>(&node))
+        {
+            delay->effect.setTimeMs(params.delayTimeMs);
+            delay->effect.setFeedback(params.delayFeedback);
+            delay->effect.setMix(params.delayMix);
+        }
+        else if (auto* reverb = dynamic_cast<ReverbNode*>(&node))
+        {
+            reverb->effect.setRoomSize(params.reverbRoomSize);
+            reverb->effect.setDamping(params.reverbDamping);
+            reverb->effect.setMix(params.reverbMix);
+        }
+        else if (auto* comp = dynamic_cast<CompressorNode*>(&node))
+        {
+            comp->effect.setThresholdDb(params.compThresholdDb);
+            comp->effect.setRatio(params.compRatio);
+            comp->effect.setAttackMs(params.compAttackMs);
+            comp->effect.setReleaseMs(params.compReleaseMs);
+            comp->effect.setMakeUpDb(params.compMakeUpDb);
+        }
+        else if (auto* chorus = dynamic_cast<ChorusNode*>(&node))
+        {
+            chorus->effect.setRateHz(params.chorusRateHz);
+            chorus->effect.setDepth(params.chorusDepth);
+            chorus->effect.setMix(params.chorusMix);
+        }
+        else if (auto* trem = dynamic_cast<TremoloNode*>(&node))
+        {
+            trem->effect.setRateHz(params.tremoloRateHz);
+            trem->effect.setDepth(params.tremoloDepth);
+        }
+        else if (auto* wobble = dynamic_cast<WobbleNode*>(&node))
+        {
+            wobble->effect.setRateInBeats(params.wobbleRateBeats);
+            wobble->effect.setDepth(params.wobbleDepth);
+            wobble->effect.setBaseCutoffHz(params.wobbleBaseCutoffHz);
+            wobble->effect.setResonance(params.wobbleResonance);
+            wobble->effect.setMix(params.wobbleMix);
+        }
+        else if (auto* drive = dynamic_cast<DriveNode*>(&node))
+        {
+            drive->effect.setDrive(params.driveAmount);
+            drive->effect.setTone(params.driveTone);
+            drive->effect.setLevel(params.driveLevel);
+            drive->effect.setHardClip(params.driveHardClip);
+            drive->effect.setCabinet(params.driveCabinet);
+            drive->effect.setAsymmetry(params.driveAsymmetry);
+            drive->effect.setOversample(params.driveOversample);
+        }
+        else if (auto* eq = dynamic_cast<EqNode*>(&node))
+        {
+            eq->effect.setLowShelfHz(params.eqLowShelfHz);
+            eq->effect.setLowShelfDb(params.eqLowShelfDb);
+            eq->effect.setMidHz(params.eqMidHz);
+            eq->effect.setMidDb(params.eqMidDb);
+            eq->effect.setMidQ(params.eqMidQ);
+            eq->effect.setHighShelfHz(params.eqHighShelfHz);
+            eq->effect.setHighShelfDb(params.eqHighShelfDb);
+        }
+        else if (auto* gate = dynamic_cast<GateNode*>(&node))
+        {
+            gate->effect.setThresholdDb(params.gateThresholdDb);
+            gate->effect.setRangeDb(params.gateRangeDb);
+            gate->effect.setAttackMs(params.gateAttackMs);
+            gate->effect.setHoldMs(params.gateHoldMs);
+            gate->effect.setReleaseMs(params.gateReleaseMs);
+        }
+}
 
 /**
     A track's insert chain: effects in order, each processing in place.
@@ -274,70 +381,7 @@ public:
         if (index >= nodes_.size())
             return;
 
-        auto& node = *nodes_[index];
-        node.setEnabled(params.enabled);
-
-        if (auto* filter = dynamic_cast<FilterNode*>(&node))
-        {
-            filter->effect.setMode(params.filterMode);
-            filter->effect.setCutoff(params.filterCutoff);
-            filter->effect.setResonance(params.filterResonance);
-        }
-        else if (auto* delay = dynamic_cast<DelayNode*>(&node))
-        {
-            delay->effect.setTimeMs(params.delayTimeMs);
-            delay->effect.setFeedback(params.delayFeedback);
-            delay->effect.setMix(params.delayMix);
-        }
-        else if (auto* reverb = dynamic_cast<ReverbNode*>(&node))
-        {
-            reverb->effect.setRoomSize(params.reverbRoomSize);
-            reverb->effect.setDamping(params.reverbDamping);
-            reverb->effect.setMix(params.reverbMix);
-        }
-        else if (auto* comp = dynamic_cast<CompressorNode*>(&node))
-        {
-            comp->effect.setThresholdDb(params.compThresholdDb);
-            comp->effect.setRatio(params.compRatio);
-            comp->effect.setAttackMs(params.compAttackMs);
-            comp->effect.setReleaseMs(params.compReleaseMs);
-            comp->effect.setMakeUpDb(params.compMakeUpDb);
-        }
-        else if (auto* chorus = dynamic_cast<ChorusNode*>(&node))
-        {
-            chorus->effect.setRateHz(params.chorusRateHz);
-            chorus->effect.setDepth(params.chorusDepth);
-            chorus->effect.setMix(params.chorusMix);
-        }
-        else if (auto* trem = dynamic_cast<TremoloNode*>(&node))
-        {
-            trem->effect.setRateHz(params.tremoloRateHz);
-            trem->effect.setDepth(params.tremoloDepth);
-        }
-        else if (auto* wobble = dynamic_cast<WobbleNode*>(&node))
-        {
-            wobble->effect.setRateInBeats(params.wobbleRateBeats);
-            wobble->effect.setDepth(params.wobbleDepth);
-            wobble->effect.setBaseCutoffHz(params.wobbleBaseCutoffHz);
-            wobble->effect.setResonance(params.wobbleResonance);
-            wobble->effect.setMix(params.wobbleMix);
-        }
-        else if (auto* drive = dynamic_cast<DriveNode*>(&node))
-        {
-            drive->effect.setDrive(params.driveAmount);
-            drive->effect.setTone(params.driveTone);
-            drive->effect.setLevel(params.driveLevel);
-            drive->effect.setHardClip(params.driveHardClip);
-            drive->effect.setCabinet(params.driveCabinet);
-        }
-        else if (auto* gate = dynamic_cast<GateNode*>(&node))
-        {
-            gate->effect.setThresholdDb(params.gateThresholdDb);
-            gate->effect.setRangeDb(params.gateRangeDb);
-            gate->effect.setAttackMs(params.gateAttackMs);
-            gate->effect.setHoldMs(params.gateHoldMs);
-            gate->effect.setReleaseMs(params.gateReleaseMs);
-        }
+        engine::applyParams(*nodes_[index], params);
     }
 
     EffectProcessor* nodeAt(size_t index) { return index < nodes_.size() ? nodes_[index].get() : nullptr; }

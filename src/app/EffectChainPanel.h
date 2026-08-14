@@ -93,6 +93,8 @@ public:
         setupSlider(driveAmount_, 1.0, 40.0, 0.1, " x", [this] { pushParams(); });
         setupSlider(driveTone_, 0.0, 100.0, 1.0, " %", [this] { pushParams(); });
         setupSlider(driveLevel_, 0.0, 150.0, 1.0, " %", [this] { pushParams(); });
+        setupSlider(driveAsymmetry_, -100.0, 100.0, 1.0, " %", [this] { pushParams(); });
+        driveAsymmetry_.setTooltip("Bias into the clipper - adds the even harmonics a symmetric curve can't make");
 
         driveHardClip_.setButtonText("Fuzz (hard clip)");
         driveHardClip_.onClick = [this] { reportInstantEdit(); };
@@ -102,6 +104,20 @@ public:
         driveCabinet_.setTooltip("Speaker simulation - without it, distortion is heard as fizz");
         driveCabinet_.onClick = [this] { reportInstantEdit(); };
         addChildComponent(driveCabinet_);
+
+        driveOversample_.setButtonText("Oversample (4x)");
+        driveOversample_.setTooltip("Runs the clipper at 4x - costs CPU, removes the aliasing grit of high gain");
+        driveOversample_.onClick = [this] { reportInstantEdit(); };
+        addChildComponent(driveOversample_);
+
+        setupSlider(eqLowShelfHz_, 20.0, 1000.0, 1.0, " Hz", [this] { pushParams(); });
+        setupSlider(eqLowShelfDb_, -24.0, 24.0, 0.5, " dB", [this] { pushParams(); });
+        setupSlider(eqMidHz_, 100.0, 8000.0, 1.0, " Hz", [this] { pushParams(); });
+        setupSlider(eqMidDb_, -24.0, 24.0, 0.5, " dB", [this] { pushParams(); });
+        eqMidDb_.setTooltip("The mid scoop or push - the EQ decision a rock or metal tone turns on");
+        setupSlider(eqMidQ_, 0.2, 8.0, 0.05, "", [this] { pushParams(); });
+        setupSlider(eqHighShelfHz_, 1000.0, 16000.0, 10.0, " Hz", [this] { pushParams(); });
+        setupSlider(eqHighShelfDb_, -24.0, 24.0, 0.5, " dB", [this] { pushParams(); });
 
         setupSlider(compThreshold_, -60.0, 0.0, 0.5, " dB", [this] { pushParams(); });
         setupSlider(compRatio_, 1.0, 20.0, 0.1, " :1", [this] { pushParams(); });
@@ -291,7 +307,8 @@ public:
         else if (kind == model::EffectKind::Reverb) { row(roomSize_); row(damping_); row(mix_); }
         else if (kind == model::EffectKind::Drive)
         {
-            row(driveAmount_); row(driveTone_); row(driveLevel_); row(driveHardClip_); row(driveCabinet_);
+            row(driveAmount_); row(driveTone_); row(driveLevel_); row(driveAsymmetry_);
+            row(driveHardClip_); row(driveCabinet_); row(driveOversample_);
         }
         else if (kind == model::EffectKind::Compressor)
         {
@@ -309,6 +326,12 @@ public:
         else if (kind == model::EffectKind::Gate)
         {
             row(gateThreshold_); row(gateRange_); row(gateAttack_); row(gateHold_); row(gateRelease_);
+        }
+        else if (kind == model::EffectKind::Eq)
+        {
+            row(eqLowShelfHz_); row(eqLowShelfDb_);
+            row(eqMidHz_); row(eqMidDb_); row(eqMidQ_);
+            row(eqHighShelfHz_); row(eqHighShelfDb_);
         }
     }
 
@@ -352,6 +375,7 @@ private:
             case model::EffectKind::Chorus:     return "Chorus";
             case model::EffectKind::Wobble:     return "Wobble";
             case model::EffectKind::Gate:       return "Gate";
+            case model::EffectKind::Eq:         return "EQ";
             case model::EffectKind::Plugin:
                 // A plugin the machine no longer has still names itself, which
                 // is the whole reason the document stores the name.
@@ -381,6 +405,7 @@ private:
         pedals.addItem(8, "Chorus");
         pedals.addItem(9, "Wobble");
         pedals.addItem(10, "Gate");
+        pedals.addItem(11, "EQ");
         menu.addSubMenu("Pedals", pedals);
         menu.addSeparator();
 
@@ -412,7 +437,7 @@ private:
             else if (result == 8 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Chorus);
             else if (result == 9 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Wobble);
             else if (result == 10 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Gate);
-            else if (result == 5 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Drive);
+            else if (result == 11 && onBuiltInAdded) onBuiltInAdded(model::EffectKind::Eq);
             else if (result == 4 && onScanRequested) onScanRequested();
             else if (result >= 100)
             {
@@ -439,12 +464,14 @@ private:
         return { &filterMode_, &cutoff_, &resonance_, &timeMs_,
                  &feedback_, &mix_, &roomSize_, &damping_, &editorButton_,
                  &driveAmount_, &driveTone_, &driveLevel_,
-                 &driveHardClip_, &driveCabinet_,
+                 &driveAsymmetry_, &driveHardClip_, &driveCabinet_, &driveOversample_,
                  &compThreshold_, &compRatio_, &compAttack_,
                  &compRelease_, &compMakeUp_, &tremRate_, &tremDepth_,
                  &chorusRate_, &chorusDepth_, &chorusMix_,
                  &wobbleRate_, &wobbleDepth_, &wobbleCutoff_, &wobbleResonance_, &wobbleMix_,
-                 &gateThreshold_, &gateRange_, &gateAttack_, &gateHold_, &gateRelease_ };
+                 &gateThreshold_, &gateRange_, &gateAttack_, &gateHold_, &gateRelease_,
+                 &eqLowShelfHz_, &eqLowShelfDb_, &eqMidHz_, &eqMidDb_, &eqMidQ_,
+                 &eqHighShelfHz_, &eqHighShelfDb_ };
     }
 
     void setupSlider(juce::Slider& slider, double lo, double hi, double step,
@@ -512,9 +539,12 @@ private:
                 driveLevel_.setValue(slot.drive.level * 100.0, juce::dontSendNotification);
                 driveHardClip_.setToggleState(slot.drive.hardClip, juce::dontSendNotification);
                 driveCabinet_.setToggleState(slot.drive.cabinet, juce::dontSendNotification);
+                driveAsymmetry_.setValue(slot.drive.asymmetry * 100.0, juce::dontSendNotification);
+                driveOversample_.setToggleState(slot.drive.oversample, juce::dontSendNotification);
                 driveAmount_.setVisible(true); driveTone_.setVisible(true);
                 driveLevel_.setVisible(true); driveHardClip_.setVisible(true);
-                driveCabinet_.setVisible(true);
+                driveCabinet_.setVisible(true); driveAsymmetry_.setVisible(true);
+                driveOversample_.setVisible(true);
                 break;
 
             case model::EffectKind::Compressor:
@@ -564,6 +594,19 @@ private:
                 gateRelease_.setVisible(true);
                 break;
 
+            case model::EffectKind::Eq:
+                eqLowShelfHz_.setValue(slot.eqPedal.lowShelfHz, juce::dontSendNotification);
+                eqLowShelfDb_.setValue(slot.eqPedal.lowShelfDb, juce::dontSendNotification);
+                eqMidHz_.setValue(slot.eqPedal.midHz, juce::dontSendNotification);
+                eqMidDb_.setValue(slot.eqPedal.midDb, juce::dontSendNotification);
+                eqMidQ_.setValue(slot.eqPedal.midQ, juce::dontSendNotification);
+                eqHighShelfHz_.setValue(slot.eqPedal.highShelfHz, juce::dontSendNotification);
+                eqHighShelfDb_.setValue(slot.eqPedal.highShelfDb, juce::dontSendNotification);
+                eqLowShelfHz_.setVisible(true); eqLowShelfDb_.setVisible(true);
+                eqMidHz_.setVisible(true); eqMidDb_.setVisible(true); eqMidQ_.setVisible(true);
+                eqHighShelfHz_.setVisible(true); eqHighShelfDb_.setVisible(true);
+                break;
+
             case model::EffectKind::Plugin:
                 editorButton_.setVisible(true);
                 break;
@@ -605,6 +648,8 @@ private:
                 slot.drive.level    = (float) (driveLevel_.getValue() / 100.0);
                 slot.drive.hardClip = driveHardClip_.getToggleState();
                 slot.drive.cabinet  = driveCabinet_.getToggleState();
+                slot.drive.asymmetry  = (float) (driveAsymmetry_.getValue() / 100.0);
+                slot.drive.oversample = driveOversample_.getToggleState();
                 break;
             case model::EffectKind::Compressor:
                 slot.compressor.thresholdDb = (float) compThreshold_.getValue();
@@ -635,6 +680,15 @@ private:
                 slot.gate.attackMs    = (float) gateAttack_.getValue();
                 slot.gate.holdMs      = (float) gateHold_.getValue();
                 slot.gate.releaseMs   = (float) gateRelease_.getValue();
+                break;
+            case model::EffectKind::Eq:
+                slot.eqPedal.lowShelfHz  = (float) eqLowShelfHz_.getValue();
+                slot.eqPedal.lowShelfDb  = (float) eqLowShelfDb_.getValue();
+                slot.eqPedal.midHz       = (float) eqMidHz_.getValue();
+                slot.eqPedal.midDb       = (float) eqMidDb_.getValue();
+                slot.eqPedal.midQ        = (float) eqMidQ_.getValue();
+                slot.eqPedal.highShelfHz = (float) eqHighShelfHz_.getValue();
+                slot.eqPedal.highShelfDb = (float) eqHighShelfDb_.getValue();
                 break;
             case model::EffectKind::Plugin:
                 return; // a plugin's parameters live in its own editor
@@ -678,7 +732,10 @@ private:
     juce::Slider       chorusRate_, chorusDepth_, chorusMix_;
     juce::Slider       wobbleRate_, wobbleDepth_, wobbleCutoff_, wobbleResonance_, wobbleMix_;
     juce::Slider       gateThreshold_, gateRange_, gateAttack_, gateHold_, gateRelease_;
-    juce::ToggleButton driveHardClip_, driveCabinet_;
+    juce::Slider       eqLowShelfHz_, eqLowShelfDb_, eqMidHz_, eqMidDb_, eqMidQ_,
+                       eqHighShelfHz_, eqHighShelfDb_;
+    juce::ToggleButton driveHardClip_, driveCabinet_, driveOversample_;
+    juce::Slider       driveAsymmetry_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EffectChainPanel)
 };

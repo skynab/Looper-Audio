@@ -34,6 +34,14 @@ struct GuitarSettings
     // 1 stops them dead. See engine::GuitarNode for why ringing is the default.
     float muteOnNoteOff = 0.0f;
 
+    // The pickup's electrical resonance - see engine::Pickup. A magnetic
+    // pickup is an RLC circuit with a peak at 2-3kHz (humbucker) or 4-6kHz
+    // (single coil) and a 12dB/oct rolloff above it, and that peak is most of
+    // what makes an electric guitar sound electric rather than like a plucked
+    // string. Nothing in this signal path produced a resonance before it.
+    float pickupResonanceHz = 3000.0f;
+    float pickupQ           = 1.4f;
+
     bool operator==(const GuitarSettings&) const = default;
 };
 

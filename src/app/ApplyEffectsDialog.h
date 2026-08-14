@@ -139,6 +139,7 @@ private:
             case model::EffectKind::Chorus:     slot.chorus.enabled = true; break;
             case model::EffectKind::Wobble:     slot.wobble.enabled = true; break;
             case model::EffectKind::Gate:       slot.gate.enabled = true; break;
+            case model::EffectKind::Eq:         slot.eqPedal.enabled = true; break;
             case model::EffectKind::Plugin:     break; // no flag of its own
         }
     }

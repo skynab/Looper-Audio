@@ -64,8 +64,14 @@ namespace looper::model
           right answer anyway.
       29  + MASTERING, the master-bus mastering rack. Read the same tolerant
           way as EQ in v25: absent in older files, where every field's
-          default is a no-op, so an old project sounds identical. */
-inline constexpr int kFormatVersion = 29;
+          default is a no-op, so an old project sounds identical.
+      30  GUITAR gains the pickup resonance (frequency + Q), and FXSLOT gains
+          nine more fields appended at the end of its line: two for the drive
+          (asymmetry, oversampling) and seven for the new EQ pedal. All read
+          the tolerant way, and every default is the behaviour that existed
+          before them. Appended rather than grouped with the other drive
+          fields because the line is positional. */
+inline constexpr int kFormatVersion = 30;
 namespace detail
 {
     inline std::string num(double v)
@@ -221,7 +227,9 @@ inline std::string serialize(const Song& song)
             << " " << detail::num((double) guitar.brightness)
             << " " << detail::num((double) guitar.pickPosition)
             << " " << detail::num((double) guitar.pickHardness)
-            << " " << detail::num((double) guitar.muteOnNoteOff) << "\n";
+            << " " << detail::num((double) guitar.muteOnNoteOff)
+            << " " << detail::num((double) guitar.pickupResonanceHz)
+            << " " << detail::num((double) guitar.pickupQ) << "\n";
 
         // The effect chain, in order. A slot carries every built-in's settings
         // regardless of its kind, so switching kind doesn't lose the others.
@@ -262,7 +270,19 @@ inline std::string serialize(const Song& song)
                 << detail::num((double) slot.gate.rangeDb) << " "
                 << detail::num((double) slot.gate.attackMs) << " "
                 << detail::num((double) slot.gate.holdMs) << " "
-                << detail::num((double) slot.gate.releaseMs) << "\n";
+                << detail::num((double) slot.gate.releaseMs) << " "
+                // Appended rather than written next to the other drive fields:
+                // the line is positional, so inserting mid-line would make
+                // every older file read its own values into the wrong slots.
+                << detail::num((double) slot.drive.asymmetry) << " "
+                << (slot.drive.oversample ? 1 : 0) << " "
+                << detail::num((double) slot.eqPedal.lowShelfHz) << " "
+                << detail::num((double) slot.eqPedal.lowShelfDb) << " "
+                << detail::num((double) slot.eqPedal.midHz) << " "
+                << detail::num((double) slot.eqPedal.midDb) << " "
+                << detail::num((double) slot.eqPedal.midQ) << " "
+                << detail::num((double) slot.eqPedal.highShelfHz) << " "
+                << detail::num((double) slot.eqPedal.highShelfDb) << "\n";
 
             if (slot.kind == EffectKind::Plugin)
             {
@@ -700,12 +720,23 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 gs >> track.guitarSettings.tuning[(size_t) s];
 
             double decay = 0.0, brightness = 0.0, position = 0.0, hardness = 0.0, mute = 0.0;
-            gs >> decay >> brightness >> position >> hardness >> mute;
-            track.guitarSettings.decaySeconds  = (float) decay;
-            track.guitarSettings.brightness    = (float) brightness;
-            track.guitarSettings.pickPosition  = (float) position;
-            track.guitarSettings.pickHardness  = (float) hardness;
-            track.guitarSettings.muteOnNoteOff = (float) mute;
+
+            // Seeded with the defaults rather than 0, so a v29-or-older GUITAR
+            // line - which ends after `mute` - leaves a sensible pickup rather
+            // than a 0Hz one. Added in v30.
+            const GuitarSettings fallback;
+            double resonanceHz = (double) fallback.pickupResonanceHz;
+            double pickupQ     = (double) fallback.pickupQ;
+
+            gs >> decay >> brightness >> position >> hardness >> mute
+               >> resonanceHz >> pickupQ;
+            track.guitarSettings.decaySeconds      = (float) decay;
+            track.guitarSettings.brightness        = (float) brightness;
+            track.guitarSettings.pickPosition      = (float) position;
+            track.guitarSettings.pickHardness      = (float) hardness;
+            track.guitarSettings.muteOnNoteOff     = (float) mute;
+            track.guitarSettings.pickupResonanceHz = (float) resonanceHz;
+            track.guitarSettings.pickupQ           = (float) pickupQ;
         }
 
         // v14..v17 stored a fixed filter/delay/reverb trio. Migrate it into
@@ -776,6 +807,11 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 double wobbleResonance = 0.9, wobbleMix = 1.0;
                 double gateThreshold = -40.0, gateRange = 60.0, gateAttack = 2.0;
                 double gateHold = 20.0, gateRelease = 150.0;
+                double driveAsymmetry = 0.0;
+                int    driveOversample = 0;
+                double eqLowHz = 100.0, eqLowDb = 0.0;
+                double eqMidHz = 800.0, eqMidDb = 0.0, eqMidQ = 1.0;
+                double eqHighHz = 4000.0, eqHighDb = 0.0;
 
                 ss >> kind >> enabled >> filterMode >> cutoff >> resonance
                    >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix
@@ -784,7 +820,9 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                    >> tremRate >> tremDepth
                    >> chorusRate >> chorusDepth >> chorusMix
                    >> wobbleRateBeats >> wobbleDepth >> wobbleBaseCutoffHz >> wobbleResonance >> wobbleMix
-                   >> gateThreshold >> gateRange >> gateAttack >> gateHold >> gateRelease;
+                   >> gateThreshold >> gateRange >> gateAttack >> gateHold >> gateRelease
+                   >> driveAsymmetry >> driveOversample
+                   >> eqLowHz >> eqLowDb >> eqMidHz >> eqMidDb >> eqMidQ >> eqHighHz >> eqHighDb;
 
                 EffectSlot slot;
                 slot.kind              = (EffectKind) kind;
@@ -807,6 +845,8 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 slot.drive.level       = (float) driveLevel;
                 slot.drive.hardClip    = driveHard != 0;
                 slot.drive.cabinet     = driveCab != 0;
+                slot.drive.asymmetry   = (float) driveAsymmetry;
+                slot.drive.oversample  = driveOversample != 0;
                 slot.compressor.enabled     = slot.enabled && slot.kind == EffectKind::Compressor;
                 slot.compressor.thresholdDb = (float) compThreshold;
                 slot.compressor.ratio       = (float) compRatio;
@@ -826,6 +866,14 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 slot.wobble.baseCutoffHz    = (float) wobbleBaseCutoffHz;
                 slot.wobble.resonance       = (float) wobbleResonance;
                 slot.wobble.mix             = (float) wobbleMix;
+                slot.eqPedal.enabled     = slot.enabled && slot.kind == EffectKind::Eq;
+                slot.eqPedal.lowShelfHz  = (float) eqLowHz;
+                slot.eqPedal.lowShelfDb  = (float) eqLowDb;
+                slot.eqPedal.midHz       = (float) eqMidHz;
+                slot.eqPedal.midDb       = (float) eqMidDb;
+                slot.eqPedal.midQ        = (float) eqMidQ;
+                slot.eqPedal.highShelfHz = (float) eqHighHz;
+                slot.eqPedal.highShelfDb = (float) eqHighDb;
                 slot.gate.enabled           = slot.enabled && slot.kind == EffectKind::Gate;
                 slot.gate.thresholdDb       = (float) gateThreshold;
                 slot.gate.rangeDb           = (float) gateRange;

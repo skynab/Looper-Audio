@@ -29,85 +29,25 @@
 #include "model/GuitarTonePresets.h"
 #include "model/SynthTonePresets.h"
 #include "model/MasteringPresets.h"
+#include "engine/EffectSlotFactory.h"
 #include "model/Song.h"
 
-/** One chain node for @p slot, for the preset checks below — they need to
-    render a `model::EffectSlot` chain the way a real track would, and the
-    app-side translation that normally does this lives in MainComponent,
-    which this tool doesn't link.
+/** One chain node for @p slot, for the preset checks below - they need to
+    render a `model::EffectSlot` chain the way a real track would.
 
-    if/else rather than a switch because this deliberately handles only the
-    kinds the presets actually use, and -Wswitch-enum would rightly object to
-    a switch that does that. An unhandled kind returns null and is skipped,
-    so a preset gaining a new kind shows up as a check that stops proving
-    what it claims — which is why each check also asserts the chain changed
-    the sound, not merely that it ran. */
+    This used to be a hand-written if/else covering only the kinds the presets
+    happened to use. It fell behind: drive gained asymmetry and oversampling
+    and this copy kept setting neither, so the tool was measuring a signal
+    path the app does not play - the one thing a verification tool must never
+    do, and silently, since everything still ran and only the numbers lied.
+
+    Now it goes through the same engine::makeEffectNode / engine::toSlotParams
+    the app uses, so a kind or a parameter added anywhere reaches this
+    automatically. Plugin slots still return null (no host here) and are
+    skipped by the callers. */
 static std::unique_ptr<looper::engine::EffectProcessor> nodeForSlot(const looper::model::EffectSlot& slot)
 {
-    using namespace looper::engine;
-    using looper::model::EffectKind;
-
-    if (slot.kind == EffectKind::Compressor)
-    {
-        auto node = std::make_unique<CompressorNode>();
-        node->effect.setEnabled(slot.compressor.enabled);
-        node->effect.setThresholdDb(slot.compressor.thresholdDb);
-        node->effect.setRatio(slot.compressor.ratio);
-        node->effect.setAttackMs(slot.compressor.attackMs);
-        node->effect.setReleaseMs(slot.compressor.releaseMs);
-        node->effect.setMakeUpDb(slot.compressor.makeUpDb);
-        return node;
-    }
-    if (slot.kind == EffectKind::Drive)
-    {
-        auto node = std::make_unique<DriveNode>();
-        node->effect.setEnabled(slot.drive.enabled);
-        node->effect.setDrive(slot.drive.drive);
-        node->effect.setTone(slot.drive.tone);
-        node->effect.setLevel(slot.drive.level);
-        node->effect.setHardClip(slot.drive.hardClip);
-        node->effect.setCabinet(slot.drive.cabinet);
-        return node;
-    }
-    if (slot.kind == EffectKind::Gate)
-    {
-        auto node = std::make_unique<GateNode>();
-        node->effect.setEnabled(slot.gate.enabled);
-        node->effect.setThresholdDb(slot.gate.thresholdDb);
-        node->effect.setRangeDb(slot.gate.rangeDb);
-        node->effect.setAttackMs(slot.gate.attackMs);
-        node->effect.setHoldMs(slot.gate.holdMs);
-        node->effect.setReleaseMs(slot.gate.releaseMs);
-        return node;
-    }
-    if (slot.kind == EffectKind::Delay)
-    {
-        auto node = std::make_unique<DelayNode>();
-        node->effect.setEnabled(slot.delay.enabled);
-        node->effect.setTimeMs(slot.delay.timeMs);
-        node->effect.setFeedback(slot.delay.feedback);
-        node->effect.setMix(slot.delay.mix);
-        return node;
-    }
-    if (slot.kind == EffectKind::Chorus)
-    {
-        auto node = std::make_unique<ChorusNode>();
-        node->effect.setEnabled(slot.chorus.enabled);
-        node->effect.setRateHz(slot.chorus.rateHz);
-        node->effect.setDepth(slot.chorus.depth);
-        node->effect.setMix(slot.chorus.mix);
-        return node;
-    }
-    if (slot.kind == EffectKind::Reverb)
-    {
-        auto node = std::make_unique<ReverbNode>();
-        node->effect.setEnabled(slot.reverb.enabled);
-        node->effect.setRoomSize(slot.reverb.roomSize);
-        node->effect.setDamping(slot.reverb.damping);
-        node->effect.setMix(slot.reverb.mix);
-        return node;
-    }
-    return nullptr;
+    return looper::engine::makeConfiguredNode(slot);
 }
 
 /** Summed energy in [loHz, hiHz] of @p buf's left channel, by direct
@@ -1302,33 +1242,41 @@ int main(int argc, char** argv)
         const float wetRms  = through.getRMSLevel(0, 0, through.getNumSamples());
         const float wetPeak = through.getMagnitude(0, 0, through.getNumSamples());
 
-        // "Growl" measured rather than asserted: energy in the low-mid band
-        // where a dropped, saturated guitar's body lives, over the fizz band
-        // above the cabinet's corner. Summed over a comb of frequencies in
-        // each band by direct correlation - the same technique the chorus
-        // harmonic check uses, and cheaper than an FFT for two fixed bands.
-        const double growlBand = bandEnergy(through, 90.0, 600.0, sampleRate);
-        const double fizzBand  = bandEnergy(through, 2000.0, 6000.0, sampleRate);
-        const double growl     = growlBand / std::max(fizzBand, 1.0e-18);
+        // Three bands, because a guitar tone is not one number.
+        //
+        // This replaces a single `growl` ratio of 90-600Hz over 2-6kHz that
+        // the presets were previously tuned against. That ratio was actively
+        // wrong: 2-6kHz is the *presence band an electric guitar lives in*,
+        // so maximising the ratio rewarded darkness and punished exactly the
+        // region that makes a guitar cut. Two rounds of parameter tuning
+        // chased it and produced a tone the user described as still not
+        // sounding like a guitar. It is deliberately not kept alongside the
+        // new figures — leaving it would keep the incentive that caused this.
+        const double bodyBand     = bandEnergy(through, 90.0, 250.0, sampleRate);
+        const double presenceBand = bandEnergy(through, 2000.0, 5000.0, sampleRate);
+        const double fizzBand     = bandEnergy(through, 8000.0, 16000.0, sampleRate);
+        const double midBand      = bandEnergy(through, 200.0, 5000.0, sampleRate);
 
-        // Three separate ways the tone can be wrong, all of which have to
-        // fail this: silent/thin (the bug that prompted it), not actually
-        // distorting (a chain that passes through), and clipping the mix
-        // bus. A high-gain tone should come out at least as loud as the
-        // clean note, since that is the entire point of an amp.
+        const double reference = std::max(midBand, 1.0e-18);
+        const double presence  = presenceBand / reference;
+        const double fizz      = fizzBand / reference;
+        const double body      = bodyBand / reference;
+
+        // Presence and fizz have to be judged *together*, which is precisely
+        // what one ratio could not express: a tone can be bright because it
+        // cuts, or bright because it is fizzy, and those want opposite
+        // responses. A real cabinet leaves the first and destroys the second.
         metalToneHasBody = dryRms > 1.0e-4f
                         && wetRms >= dryRms
                         && wetPeak < 1.0f
-                        // The preset's values were tuned against this figure
-                        // and land near 6.4. The floor is set well under
-                        // that but well over the ~2.7 the preset measured
-                        // before it was tuned for growl, so it catches a
-                        // regression back to that character without pinning
-                        // an exact number nobody should be editing to.
-                        && growl > 4.0;
+                        && presence > 0.05   // it has to cut, not just rumble
+                        && fizz < presence   // and the cab has to kill the top
+                        && body > 0.02;      // while still having weight
 
         std::cout << "modern metal tone: dryRms=" << dryRms << " wetRms=" << wetRms
-                  << " wetPeak=" << wetPeak << " growl=" << growl << "\n";
+                  << " wetPeak=" << wetPeak
+                  << " presence=" << presence << " fizz=" << fizz
+                  << " body=" << body << "\n";
     }
 
     // The mastering rack, end to end through the real processor. Two claims

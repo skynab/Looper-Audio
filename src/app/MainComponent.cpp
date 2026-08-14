@@ -8,6 +8,7 @@
 #include "engine/ClipSlot.h"
 #include "engine/DefaultContent.h"
 #include "engine/DrumSynth.h"
+#include "engine/EffectSlotFactory.h"
 #include "engine/GenerativeLoop.h"
 #include "engine/GuitarChords.h"
 #include "engine/NoteOps.h"
@@ -1787,8 +1788,7 @@ void MainComponent::setTrackGuitarSettings(const model::GuitarSettings& settings
     const int index = selectedTrackIndex_;
     history_.mutableCurrent().tracks[(size_t) index].guitarSettings = settings;
 
-    engine_.setTrackGuitarSettings(index, settings.decaySeconds, settings.brightness,
-                                   settings.pickPosition, settings.pickHardness, settings.muteOnNoteOff);
+    engine_.setTrackGuitarSettings(index, settings);
     engine_.setTrackGuitarTuning(index, settings.tuning);
 }
 
@@ -2172,67 +2172,11 @@ void MainComponent::refreshEffectChainForSelected()
     change leaves, far too short to hear as a fade. */
 static constexpr double kEffectEdgeFadeSeconds = 0.005;
 
-/** One engine node for a built-in effect kind, or nullptr for a kind that
-    can't be built here (Plugin, which needs the plugin host). Mirrors
-    AudioEngine::rebuildTrackEffectChain's switch. */
-static std::unique_ptr<engine::EffectProcessor> makeEffectNode(model::EffectKind kind)
-{
-    switch (kind)
-    {
-        case model::EffectKind::Filter:     return std::make_unique<engine::FilterNode>();
-        case model::EffectKind::Delay:      return std::make_unique<engine::DelayNode>();
-        case model::EffectKind::Reverb:     return std::make_unique<engine::ReverbNode>();
-        case model::EffectKind::Drive:      return std::make_unique<engine::DriveNode>();
-        case model::EffectKind::Compressor: return std::make_unique<engine::CompressorNode>();
-        case model::EffectKind::Tremolo:    return std::make_unique<engine::TremoloNode>();
-        case model::EffectKind::Chorus:     return std::make_unique<engine::ChorusNode>();
-        case model::EffectKind::Wobble:     return std::make_unique<engine::WobbleNode>();
-        case model::EffectKind::Gate:       return std::make_unique<engine::GateNode>();
-        case model::EffectKind::Plugin:     return nullptr;
-    }
-    return nullptr;
-}
-
-static engine::EffectSlotParams toSlotParams(const model::EffectSlot& slot)
-{
-    engine::EffectSlotParams params;
-    params.enabled         = slot.enabled;
-    params.filterMode      = slot.filter.mode;
-    params.filterCutoff    = slot.filter.cutoff;
-    params.filterResonance = slot.filter.resonance;
-    params.delayTimeMs     = slot.delay.timeMs;
-    params.delayFeedback   = slot.delay.feedback;
-    params.delayMix        = slot.delay.mix;
-    params.reverbRoomSize  = slot.reverb.roomSize;
-    params.reverbDamping   = slot.reverb.damping;
-    params.reverbMix       = slot.reverb.mix;
-    params.driveAmount     = slot.drive.drive;
-    params.driveTone       = slot.drive.tone;
-    params.driveLevel      = slot.drive.level;
-    params.driveHardClip   = slot.drive.hardClip;
-    params.driveCabinet    = slot.drive.cabinet;
-    params.compThresholdDb = slot.compressor.thresholdDb;
-    params.compRatio       = slot.compressor.ratio;
-    params.compAttackMs    = slot.compressor.attackMs;
-    params.compReleaseMs   = slot.compressor.releaseMs;
-    params.compMakeUpDb    = slot.compressor.makeUpDb;
-    params.tremoloRateHz   = slot.tremolo.rateHz;
-    params.tremoloDepth    = slot.tremolo.depth;
-    params.chorusRateHz    = slot.chorus.rateHz;
-    params.chorusDepth     = slot.chorus.depth;
-    params.chorusMix       = slot.chorus.mix;
-    params.wobbleRateBeats    = slot.wobble.rateBeats;
-    params.wobbleDepth        = slot.wobble.depth;
-    params.wobbleBaseCutoffHz = slot.wobble.baseCutoffHz;
-    params.wobbleResonance    = slot.wobble.resonance;
-    params.wobbleMix          = slot.wobble.mix;
-    params.gateThresholdDb = slot.gate.thresholdDb;
-    params.gateRangeDb     = slot.gate.rangeDb;
-    params.gateAttackMs    = slot.gate.attackMs;
-    params.gateHoldMs      = slot.gate.holdMs;
-    params.gateReleaseMs   = slot.gate.releaseMs;
-    return params;
-}
+// makeEffectNode and toSlotParams used to live here. They moved to
+// engine/EffectSlotFactory.h when a *third* copy of the same mapping turned
+// up in the bounce tool: the tool's copy had silently fallen behind the
+// engine's, so the tool was measuring a different signal path from the one
+// the app plays - which is the one thing it exists not to do.
 
 /** Adds a slot to the end of the selected track's chain. Structural, so it
     goes through history_ — and adding a plugin rebuilds the engine chain,
@@ -2323,7 +2267,7 @@ void MainComponent::setEffectSlotBypass(int slotIndex, bool enabled)
     });
 
     const auto& updatedChain = history_.current().tracks[(size_t) selectedTrackIndex_].effectChain;
-    engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, toSlotParams(updatedChain[(size_t) slotIndex]));
+    engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, engine::toSlotParams(updatedChain[(size_t) slotIndex]));
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
@@ -2341,7 +2285,7 @@ void MainComponent::setEffectSlotParams(const model::EffectSlot& slot, int slotI
         return;
 
     chain[(size_t) slotIndex] = slot;
-    engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, toSlotParams(slot));
+    engine_.setTrackEffectSlotParams(selectedTrackIndex_, slotIndex, engine::toSlotParams(slot));
 }
 
 /** Probes for plugins and caches the result, so the next launch doesn't
@@ -3334,8 +3278,7 @@ void MainComponent::syncEngineTracks()
         if (track.type == model::TrackType::Guitar)
         {
             const auto& guitar = track.guitarSettings;
-            engine_.setTrackGuitarSettings(i, guitar.decaySeconds, guitar.brightness,
-                                           guitar.pickPosition, guitar.pickHardness, guitar.muteOnNoteOff);
+            engine_.setTrackGuitarSettings(i, guitar);
             engine_.setTrackGuitarTuning(i, guitar.tuning);
         }
         if (track.type == model::TrackType::Drum)
@@ -3424,6 +3367,7 @@ void MainComponent::syncEngineTracks()
                 case model::EffectKind::Chorus:     spec.kind = engine::EffectNodeKind::Chorus;     break;
                 case model::EffectKind::Wobble:     spec.kind = engine::EffectNodeKind::Wobble;     break;
                 case model::EffectKind::Gate:       spec.kind = engine::EffectNodeKind::Gate;       break;
+                case model::EffectKind::Eq:         spec.kind = engine::EffectNodeKind::Eq;         break;
                 case model::EffectKind::Plugin:
                     spec.kind             = engine::EffectNodeKind::Plugin;
                     spec.pluginFormat     = pluginFormatName(slot.plugin.format);
@@ -3442,7 +3386,7 @@ void MainComponent::syncEngineTracks()
         // Parameters, one call per slot, addressed by position — a chain may
         // hold two filters, and "the filter" stops meaning anything then.
         for (size_t s = 0; s < track.effectChain.size(); ++s)
-            engine_.setTrackEffectSlotParams(i, (int) s, toSlotParams(track.effectChain[s]));
+            engine_.setTrackEffectSlotParams(i, (int) s, engine::toSlotParams(track.effectChain[s]));
     }
     engine_.setActiveTrackCount(n);
 
@@ -4124,11 +4068,8 @@ void MainComponent::applyEffectsToSelection(const std::vector<model::EffectSlot>
             if (! slot.enabled || slot.kind == model::EffectKind::Plugin)
                 continue;
 
-            if (auto node = makeEffectNode(slot.kind))
-            {
+            if (auto node = engine::makeConfiguredNode(slot))
                 built.add(std::move(node));
-                built.applyParams(built.size() - 1, toSlotParams(slot));
-            }
         }
 
         built.prepare(sampleRate, count);

@@ -184,7 +184,8 @@ enum class EffectKind
     Tremolo    = 6,
     Chorus     = 7,
     Wobble     = 8,
-    Gate       = 9
+    Gate       = 9,
+    Eq         = 10
 };
 
 /**
@@ -212,7 +213,43 @@ struct DriveSettings
     bool  hardClip = false;
     bool  cabinet  = true;
 
+    // A DC bias into the shaper, so the two halves of the waveform clip
+    // differently and even harmonics appear - see engine::Waveshaper. 0 is the
+    // symmetric curve this had before; a real tube stage is never symmetric.
+    float asymmetry = 0.0f;
+
+    // Runs the shaper at 4x - see engine::Oversampler4x. Off by default,
+    // because it costs real CPU and the ADAA shaper alone is enough for a
+    // single moderate stage. The high-gain presets turn it on, since they
+    // cascade one clipper into another and fold the first one's output twice.
+    bool  oversample = false;
+
     bool operator==(const DriveSettings&) const = default;
+};
+
+/** A three-band EQ pedal: low shelf, a **sweepable** mid bell, high shelf.
+
+    The mid is sweepable because "the mids" is 400Hz on one guitar and 1.2kHz
+    on another. Before this there was no way to boost or cut a band's gain on
+    a track at all — EqSettings is master-bus only, and a filter slot picks a
+    cutoff, which is a different thing — so the mid scoop/push that decides a
+    rock or metal tone was unreachable by construction.
+
+    Every default is flat, so adding the pedal changes nothing until it's
+    dialled. See engine::EqPedalEffect. */
+struct EqPedalSettings
+{
+    bool  enabled = false;
+
+    float lowShelfHz  = 100.0f;
+    float lowShelfDb  = 0.0f;
+    float midHz       = 800.0f;
+    float midDb       = 0.0f;
+    float midQ        = 1.0f;
+    float highShelfHz = 4000.0f;
+    float highShelfDb = 0.0f;
+
+    bool operator==(const EqPedalSettings&) const = default;
 };
 
 /** A compressor pedal. Threshold and ratio are the shape; attack and release
@@ -301,6 +338,7 @@ struct EffectSlot
     ChorusSettings     chorus;
     WobbleSettings     wobble;
     GateSettings       gate;
+    EqPedalSettings    eqPedal;
     PluginRef          plugin; // meaningful when kind == Plugin
 
     bool operator==(const EffectSlot&) const = default;

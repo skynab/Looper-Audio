@@ -5,6 +5,7 @@
 
 #include "engine/DelayLine.h"
 #include "engine/SequencerMath.h"
+#include "engine/ShelfPeakFilter.h"
 #include "engine/StateVariableFilter.h"
 
 namespace looper::engine
@@ -222,6 +223,94 @@ private:
     int    holdSamples_   = 960;
     int    holdCounter_   = 0;
     float  gainDb_        = -60.0f;
+};
+
+/**
+    Three bands of EQ in series: low shelf, a sweepable mid bell, high shelf.
+
+    One channel's worth. JUCE-free like the rest of this header, so what the
+    bands actually do to a signal is a headless measurement rather than a
+    claim - which matters here because "the mid is sweepable" and "the shelves
+    stay out of each other's way" are exactly the sort of thing that is easy
+    to believe and easy to get wrong.
+
+    Coefficients are recomputed only when a value changes: an RBJ biquad's
+    update runs a cos, a sin and a sqrt, and repeating that per block for
+    knobs that are usually still is real work for nothing.
+*/
+class ThreeBandEq
+{
+public:
+    struct Settings
+    {
+        float lowShelfHz = 100.0f, lowShelfDb = 0.0f;
+        float midHz = 800.0f, midDb = 0.0f, midQ = 1.0f;
+        float highShelfHz = 4000.0f, highShelfDb = 0.0f;
+
+        bool operator==(const Settings&) const = default;
+    };
+
+    void prepare(double sampleRate)
+    {
+        low_.prepare(sampleRate);
+        low_.setShape(ShelfPeakFilter::Shape::LowShelf);
+        mid_.prepare(sampleRate);
+        mid_.setShape(ShelfPeakFilter::Shape::Peaking);
+        high_.prepare(sampleRate);
+        high_.setShape(ShelfPeakFilter::Shape::HighShelf);
+
+        applied_ = Settings {};
+        applied_.lowShelfHz = -1.0f; // nothing legal matches, so the first set applies
+        setSettings(Settings {});
+    }
+
+    void reset() noexcept
+    {
+        low_.reset();
+        mid_.reset();
+        high_.reset();
+    }
+
+    void setSettings(const Settings& wanted)
+    {
+        Settings clamped;
+        clamped.lowShelfHz  = std::clamp(wanted.lowShelfHz, 20.0f, 1000.0f);
+        clamped.lowShelfDb  = std::clamp(wanted.lowShelfDb, -24.0f, 24.0f);
+        clamped.midHz       = std::clamp(wanted.midHz, 100.0f, 8000.0f);
+        clamped.midDb       = std::clamp(wanted.midDb, -24.0f, 24.0f);
+        clamped.midQ        = std::clamp(wanted.midQ, 0.2f, 8.0f);
+        clamped.highShelfHz = std::clamp(wanted.highShelfHz, 1000.0f, 16000.0f);
+        clamped.highShelfDb = std::clamp(wanted.highShelfDb, -24.0f, 24.0f);
+
+        if (clamped == applied_)
+            return;
+
+        low_.setFrequency(clamped.lowShelfHz);
+        low_.setGainDb(clamped.lowShelfDb);
+        mid_.setFrequency(clamped.midHz);
+        mid_.setGainDb(clamped.midDb);
+        mid_.setQ(clamped.midQ);
+        high_.setFrequency(clamped.highShelfHz);
+        high_.setGainDb(clamped.highShelfDb);
+
+        applied_ = clamped;
+    }
+
+    float processSample(float x) noexcept
+    {
+        return high_.processSample(mid_.processSample(low_.processSample(x)));
+    }
+
+    /** The three bands' summed response at @p hz, in dB, read from the live
+        coefficients - so a UI curve cannot disagree with what is heard. */
+    float magnitudeDbAt(float hz) const
+    {
+        return low_.magnitudeDbAt(hz) + mid_.magnitudeDbAt(hz) + high_.magnitudeDbAt(hz);
+    }
+
+private:
+    ShelfPeakFilter low_, mid_, high_;
+    Settings        applied_;
 };
 
 /**

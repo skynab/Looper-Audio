@@ -139,18 +139,19 @@ void AudioEngine::setTrackInstrument(int index, TrackInstrument instrument)
         tracks_[(size_t) index].instrument.store(instrument, std::memory_order_relaxed);
 }
 
-void AudioEngine::setTrackGuitarSettings(int index, float decaySeconds, float brightness,
-                                         float pickPosition, float pickHardness, float muteOnNoteOff)
+void AudioEngine::setTrackGuitarSettings(int index, const model::GuitarSettings& settings)
 {
     if (index < 0 || index >= kMaxTracks)
         return;
 
     auto& guitar = tracks_[(size_t) index].guitar;
-    guitar.setDecaySeconds(decaySeconds);
-    guitar.setBrightness(brightness);
-    guitar.setPickPosition(pickPosition);
-    guitar.setPickHardness(pickHardness);
-    guitar.setMuteOnNoteOff(muteOnNoteOff);
+    guitar.setDecaySeconds(settings.decaySeconds);
+    guitar.setBrightness(settings.brightness);
+    guitar.setPickPosition(settings.pickPosition);
+    guitar.setPickHardness(settings.pickHardness);
+    guitar.setMuteOnNoteOff(settings.muteOnNoteOff);
+    guitar.setPickupResonanceHz(settings.pickupResonanceHz);
+    guitar.setPickupQ(settings.pickupQ);
 }
 
 void AudioEngine::setTrackGuitarTuning(int index, const std::array<int, kNumGuitarStrings>& tuning)
@@ -433,6 +434,7 @@ void AudioEngine::rebuildTrackEffectChain(int index)
             case EffectNodeKind::Chorus:     chain->add(std::make_unique<ChorusNode>());     break;
             case EffectNodeKind::Wobble:     chain->add(std::make_unique<WobbleNode>());     break;
             case EffectNodeKind::Gate:       chain->add(std::make_unique<GateNode>());       break;
+            case EffectNodeKind::Eq:         chain->add(std::make_unique<EqNode>());         break;
 
             case EffectNodeKind::Plugin:
             {

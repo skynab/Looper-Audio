@@ -129,12 +129,16 @@ public:
         setupSlider(pickPosition_, 2.0, 50.0, 1.0, " %", [this] { pushSettings(); });
         setupSlider(pickHardness_, 0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
         setupSlider(muteOnRelease_, 0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
+        setupSlider(pickupHz_, 500.0, 8000.0, 10.0, " Hz", [this] { pushSettings(); });
+        setupSlider(pickupQ_, 0.5, 4.0, 0.05, "", [this] { pushSettings(); });
 
         setupLabel(decayLabel_, "Decay");
         setupLabel(brightnessLabel_, "Bright");
         setupLabel(pickPositionLabel_, "Pick pos");
         setupLabel(pickHardnessLabel_, "Pick");
         setupLabel(muteOnReleaseLabel_, "Damp off");
+        setupLabel(pickupHzLabel_, "Pickup");
+        setupLabel(pickupQLabel_, "Pickup Q");
 
         // Tone templates: one button per engine::GuitarTone, each applying
         // its whole GuitarSettings + effect chain in one click. Laid out as
@@ -173,6 +177,8 @@ public:
         pickPosition_.setValue(settings.pickPosition * 100.0, juce::dontSendNotification);
         pickHardness_.setValue(settings.pickHardness * 100.0, juce::dontSendNotification);
         muteOnRelease_.setValue(settings.muteOnNoteOff * 100.0, juce::dontSendNotification);
+        pickupHz_.setValue(settings.pickupResonanceHz, juce::dontSendNotification);
+        pickupQ_.setValue(settings.pickupQ, juce::dontSendNotification);
 
         updating_ = false;
         setContentVisible(true);
@@ -401,12 +407,14 @@ public:
         row(pickPositionLabel_, pickPosition_);
         row(pickHardnessLabel_, pickHardness_);
         row(muteOnReleaseLabel_, muteOnRelease_);
+        row(pickupHzLabel_, pickupHz_);
+        row(pickupQLabel_, pickupQ_);
     }
 
 private:
     static constexpr int kNumFrets      = 22; // 0 (open) through 22
     static constexpr int kTuningHeight  = 26;
-    static constexpr int kToneHeight    = 6 * 22; // the tone-template button row + 5 GuitarSettings sliders
+    static constexpr int kToneHeight    = 8 * 22; // the tone-template button row + 7 GuitarSettings sliders
     // A row of open-shape buttons, the strum controls, and the chord-mode row.
     static constexpr int kChordHeight   = 26 + 22 + 22;
     static constexpr int kLowestTuning  = 28; // E1, low enough for any drop tuning
@@ -510,6 +518,8 @@ private:
         settings_.pickPosition  = (float) (pickPosition_.getValue() / 100.0);
         settings_.pickHardness  = (float) (pickHardness_.getValue() / 100.0);
         settings_.muteOnNoteOff = (float) (muteOnRelease_.getValue() / 100.0);
+        settings_.pickupResonanceHz = (float) pickupHz_.getValue();
+        settings_.pickupQ           = (float) pickupQ_.getValue();
 
         onSettingsChanged(settings_);
         repaint(); // a tuning change relabels the whole board
@@ -523,6 +533,7 @@ private:
             &decayLabel_, &decay_, &brightnessLabel_, &brightness_,
             &pickPositionLabel_, &pickPosition_, &pickHardnessLabel_,
             &pickHardness_, &muteOnReleaseLabel_, &muteOnRelease_,
+            &pickupHzLabel_, &pickupHz_, &pickupQLabel_, &pickupQ_,
             &strumDirection_, &strumSpread_, &strumHumanise_,
             &strumSpreadLabel_, &strumHumaniseLabel_,
             &chordMode_, &writeToClip_
@@ -563,6 +574,8 @@ private:
     std::array<juce::ComboBox, model::kNumGuitarStrings> tuningBoxes_;
     juce::Label     decayLabel_, brightnessLabel_, pickPositionLabel_, pickHardnessLabel_, muteOnReleaseLabel_;
     juce::Slider    decay_, brightness_, pickPosition_, pickHardness_, muteOnRelease_;
+    juce::Label     pickupHzLabel_, pickupQLabel_;
+    juce::Slider    pickupHz_, pickupQ_;
     juce::OwnedArray<juce::TextButton> toneButtons_;
 
     juce::OwnedArray<juce::TextButton> chordButtons_;

@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "engine/GuitarString.h"
+#include "engine/Pickup.h"
 #include "engine/MidiNote.h"
 #include "engine/Node.h"
 
@@ -58,6 +59,7 @@ public:
     {
         for (auto& string : strings_)
             string.prepare(sampleRate);
+        pickup_.prepare(sampleRate);
         applySettings();
     }
 
@@ -67,6 +69,10 @@ public:
     void setPickPosition(float value)   { pickPosition_.store(value, std::memory_order_relaxed); }
     void setPickHardness(float value)   { pickHardness_.store(value, std::memory_order_relaxed); }
     void setMuteOnNoteOff(float value)  { muteOnNoteOff_.store(value, std::memory_order_relaxed); }
+
+    /** The pickup's resonant peak - see engine::Pickup. */
+    void setPickupResonanceHz(float hz) { pickupResonanceHz_.store(hz, std::memory_order_relaxed); }
+    void setPickupQ(float q)            { pickupQ_.store(q, std::memory_order_relaxed); }
 
     /** Open-string pitch of one string, as a MIDI note. Drop-D is
         setOpenNote(0, 38). */
@@ -128,6 +134,12 @@ private:
             // Six strings can sum well past unity, so scale to keep a full
             // strum inside range without needing a limiter downstream.
             sum *= 0.4f;
+
+            // One pickup senses the whole instrument, so this is on the sum
+            // rather than per string - and it is the last thing in the
+            // instrument, so whatever the track's chain does to the guitar it
+            // is working on a signal that already has a pickup's shape.
+            sum = pickup_.processSample(sum);
 
             for (int ch = 0; ch < channels; ++ch)
                 buffer.addSample(ch, start + i, sum);
@@ -260,6 +272,9 @@ private:
         const float position  = pickPosition_.load(std::memory_order_relaxed);
         const float hardness  = pickHardness_.load(std::memory_order_relaxed);
 
+        pickup_.setResonanceHz(pickupResonanceHz_.load(std::memory_order_relaxed));
+        pickup_.setQ(pickupQ_.load(std::memory_order_relaxed));
+
         for (auto& string : strings_)
         {
             string.setDecaySeconds(decay);
@@ -270,6 +285,7 @@ private:
     }
 
     std::array<GuitarString, kNumGuitarStrings> strings_;
+    Pickup                                     pickup_;
 
     // Audio-thread state: which note each string holds, and when it was struck.
     std::array<std::atomic<int>, kNumGuitarStrings> sounding_ { -1, -1, -1, -1, -1, -1 };
@@ -286,6 +302,9 @@ private:
     std::atomic<float> pickPosition_  { 0.22f };
     std::atomic<float> pickHardness_  { 0.6f };
     std::atomic<float> muteOnNoteOff_ { 0.0f };
+
+    std::atomic<float> pickupResonanceHz_ { 3000.0f };
+    std::atomic<float> pickupQ_           { 1.4f };
 };
 
 } // namespace looper::engine

@@ -38,14 +38,23 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             p.guitar.tuning = { 36, 43, 48, 53, 57, 62 };
 
             p.guitar.decaySeconds  = 2.0f;
-            // Deliberately a dark string into a saturated amp, which is the
-            // real topology: a humbucker is dark, and essentially all of the
-            // perceived brightness in this genre comes from the amp and cab
-            // downstream. Measured - see looper_bounce's `growl` figure,
-            // which is what these two values were actually tuned against.
-            p.guitar.brightness    = 0.38f;
+            // A humbucker is dark *before* its resonance, not overall - the
+            // peak at 2-3kHz is the whole reason an electric guitar cuts.
+            // These were previously dialled much darker (brightness 0.38) to
+            // maximise looper_bounce's old `growl` figure, which measured
+            // 90-600Hz over 2-6kHz and so rewarded exactly the wrong thing:
+            // it treated the presence band a guitar lives in as a defect.
+            // With that metric retired and a cabinet that actually removes
+            // fizz, the string can be as bright as a real one.
+            p.guitar.brightness    = 0.62f;
             p.guitar.pickPosition  = 0.24f;
             p.guitar.pickHardness  = 0.85f;
+
+            // A hot ceramic humbucker: peak a little higher and sharper than
+            // a vintage PAF, which is what makes this style of tone cut
+            // rather than just sit there being loud.
+            p.guitar.pickupResonanceHz = 2800.0f;
+            p.guitar.pickupQ           = 2.0f;
             p.guitar.muteOnNoteOff = 0.55f; // palm-mute-style choke, not fully dead
 
             EffectSlot compressor;
@@ -78,19 +87,30 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             boost.drive.level    = 1.6f;
             boost.drive.hardClip = false;
             boost.drive.cabinet  = false;
+            // A boost pedal's job is to be the *first* stage, so its
+            // asymmetry is what seeds the even harmonics everything after it
+            // then multiplies. Oversampled because this feeds a second
+            // clipper with no filtering between them - the one case where the
+            // ADAA shaper alone is not enough.
+            boost.drive.asymmetry  = 0.30f;
+            boost.drive.oversample = true;
 
             EffectSlot amp;
             amp.kind           = EffectKind::Drive;
             amp.enabled        = true;
             amp.drive.enabled  = true;
             amp.drive.drive    = 75.0f;
-            // Darker than halfway: DriveEffect's post-tilt scales everything
-            // above ~900Hz by (0.25 + 1.75*tone), so pulling tone down is
-            // what leaves the low-mid growl in front of the fizz.
-            amp.drive.tone     = 0.26f;
+            // Was 0.26, pulled down to satisfy the old `growl` figure. The
+            // cabinet now has a real 36dB/octave cliff above 5kHz and the
+            // boost is a genuine bandpass, so the fizz that tone knob was
+            // hiding is no longer generated - and turning it back up buys
+            // presence instead of hiss.
+            amp.drive.tone     = 0.42f;
             amp.drive.level    = 2.0f; // ceiling - make-up gain falls as 1/sqrt(drive)
             amp.drive.hardClip = false;
             amp.drive.cabinet  = true;
+            amp.drive.asymmetry  = 0.15f; // less than the boost: this stage is already deep in clip
+            amp.drive.oversample = true;
 
             EffectSlot gate;
             gate.kind             = EffectKind::Gate;
@@ -102,7 +122,24 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             gate.gate.holdMs      = 15.0f;
             gate.gate.releaseMs   = 55.0f;
 
-            p.effectChain = { compressor, boost, amp, gate };
+            // After the amp, because this is the mix decision rather than
+            // part of the distortion: a scoop before a clipper changes what
+            // gets distorted, and here the intent is to shape what came out.
+            // The mid axis had no per-track control at all before this pedal
+            // existed, so this preset simply could not express it.
+            EffectSlot eq;
+            eq.kind                 = EffectKind::Eq;
+            eq.enabled              = true;
+            eq.eqPedal.enabled      = true;
+            eq.eqPedal.lowShelfHz   = 120.0f;
+            eq.eqPedal.lowShelfDb   = -1.0f;  // tighten the chug slightly rather than let it bloom
+            eq.eqPedal.midHz        = 1100.0f;
+            eq.eqPedal.midDb        = 3.5f;   // the band that makes a riff audible in a mix
+            eq.eqPedal.midQ         = 0.9f;   // broad - a push, not a resonance
+            eq.eqPedal.highShelfHz  = 5000.0f;
+            eq.eqPedal.highShelfDb  = 1.5f;
+
+            p.effectChain = { compressor, boost, amp, eq, gate };
             break;
         }
         case engine::GuitarTone::CleanJazz:
@@ -113,6 +150,11 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             p.guitar.pickPosition  = 0.35f; // toward the neck - round, warm attack
             p.guitar.pickHardness  = 0.25f; // fingertip-soft
             p.guitar.muteOnNoteOff = 0.0f;  // let it ring
+
+            // A neck humbucker with the tone rolled off: the resonance sits
+            // low and gently, which is the whole archetype of this sound.
+            p.guitar.pickupResonanceHz = 1800.0f;
+            p.guitar.pickupQ           = 0.9f;
 
             EffectSlot compressor;
             compressor.kind                   = EffectKind::Compressor;
@@ -142,6 +184,12 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             p.guitar.decaySeconds  = 2.6f;
             p.guitar.brightness    = 0.55f;
             p.guitar.pickPosition  = 0.22f;
+
+            // A vintage-output humbucker: lower and broader than Modern
+            // Metal's ceramic, which is most of the difference between
+            // "crunch" and "high gain" before the amp is even involved.
+            p.guitar.pickupResonanceHz = 2400.0f;
+            p.guitar.pickupQ           = 1.5f;
             p.guitar.pickHardness  = 0.65f;
             p.guitar.muteOnNoteOff = 0.15f;
 
@@ -163,6 +211,10 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             drive.drive.tone     = 0.5f;
             drive.drive.level    = 1.0f;
             drive.drive.hardClip = false; // soft clip - the tube-y crunch
+            // The even harmonics a symmetric curve cannot make. This is the
+            // preset that most depends on them: "tube-y" is very largely the
+            // 2nd harmonic that an asymmetric stage generates.
+            drive.drive.asymmetry = 0.35f;
             drive.drive.cabinet  = true;
 
             p.effectChain = { compressor, drive };
@@ -174,6 +226,11 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             p.guitar.decaySeconds  = 6.0f;
             p.guitar.brightness    = 0.38f;
             p.guitar.pickPosition  = 0.3f;
+
+            // Deliberately smooth: a low, broad resonance leaves nothing
+            // sharp enough to cut through the wash, which is the point.
+            p.guitar.pickupResonanceHz = 2000.0f;
+            p.guitar.pickupQ           = 0.8f;
             p.guitar.pickHardness  = 0.4f;
             p.guitar.muteOnNoteOff = 0.0f;
 
@@ -234,15 +291,25 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             p.guitar.pickHardness  = 0.95f;
             p.guitar.muteOnNoteOff = 0.9f;  // notes stop dead, machine-like
 
+            // Single-coil territory: the resonance is high and sharp, which
+            // is what makes this read as brittle and glassy rather than
+            // merely bright.
+            p.guitar.pickupResonanceHz = 5200.0f;
+            p.guitar.pickupQ           = 2.6f;
+
             EffectSlot drive;
             drive.kind           = EffectKind::Drive;
             drive.enabled        = true;
             drive.drive.enabled  = true;
             drive.drive.drive    = 30.0f;
-            drive.drive.tone     = 0.8f;  // bright, unlike Modern Metal's 0.26
+            drive.drive.tone     = 0.8f;  // brighter than Modern Metal's 0.42
             drive.drive.level    = 1.2f;
             drive.drive.hardClip = true;  // square-ish and buzzy on purpose
             drive.drive.cabinet  = true;
+            // Hard clipping at drive 30 generates harmonics well past Nyquist
+            // in a single stage, and unlike the buzz - which is wanted here -
+            // the folded-back aliases are inharmonic and just sound broken.
+            drive.drive.oversample = true;
 
             EffectSlot chorus;
             chorus.kind           = EffectKind::Chorus;

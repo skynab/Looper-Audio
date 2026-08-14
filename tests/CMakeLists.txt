@@ -29,6 +29,9 @@ add_executable(looper_tests
   engine/TimeStretchTests.cpp
   engine/SpectrumTests.cpp
   engine/DelayLineTests.cpp
+  engine/EqPedalTests.cpp
+  engine/OversamplerTests.cpp
+  engine/PickupTests.cpp
   engine/StateVariableFilterTests.cpp
   engine/ShelfPeakFilterTests.cpp
   engine/EqCurveTests.cpp

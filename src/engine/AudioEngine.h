@@ -32,6 +32,7 @@
 #include "engine/Transport.h"
 
 #include "model/Effects.h"
+#include "model/GuitarSettings.h"
 
 namespace looper::engine
 {
@@ -116,9 +117,11 @@ public:
     void setTrackInstrument(int index, TrackInstrument instrument);
 
     /** Per-track guitar settings (see model::GuitarSettings / GuitarNode).
+        Takes the settings struct rather than a positional float list: with the
+        pickup added there are seven scalars, most in similar ranges, and a
+        transposed pair would be silent at the call site.
         Message thread. */
-    void setTrackGuitarSettings(int index, float decaySeconds, float brightness,
-                                float pickPosition, float pickHardness, float muteOnNoteOff);
+    void setTrackGuitarSettings(int index, const model::GuitarSettings& settings);
     void setTrackGuitarTuning(int index, const std::array<int, kNumGuitarStrings>& tuning);
 
     /** Which note a guitar track is currently sounding on a given string, or

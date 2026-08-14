@@ -304,4 +304,83 @@ private:
     std::atomic<double> bpm_          { 120.0 };
 };
 
+/**
+    The three-band EQ pedal as a chain node.
+
+    Exists because the mid axis was unreachable on a track by construction.
+    `EqEffect` is master-bus only, and no chain slot could boost or cut a
+    band's gain at all - `FilterEffect` picks a cutoff, which is a different
+    thing. A scooped or pushed midrange is *the* EQ decision in a rock or
+    metal guitar tone, and there was no way to make it per track.
+
+    A thin wrapper: the DSP is engine::ThreeBandEq, which is JUCE-free and
+    therefore testable headless. Parameters are atomics read once per block,
+    matching every other pedal here.
+*/
+class EqPedalEffect
+{
+public:
+    void prepare(double sampleRate, int /*blockSize*/)
+    {
+        for (auto& band : channels_)
+            band.prepare(sampleRate);
+    }
+
+    void setEnabled(bool enabled)     { enabled_.store(enabled, std::memory_order_relaxed); }
+    void setLowShelfHz(float hz)      { lowShelfHz_.store(hz, std::memory_order_relaxed); }
+    void setLowShelfDb(float db)      { lowShelfDb_.store(db, std::memory_order_relaxed); }
+    void setMidHz(float hz)           { midHz_.store(hz, std::memory_order_relaxed); }
+    void setMidDb(float db)           { midDb_.store(db, std::memory_order_relaxed); }
+    void setMidQ(float q)             { midQ_.store(q, std::memory_order_relaxed); }
+    void setHighShelfHz(float hz)     { highShelfHz_.store(hz, std::memory_order_relaxed); }
+    void setHighShelfDb(float db)     { highShelfDb_.store(db, std::memory_order_relaxed); }
+
+    /** The pedal's response at @p hz, in dB. */
+    float magnitudeDbAt(float hz) const { return channels_.front().magnitudeDbAt(hz); }
+
+    void process(juce::AudioBuffer<float>& buffer)
+    {
+        if (! enabled_.load(std::memory_order_relaxed))
+            return;
+
+        ThreeBandEq::Settings wanted;
+        wanted.lowShelfHz  = lowShelfHz_.load(std::memory_order_relaxed);
+        wanted.lowShelfDb  = lowShelfDb_.load(std::memory_order_relaxed);
+        wanted.midHz       = midHz_.load(std::memory_order_relaxed);
+        wanted.midDb       = midDb_.load(std::memory_order_relaxed);
+        wanted.midQ        = midQ_.load(std::memory_order_relaxed);
+        wanted.highShelfHz = highShelfHz_.load(std::memory_order_relaxed);
+        wanted.highShelfDb = highShelfDb_.load(std::memory_order_relaxed);
+
+        for (auto& band : channels_)
+            band.setSettings(wanted);
+
+        const int numChannels = juce::jmin(buffer.getNumChannels(), (int) kMaxChannels);
+        const int numSamples  = buffer.getNumSamples();
+
+        for (int channelIndex = 0; channelIndex < numChannels; ++channelIndex)
+        {
+            auto& band    = channels_[(size_t) channelIndex];
+            auto* samples = buffer.getWritePointer(channelIndex);
+
+            for (int n = 0; n < numSamples; ++n)
+                samples[n] = band.processSample(samples[n]);
+        }
+    }
+
+private:
+    static constexpr size_t kMaxChannels = 2;
+
+    std::array<ThreeBandEq, kMaxChannels> channels_;
+
+    std::atomic<bool>  enabled_     { false };
+    std::atomic<float> lowShelfHz_  { 100.0f };
+    std::atomic<float> lowShelfDb_  { 0.0f };
+    std::atomic<float> midHz_       { 800.0f };
+    std::atomic<float> midDb_       { 0.0f };
+    std::atomic<float> midQ_        { 1.0f };
+    std::atomic<float> highShelfHz_ { 4000.0f };
+    std::atomic<float> highShelfDb_ { 0.0f };
+};
+
 } // namespace looper::engine
