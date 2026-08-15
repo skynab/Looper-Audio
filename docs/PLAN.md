@@ -41,6 +41,7 @@ This is a living document. As sections mature they should graduate into their ow
 25. [Generative sound loops](#25-generative-sound-loops-first-slice-implemented)
 26. [New synth sounds: filter envelope, sub-oscillator, unison](#26-new-synth-sounds-filter-envelope-sub-oscillator-unison-implemented)
 27. [MIDI recording](#27-midi-recording-implemented)
+28. [A starter song worth listening to](#28-a-starter-song-worth-listening-to-implemented)
 
 ---
 
@@ -2044,3 +2045,84 @@ call or a modal dialog. The decision *table* that feeds it is tested
 `NSWorkspace`, and only a live run on a machine in each permission state can confirm it.
 What is checked mechanically: the built bundle carries `NSMicrophoneUsageDescription`
 and links AVFoundation and AppKit.
+
+---
+
+## 28. A starter song worth listening to (implemented)
+
+The old starter song was three tracks, one bar each, all starting at bar 1 and looping
+forever: a generic 4/4 beat, a drop-C chug riff, and whatever pattern the piano roll
+happened to default to. Its job was to prove the app made sound, and it did that. What
+it did not do was demonstrate that the app is a *DAW* — the timeline showed three
+identical stubs at the origin, and nothing about it suggested arrangement, mixing or
+structure. It also wasn't really music: the guitar was rooted on a drop-C low string
+and the synth clip was in no key at all, so the two clashed.
+
+### What it is now
+
+Sixteen bars in C minor, i-VI-III-VII, one chord per bar, arranged as a build:
+
+| Bars | Drums | Bass | Guitar | Lead |
+|---|---|---|---|---|
+| 1-4 | intro (kick + hats, no backbeat, snare pickup into bar 5) | | | |
+| 5-8 | full groove | ✓ | | |
+| 9-12 | full groove | ✓ | ✓ | |
+| 13-16 | groove + sixteenth-note fill | ✓ | ✓ | call, then answer |
+
+Parts *arrive*, which is the point: on first launch the timeline shows a staircase of
+clips across four tracks instead of three stubs stacked at bar 1, and playing it
+demonstrates multi-clip gating, the mixer, the drum kit, a hosted-quality guitar chain
+and two synth presets without anyone having to go looking for them.
+
+### The decisions worth recording
+
+**Everything is derived from the guitar's lowest open string.** That is the one pitch
+here which isn't free — the Modern Metal preset is drop tuned, and a riff must land on
+a string the instrument actually has (the existing reason
+`makeDefaultGuitarRiffPattern` takes the open note as a parameter rather than assuming
+standard tuning). So the key root *is* that note, the bass sits an octave above it and
+the lead two octaves above, and all four parts are in one key by construction rather
+than by coincidence. This is precisely what the old starter song got wrong.
+
+**The progression is entirely diatonic** (i-VI-III-VII in natural minor), which is what
+lets the lead be written from the scale alone without having to dodge a chord tone. A
+test pins it, because it is an assumption the melody depends on rather than a
+preference.
+
+**The four-bar groove repeats `makeDefaultDrumLoopPattern` rather than restating it**,
+so "the basic 4/4 beat" still has exactly one definition and the starter song cannot
+drift away from it. In the same spirit, the riff's fourth bar *is*
+`makeDefaultGuitarRiffPattern` transposed onto the VII chord — not an arbitrary reuse:
+that figure already ends by walking up a minor third and a fourth, which from the VII
+lands back on the tonic exactly where bar one begins. Both functions would otherwise
+have become dead code the moment the starter song stopped calling them.
+
+**The lead is two clips, not one.** A track holding a single clip loops it
+indefinitely; a track holding more than one gates each to its own window. Splitting the
+lead into a call and an answer is both the more musical shape and what makes the
+starter song demonstrate that gating — and, less obviously, it is what stops the lead
+looping forever past the end of the song.
+
+**Drum clips tile contiguously across all sixteen bars.** With more than one clip on a
+track the silence between clips is real, so a gap here would be a hole in the song
+rather than a harmless spacing choice.
+
+**"New Project" is deliberately unchanged** — it still resets to a single blank synth
+track. Someone who explicitly asks for a new project wants a clean canvas, not a demo,
+and that distinction predates this change.
+
+### Verification
+
+All the musical claims are headless, JUCE-free and tested — the material lives in
+`engine/DefaultContent.h` for exactly that reason. 582 tests pass (13 new): every bass
+and lead note is in the natural minor scale; each bar's downbeat is that bar's chord
+root; the guitar riff stays between the open low string and the last fret, and
+transposes with the tuning rather than against it; the intro withholds the backbeat
+until its pickup; the fill is genuinely finer than the eighth-note grid and nothing
+overruns its cycle; the answering phrase resolves onto the tonic so the loop closes.
+The bounce suite is untouched (`rmsDry=0.149266`), since none of this is signal path.
+
+**What cannot be checked headlessly:** whether it actually sounds good, and whether the
+clip staircase reads well on the timeline — `makeStarterSong` assembles the arrangement
+inside `MainComponent`, so only launching the app confirms the placement. Worth
+listening to end to end, and worth soloing each track.

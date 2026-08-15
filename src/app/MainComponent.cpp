@@ -6612,39 +6612,79 @@ model::Song MainComponent::makeStarterSong() const
 {
     model::Song song;
 
-    const int synthId = model::addTrack(song, model::TrackType::Instrument, "Synth 1").id;
-    model::Clip synthClip;
-    synthClip.type        = model::ClipType::Instrument;
-    synthClip.pattern     = pianoRoll_.pattern();
-    synthClip.lengthBeats = synthClip.pattern.lengthBeats;
-    model::addClip(song, synthId, synthClip);
-
-    const int drumId = model::addTrack(song, model::TrackType::Drum, "Drums 1").id;
-    song.tracks.back().drumKit = defaultDrumKitWithFactorySamples();
-    model::Clip drumClip;
-    drumClip.type        = model::ClipType::Instrument;
-    drumClip.pattern     = engine::makeDefaultDrumLoopPattern();
-    drumClip.lengthBeats = drumClip.pattern.lengthBeats;
-    model::addClip(song, drumId, drumClip);
-
-    // A guitar track that arrives already sounding like something, for the
-    // same reason the drum track does. Given the Modern Metal tone rather
-    // than a bare default so the pedal chain, the gate and the drop tuning
-    // are all on screen and audible on first launch instead of being
-    // features you have to know to go looking for.
-    //
-    // The riff is written against the preset's own tuning, not a hardcoded
-    // one - see makeDefaultGuitarRiffPattern on why that isn't optional.
+    // Everything is keyed off the guitar's lowest open string, because that is
+    // the one pitch here that isn't free: the Modern Metal preset is drop
+    // tuned, and a riff has to land on a string the guitar actually has (see
+    // makeStarterGuitarRiffPattern). Deriving the bass and lead from the same
+    // note is what puts all four parts in one key — the previous starter song
+    // had a drop-C guitar riff against a synth clip in no particular key, and
+    // they simply clashed.
     const auto guitarTone = model::presetForGuitarTone(engine::GuitarTone::ModernMetal);
+    const int  keyRoot    = guitarTone.guitar.tuning[0];
 
-    const int guitarId = model::addTrack(song, model::TrackType::Guitar, "Guitar 1").id;
+    constexpr double kBar   = engine::kStarterBeatsPerBar;
+    constexpr double kCycle = engine::kStarterCycleBeats;
+
+    /** One clip, positioned. Every part below is placed the same way, and the
+        arrangement is easier to read as four lists of bars than as forty
+        lines of struct-filling. */
+    auto place = [&song](int trackId, engine::Pattern pattern, double startBeats)
+    {
+        model::Clip clip;
+        clip.type        = model::ClipType::Instrument;
+        clip.startBeats  = startBeats;
+        clip.lengthBeats = pattern.lengthBeats;
+        clip.pattern     = std::move(pattern);
+        model::addClip(song, trackId, clip);
+    };
+
+    // --- Bass: enters at bar 5, and is the first track so that index 0 stays
+    // an Instrument track, as it has always been.
+    const auto bassPreset = model::presetForSynthTone(engine::SynthTone::CyberBass);
+
+    const int bassId = model::addTrack(song, model::TrackType::Instrument, "Bass").id;
+    song.tracks.back().synthSettings = bassPreset.synth;
+    song.tracks.back().effectChain   = bassPreset.effectChain;
+    // An octave above the guitar's low string: a bass under a drop tuning is
+    // already at the bottom of what most speakers reproduce.
+    const int bassRoot = keyRoot + 12;
+    for (int cycle = 1; cycle < 4; ++cycle)
+        place(bassId, engine::makeStarterBassPattern(bassRoot), (double) cycle * kCycle);
+
+    // --- Drums: the only part playing from bar 1, so the song starts with
+    // something rather than with a count of silence. Four contiguous cycles —
+    // a gap between drum clips would be a hole in the song, since a track
+    // with more than one clip really is silent between them.
+    const int drumId = model::addTrack(song, model::TrackType::Drum, "Drums").id;
+    song.tracks.back().drumKit = defaultDrumKitWithFactorySamples();
+
+    place(drumId, engine::makeStarterDrumIntroPattern(), 0.0);
+    place(drumId, engine::makeStarterDrumGroovePattern(false), kCycle);
+    place(drumId, engine::makeStarterDrumGroovePattern(false), 2.0 * kCycle);
+    place(drumId, engine::makeStarterDrumGroovePattern(true),  3.0 * kCycle); // fill to finish
+
+    // --- Guitar: enters at bar 9. Given the Modern Metal tone rather than a
+    // bare default so the pedal chain, the gate and the drop tuning are all on
+    // screen and audible on first launch instead of being features you have to
+    // know to go looking for.
+    const int guitarId = model::addTrack(song, model::TrackType::Guitar, "Guitar").id;
     song.tracks.back().guitarSettings = guitarTone.guitar;
     song.tracks.back().effectChain    = guitarTone.effectChain;
-    model::Clip guitarClip;
-    guitarClip.type        = model::ClipType::Instrument;
-    guitarClip.pattern     = engine::makeDefaultGuitarRiffPattern(guitarTone.guitar.tuning[0]);
-    guitarClip.lengthBeats = guitarClip.pattern.lengthBeats;
-    model::addClip(song, guitarId, guitarClip);
+
+    for (int cycle = 2; cycle < 4; ++cycle)
+        place(guitarId, engine::makeStarterGuitarRiffPattern(keyRoot), (double) cycle * kCycle);
+
+    // --- Lead: enters last, at bar 13, as two answering phrases. Two clips
+    // rather than one four-bar clip on purpose — see makeStarterLeadPattern.
+    const auto leadPreset = model::presetForSynthTone(engine::SynthTone::CyberLead);
+
+    const int leadId = model::addTrack(song, model::TrackType::Instrument, "Lead").id;
+    song.tracks.back().synthSettings = leadPreset.synth;
+    song.tracks.back().effectChain   = leadPreset.effectChain;
+
+    const int leadRoot = keyRoot + 24; // two octaves up: melody register
+    place(leadId, engine::makeStarterLeadPattern(leadRoot, 0), 3.0 * kCycle);
+    place(leadId, engine::makeStarterLeadPattern(leadRoot, 1), 3.0 * kCycle + 2.0 * kBar);
 
     return song;
 }
