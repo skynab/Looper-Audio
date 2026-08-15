@@ -865,6 +865,66 @@ int main(int argc, char** argv)
         }
     }
 
+    // Stopping the transport silences a ringing guitar.
+    //
+    // The strings deliberately ignore note-offs — a guitar rings until it is
+    // replucked or damped — so nothing in the MIDI stream can end a note once
+    // muteOnNoteOff is 0, which is what the drop-tuned tones use. That makes
+    // "the transport stopped" a separate event from "the note ended", and only
+    // one of them is an articulation.
+    //
+    // Without this, pressing stop left the strings ringing for their full
+    // decay: two seconds of guitar after the take had finished.
+    bool guitarStopsOnTransportStop = false;
+    {
+        constexpr double stopRate  = 44100.0;
+        constexpr int    stopBlock = 512;
+
+        GuitarNode guitar;
+        guitar.prepare(stopRate, stopBlock);
+        guitar.setDecaySeconds(4.0f);   // a long ring, so stopping has to do the work
+        guitar.setMuteOnNoteOff(0.0f);  // ...and note-offs cannot
+
+        const int total = (int) (stopRate * 1.5);
+        const int stopAt = (int) (stopRate * 0.5);
+
+        juce::AudioBuffer<float> mix(2, total);
+        mix.clear();
+
+        for (int pos = 0; pos < total; pos += stopBlock)
+        {
+            const int n = std::min(stopBlock, total - pos);
+
+            juce::MidiBuffer midi;
+            if (pos == 0)
+                midi.addEvent(juce::MidiMessage::noteOn(1, 40, 0.9f), 0);
+
+            ProcessContext context;
+            context.sampleRate                   = stopRate;
+            context.numSamples                   = n;
+            context.transport.playing            = pos < stopAt;
+            context.transport.playheadSamples    = pos;
+            context.transport.bpm                = 120.0;
+            context.transport.timeSigNumerator   = 4;
+            context.transport.timeSigDenominator = 4;
+            context.transport.ppqPosition        = (double) pos / (stopRate / 2.0);
+            context.transport.ppqAtBlockEnd      = (double) (pos + n) / (stopRate / 2.0);
+
+            juce::AudioBuffer<float> view(mix.getArrayOfWritePointers(), 2, pos, n);
+            guitar.process(view, midi, context);
+        }
+
+        // Sounding before the stop, and gone shortly after it. "Shortly"
+        // rather than "immediately" on purpose: the strings are damped, not
+        // cut, because zeroing them would click.
+        const float before = mix.getRMSLevel(0, stopAt - (int) (stopRate * 0.1), (int) (stopRate * 0.1));
+        const float after  = mix.getRMSLevel(0, stopAt + (int) (stopRate * 0.2), (int) (stopRate * 0.3));
+
+        guitarStopsOnTransportStop = before > 0.001f && after < before * 0.02f;
+
+        std::cout << "guitar stop: before=" << before << " after=" << after << "\n";
+    }
+
     // Tempo changes.
     //
     // The check the whole tempo-map conversion rests on, and the only one that
@@ -2708,6 +2768,7 @@ int main(int argc, char** argv)
               << "  guitarPalmMuteChugs=" << (guitarPalmMuteChugs ? 1 : 0)
               << "  tempoChangeMovesNotes=" << (tempoChangeMovesNotes ? 1 : 0)
               << "  tempoRampAccelerates=" << (tempoRampAccelerates ? 1 : 0)
+              << "  guitarStopsOnTransportStop=" << (guitarStopsOnTransportStop ? 1 : 0)
               << "  chorusChangesSound=" << (chorusChangesSound ? 1 : 0)
               << "  chorusDepthMatters=" << (chorusDepthMatters ? 1 : 0)
               << "  wobbleChangesSound=" << (wobbleChangesSound ? 1 : 0)
@@ -2762,7 +2823,7 @@ int main(int argc, char** argv)
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks
                  && guitarSounds && guitarCutsSameString && guitarPlaysSixAtOnce
-                 && guitarPicksLowestFret && guitarHammerOn && guitarPalmMuteChugs && tempoChangeMovesNotes && tempoRampAccelerates
+                 && guitarPicksLowestFret && guitarHammerOn && guitarPalmMuteChugs && tempoChangeMovesNotes && tempoRampAccelerates && guitarStopsOnTransportStop
                  && filterEnvChangesSound && subOscChangesSound && unisonChangesSound
                  && effectChainOrderMatters && effectChainRunsAllNodes
                  && sessionLaunchQuantizes && sessionStopWorks

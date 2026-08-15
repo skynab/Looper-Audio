@@ -86,9 +86,32 @@ public:
             openNotes_[(size_t) stringIndex].store(midiNote, std::memory_order_relaxed);
     }
 
-    void process(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi, const ProcessContext& /*context*/) override
+    void process(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midi, const ProcessContext& context) override
     {
         applySettings();
+
+        // Stopping the transport damps every string.
+        //
+        // Note-offs cannot do this job: this node ignores them on purpose,
+        // because a guitar string rings until it is replucked or damped, and
+        // muteOnNoteOff is 0 in the tones where that matters most. But "let a
+        // note ring past its note-off" is a musical choice *within* playback,
+        // while "keep ringing after the user pressed stop" is not - so the two
+        // are separate events and only one of them is an articulation.
+        //
+        // Damped rather than cut: mute() drops the loop gain so the strings
+        // decay away over a few milliseconds, which is a hand landing on them.
+        // Zeroing the buffers instead would put a click on the end of every
+        // take.
+        if (wasPlaying_ && ! context.transport.playing)
+            for (int s = 0; s < kNumGuitarStrings; ++s)
+            {
+                strings_[(size_t) s].mute(1.0f);
+                sounding_[(size_t) s].store(-1, std::memory_order_relaxed);
+                palmMuted_[(size_t) s] = false;
+            }
+
+        wasPlaying_ = context.transport.playing;
 
         const int numSamples = buffer.getNumSamples();
         int       position   = 0;
@@ -346,6 +369,9 @@ private:
     // only: written when a note is plucked, read when settings are applied,
     // both of which happen inside process().
     std::array<bool, kNumGuitarStrings> palmMuted_ {};
+
+    // Audio thread only: used to notice the transport stopping — see process().
+    bool wasPlaying_ = false;
     int                                pluckCounter_ = 0;
 
     std::array<std::atomic<int>, kNumGuitarStrings> openNotes_ {
