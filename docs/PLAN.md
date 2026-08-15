@@ -36,6 +36,11 @@ This is a living document. As sections mature they should graduate into their ow
 20. [Plugin hosting](#20-plugin-hosting)
 21. [A guitar instrument and its pane](#21-a-guitar-instrument-and-its-pane)
 22. [Appendix: reference reading](#22-appendix-reference-reading)
+23. [Guitar pedals](#23-guitar-pedals)
+24. [Chord columns on the fretboard](#24-chord-columns-on-the-fretboard)
+25. [Generative sound loops](#25-generative-sound-loops-first-slice-implemented)
+26. [New synth sounds: filter envelope, sub-oscillator, unison](#26-new-synth-sounds-filter-envelope-sub-oscillator-unison-implemented)
+27. [MIDI recording](#27-midi-recording-implemented)
 
 ---
 
@@ -1735,3 +1740,307 @@ new checks pass. The app builds warning-clean. What can't be verified headlessly
 whether "Analog Pluck Bass" and "Cyberpunk Stack" actually sound like what they're
 going for — load them on an Instrument track and listen; also worth a project
 save/reload to confirm the new fields round-trip.
+
+---
+
+## 27. MIDI recording (implemented)
+
+`§2` has promised "multi-track audio **+ MIDI** recording" since the beginning, and the
+audio half has been real and validated since the microphone-recording pass. The MIDI
+half is not, and the gap is precise rather than vague: `AudioEngine::handleIncomingMidiMessage`
+(`src/engine/AudioEngine.cpp`) pushes every incoming message into `midiCollector_`, the
+audio callback drains it into `incomingMidi_`, and `processBlock` hands that buffer to
+whichever track is armed — so a controller **plays** but is never **captured**. Nothing
+in the codebase writes an incoming note into a `Pattern`. Every note in every project
+to date has been drawn with the mouse or produced by `GenerativeLoop`.
+
+This is the same shape of gap as the two the project has already closed twice (the
+engine playing only clip zero of a track that modelled N; the audio-clip player doing
+the same). The difference is that here the capability doesn't exist at all rather than
+existing and being under-wired, so this is genuinely new surface — and it is the last
+missing *verb* in the core DAW loop.
+
+### The design rule this follows
+
+The same one `AudioRecorder` established: **the audio thread is the only writer, the
+message thread only reads what the audio thread has confirmed it is done with, and
+nothing on the audio thread allocates.** MIDI makes this easier than audio did, not
+harder — a take is a few thousand 16-byte events, not megabytes of samples, so there
+is no disk streaming and no `ThreadedWriter`; a pre-allocated `rt::SpscRingBuffer` is
+the whole mechanism.
+
+### Two new modules, both JUCE-free
+
+The valuable, subtle part of MIDI recording is *note pairing*, and it is pure math.
+Following the precedent set by `SequencerMath`, `MetronomeMath`, `NoteOps`,
+`PianoRollGeometry` and `Scale`, it goes in a headless, unit-tested module rather than
+staying a private detail of a JUCE class — which is why, unlike `AudioRecorder` (JUCE
+all the way down, and therefore only ever verifiable through the bounce tool), this
+feature can be tested properly by Catch2.
+
+1. **`engine/MidiCapture.h`** — the pairing. Two POD event types (`RecordedMidiEvent`,
+   timed in samples, as captured; `TimedMidiEvent`, timed in beats, after the caller
+   has converted through the tempo map) and one pure function turning a flat event
+   stream into `Note`s. It never sees a `juce::MidiMessage` and never sees a
+   `TempoMap`: the engine translates JUCE messages into PODs on the way in, and the
+   caller converts samples to beats on the way out. That leaves a function whose whole
+   contract is expressible as "these events in, these notes out".
+
+   The cases it must get right — each one a test:
+   - A note-on pairs with the **next** note-off of the same pitch.
+   - **A note-on with velocity 0 is a note-off.** Standard MIDI running-status
+     convention; a large fraction of real controllers send this, and missing it would
+     mean every note from those controllers records as held-forever.
+   - **A note still held when the take ends** gets its length clamped to the end of the
+     take rather than being discarded. Someone holding the final chord when they hit
+     Stop must not lose it.
+   - A note-off with no matching note-on is ignored (it happens whenever a key was
+     already down when recording started).
+   - The same pitch retriggered before its first note-off closes them **FIFO** — the
+     first on pairs with the first off. Chosen over LIFO because it keeps note lengths
+     in the order they were played.
+   - Zero- and negative-length results are clamped to a musical minimum rather than
+     emitted, since a `lengthBeats <= 0` note is silent in the sequencer and invisible
+     in the piano roll: it would look like a dropped note, not a short one.
+   - Output is sorted by start time, because the ring buffer's order is arrival order.
+
+2. **`engine/MidiRecorder.h`** — the capture state machine, deliberately mirroring
+   `AudioRecorder`'s lifecycle (`arm`/`disarm`/`isFinished`/lead-in skip/dropped
+   counting) so there is one recording discipline in the codebase, not two. It holds
+   an `rt::SpscRingBuffer<RecordedMidiEvent>`; `process()` is called from the audio
+   callback with the block's events, and the message thread drains continuously.
+
+   Two decisions worth recording:
+   - **The message thread drains on a timer, not only at the end of the take.** A
+     fixed ring big enough for a long take would be a hidden cap of exactly the kind
+     the audio recorder's history warns about — the take that comes back short with no
+     error. Draining continuously into a plain `std::vector` on the message thread
+     means the ring only ever has to hold one timer interval's worth of playing, and
+     the take itself is unbounded.
+   - **Overflow is counted, never swallowed** (`droppedEventCount()`), for the same
+     reason `AudioRecorder::droppedSampleCount` exists. A take missing a note it
+     cannot report is worse than one that failed outright.
+
+### Which recorder the Record button drives
+
+Today the button always records audio: with a Guitar or Instrument track selected it
+records a microphone take onto a **new audio track**, because a synth track cannot
+hold an audio clip. That is now the wrong answer to the right question.
+
+**The rule becomes: the record type follows the armed track's type.** An Audio track
+records audio, through the existing, proven, entirely untouched path. An
+Instrument/Drum/Guitar track records MIDI into a clip on that track. This needs no new
+UI, no mode switch to forget the state of, and it makes the Record button mean the
+same thing the rest of the app already means by "armed". It is a behaviour change for
+the synth-track case only, and in that case the old behaviour was close to useless.
+
+### Where the notes land
+
+On stop: a **new `ClipType::Instrument` clip appended to the armed track**, starting
+at the beat where capture actually began (from the recorder's latched start playhead,
+after any count-in — the same value and the same reasoning as the audio path's
+`startPlayheadSamples`), committed through `history_` as one undoable step.
+
+Two things deliberately deferred, and named here so they are not mistaken for
+oversights:
+- **Overdub/merge into an existing clip.** Punching into a part and having the new
+  notes join the old clip is what a user eventually wants, but it needs a merge policy
+  (replace the punched range? union? per-pitch?) that deserves its own pass. A new
+  clip is what audio recording already does, it is consistent, and multi-clip tracks
+  are proven.
+- **Record quantize.** `NoteOps::quantizeNotes` already exists and already has a UI
+  path, so a recorded take can be quantized immediately after with a machine that is
+  already tested. Doing it *during* the commit would mean the raw performance is
+  unrecoverable behind one undo step.
+
+Clip length rounds **up to the next whole bar** (via the tempo map's
+`quartersPerBar()`), not to the last note. A take is a musical phrase; ending the clip
+on the final note's release would make a loop of it jarringly short.
+
+### Verification
+
+- Headless Catch2 for both new modules — every pairing case above, plus the recorder's
+  armed/lead-in/finished transitions and its overflow counting. This is the part that
+  can be tested properly, and it is also the part most likely to be subtly wrong.
+- The bounce tool gets a check that a *recorded* pattern (built from a synthetic event
+  stream, committed the way the app commits it) renders to audible sound through the
+  normal synth path — proving the produced `Pattern` is real musical data and not just
+  a struct that passes its own tests.
+- `rmsDry=0.149266` and the rest of the existing suite must be unchanged: nothing in
+  this pass touches the signal path, and the audio-recording path is not modified at
+  all.
+- **What cannot be verified headlessly, and needs a live try:** whether a real
+  hardware controller reaches the callback and records in time — the same single open
+  question microphone recording ended on, for the same reason.
+
+### Build order
+
+1. `engine/MidiCapture.h` + tests (pure pairing).
+2. `engine/MidiRecorder.h` + tests (capture state machine).
+3. Wire into `AudioEngine`: a `midiRecorder_` member, capture from `incomingMidi_` in
+   the audio callback, and a `beginMidiRecording`/`drain`/`finish` API mirroring the
+   audio one.
+4. Wire into `MainComponent`: route the Record button by armed track type; on finish,
+   convert samples to beats through `uiTempoMap_`, pair, and commit the clip.
+5. Bounce-tool check; README/PLAN updates.
+
+### What actually landed, and the one thing the plan got wrong
+
+Built as designed, in the stated order, with one correction the bounce tool
+forced — and it is the interesting part of this pass.
+
+The obvious way to skip a count-in is what `AudioRecorder` does: while the
+lead-in is outstanding, drop the block and count it down. For audio that is
+merely imprecise (capture starts up to one buffer late). For MIDI it is
+**wrong**, and the `midiRecordingWorks` check failed on the first run because of
+it. The lead-in almost never ends on a block boundary, so the block it ends
+*inside* gets discarded whole — and that block contains the downbeat the
+count-in was counting to, which is precisely where a player puts their first
+note. The most common note anyone records was being silently dropped.
+
+`MidiRecorder::process` now subtracts a partial lead-in *within* the block and
+starts capturing mid-block at that offset: events before it belong to the wait,
+events at or after it belong to the take. The take's start playhead is latched
+as the exact sample the count-in ended on rather than the start of the
+containing block, which also makes the recorded clip land on the downbeat
+instead of up to a buffer early. A dedicated unit test now pins this
+("A note on the count-in downbeat is captured, not swallowed").
+
+Worth recording because the same latent flaw is still in `AudioRecorder` — it
+is far less serious there (a few hundred samples of silence at the head of a
+take, not a lost note), which is presumably why nothing has ever caught it, but
+it is the same mistake.
+
+A second thing caught in review before it shipped: `AudioEngine::captureMidi`
+returns early when no take is armed, which is right for cost but was initially
+guarded on `! isArmed()` alone. `MidiRecorder::process` is what publishes
+`finished_` after a take is disarmed, so that guard would have meant no take
+ever finished and the UI stuck mid-record forever. The guard is now
+`! armed && isFinished()`, and the buffer walk — not the `process()` call — is
+what a disarmed-but-unfinished take skips. This is the same failure mode
+`AudioRecorder` documents at length in its own `! armedNow && ! finished_`
+branch; encountering it independently in the mirrored class suggests the shape
+is inherent to the pattern rather than incidental.
+
+### Verification as run
+
+- **562 headless tests pass** (up from 539: 12 new `MidiCapture` pairing cases,
+  11 new `MidiRecorder` lifecycle cases including the count-in downbeat and the
+  ring-overflow counting).
+- **The bounce tool's full suite passes, including the new
+  `midiRecordingWorks`** — a synthetic performance driven through the whole
+  chain (blocks with a count-in → ring → drain → samples-to-beats → pairing)
+  and rendered through the normal synth path, asserting the notes land on the
+  beats they were played, sound, and stop when they were released.
+- `rmsDry=0.149266` and `rmsFiltered=0.103702` are unchanged, as are all 50+
+  other checks: nothing in this pass touches the signal path, and the
+  audio-recording path is not modified at all.
+- The app builds warning-clean.
+- **Still unverified, and only a live try can settle it:** whether a real
+  hardware controller reaches the callback and records in time. The capture
+  logic is proven against synthetic input, exactly as microphone recording was;
+  what remains is the same open question that pass ended on.
+
+### Correction: the record-source decision, and hot-plugged MIDI
+
+The routing rule above — "the record type follows the armed track's type" — was wrong
+as shipped, and testing found it immediately: with the default Instrument track
+selected and no controller attached, Record armed a *MIDI* take on a machine that had
+only a microphone, captured nothing, and looked like a dead button.
+
+The mistake is worth naming precisely, because the rule reads sensibly right up until
+it fails. **"What can this track hold?" and "what is there to record from?" are two
+independent questions**, and the rule answered only the first. A track's type
+constrains what a take can *become*; it says nothing about whether a source exists.
+
+Both are now inputs to `app::RecordSourceChoice` — a JUCE-free module holding the whole
+decision table, with every row tested (including the exhaustive invariant that no
+decision ever selects a source that isn't connected). The behaviour:
+
+| Armed track | MIDI connected | Audio input | Result |
+|---|---|---|---|
+| Instrument/Drum/Guitar | yes | either | record MIDI |
+| Instrument/Drum/Guitar | no | yes | record audio to a new track, *and say so* |
+| Instrument/Drum/Guitar | no | no | refuse, naming both possible fixes |
+| Audio | either | yes | record audio |
+| Audio | either | no | refuse, naming mic permission if opening failed |
+
+The fallback row is the one that matters: it restores exactly what the app did before
+MIDI recording existed, rather than inventing a third behaviour, and it reports itself
+in the status bar — a Record button that quietly does something other than what the
+armed track implies is worse than one that explains itself.
+
+Recording audio while a MIDI-capable track is armed *and* a controller is connected is
+deliberately not reachable: arm an audio track for that. That is the standard DAW
+answer, and inventing a modifier or a mode toggle to express it would be exactly the
+"mode to forget the state of" this design set out to avoid.
+
+**A second, independent bug surfaced while investigating it.** MIDI inputs were
+enumerated once, in the `AudioEngine` constructor, and never again — so a controller
+plugged in after launch was invisible to the app for the entire session: it could not
+record, and could not even *play*. This predates MIDI recording (it made the existing
+live-monitoring path silently useless too) and was only noticeable once anything
+depended on a controller being present. `AudioEngine::refreshMidiInputs()` now
+re-enumerates, registering arrivals and unregistering departures, tracking registered
+identifiers rather than re-deriving them from the device list — registering the same
+device twice would deliver every message twice, and an unplugged device is no longer
+*in* that list, so it could never be unregistered (which also fixes the destructor
+leaking callbacks for devices unplugged mid-session). It runs on a slow cadence from
+the UI timer (every two seconds — enumeration is a system call and the timer is 30Hz)
+and again whenever a take is armed.
+
+569 headless tests pass (7 new); the bounce suite is unchanged, `rmsDry=0.149266` and
+`midiRecordingWorks=1` included.
+
+### Prompting for microphone permission at the moment it matters
+
+The "no audio input — check microphone permission, then restart" message was accurate
+and useless. It described a fix rather than offering one, and the restart it demanded
+was not even necessary.
+
+The underlying macOS behaviour is what makes this awkward. The OS shows its microphone
+prompt **once**, when an app first opens an input — and this app opens its input in the
+`AudioEngine` constructor, so that prompt lands at launch, before anyone has a reason to
+care, and is trivially dismissed. After that the OS never asks again: CoreAudio reports
+a device with no input channels forever, which from inside the app is indistinguishable
+from having no microphone at all. Nothing the app does can re-trigger the prompt.
+
+JUCE is no help here — `RuntimePermissions::request` is an Android-only implementation
+that returns true everywhere else, which `src/app/CMakeLists.txt` already documented for
+the Info.plist key. So `app::MicrophonePermission` is a small platform shim:
+`microphonePermission()`, `requestMicrophonePermission()` and
+`openMicrophonePrivacySettings()`, implemented over AVFoundation in an Objective-C++
+translation unit on macOS and as an honest `NotRequired` everywhere else (Windows and
+Linux have no per-app gate an application can query — a blocked device there simply
+appears as no device, which the existing path already reports).
+
+Pressing Record now resolves the permission before deciding anything is impossible:
+
+- **Never asked** → request it, which is the OS prompt appearing at the moment the user
+  actually wants to record. On a grant, the input is re-opened and **the take starts by
+  itself** — answering a prompt should not mean pressing Record a second time. Guarded
+  by `retryingAfterMicPermission_` so a grant that still yields no usable input reports
+  that instead of looping.
+- **Denied** → a dialog with an **Open Settings** button that goes straight to the
+  Privacy & Security microphone list, rather than a sentence describing where it lives.
+- **Granted but no input open** (permission switched on in Settings *after* launch, the
+  case the old message called for a restart) → `AudioEngine::reopenAudioInput()` re-asks
+  the device manager for input, falling back to output-only exactly as the constructor
+  does if it still fails. Playback is never the price of asking.
+
+Two ordering decisions that are easy to get backwards:
+
+1. **A MIDI take is decided before any permission question.** A controller needs no
+   microphone, and prompting for one would be a non-sequitur.
+2. **Permission is settled before "nothing is connected" is treated as final.** A denied
+   microphone presents as a device with no input channels — i.e. exactly like absent
+   hardware. Checking in the other order reports a one-click fix as a missing device,
+   which is the same class of mistake as the record-source bug above: acting on a
+   symptom that two very different causes share.
+
+**Not verifiable headlessly, and not unit-tested:** every branch here is either an OS
+call or a modal dialog. The decision *table* that feeds it is tested
+(`RecordSourceChoiceTests`); this layer is glue over `AVCaptureDevice` and
+`NSWorkspace`, and only a live run on a machine in each permission state can confirm it.
+What is checked mechanically: the built bundle carries `NSMicrophoneUsageDescription`
+and links AVFoundation and AppKit.

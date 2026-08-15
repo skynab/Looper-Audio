@@ -25,6 +25,20 @@ target_sources(LooperAudio PRIVATE
   ${PROJECT_SOURCE_DIR}/src/engine/AudioEngine.cpp
   ${PROJECT_SOURCE_DIR}/src/engine/Mp3Encoder.cpp)
 
+# Microphone permission is a per-platform question with only one real answer
+# today (see app/MicrophonePermission.h): macOS gates it and can prompt for it,
+# nowhere else does. The macOS implementation needs AVFoundation, and so has to
+# be Objective-C++ — hence a separate translation unit rather than an #ifdef
+# inside MainComponent.cpp.
+if (APPLE)
+  target_sources(LooperAudio PRIVATE MicrophonePermission_mac.mm)
+  target_link_libraries(LooperAudio PRIVATE
+    "-framework AVFoundation"
+    "-framework AppKit")
+else()
+  target_sources(LooperAudio PRIVATE MicrophonePermission_generic.cpp)
+endif()
+
 # Trim JUCE features we don't need yet — this also removes system dependencies
 # (WebKit, libcurl) that would otherwise be required to build on Linux.
 target_compile_definitions(LooperAudio PRIVATE

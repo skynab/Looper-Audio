@@ -22,6 +22,7 @@
 #include "engine/Metronome.h"
 #include "engine/SessionPlayer.h"
 #include "engine/MidiFileIO.h"
+#include "engine/MidiRecorder.h"
 #include "engine/MasteringProcessor.h"
 #include "engine/OfflineRenderer.h"
 #include "engine/ReverbEffect.h"
@@ -631,6 +632,108 @@ int main(int argc, char** argv)
 
         generativeLoopWorks = rmsGenKick > 0.01f && rmsGenSnare1 > 0.01f && rmsGenSnare2 > 0.01f
                            && rmsGenMelodicStart > 0.001f && rmsGenMelodicWhole > 0.001f;
+    }
+
+    // MIDI-recording check (see engine/MidiRecorder.h, engine/MidiCapture.h):
+    // drives a synthetic performance through the *whole* capture chain the
+    // way the app does — blocks pushed at MidiRecorder::process with a
+    // count-in to skip, drained from the ring on the message-thread side,
+    // sample times converted to beats, paired into notes — and then renders
+    // the resulting Pattern through the same synth path every other pattern
+    // here goes through.
+    //
+    // The unit tests already prove the pairing rules in isolation; what they
+    // cannot prove is that the produced Pattern is real musical data rather
+    // than a struct that only satisfies its own tests. That is what this
+    // checks: notes at the beats they were played, audible, and silence where
+    // nothing was played.
+    bool midiRecordingWorks = false;
+    {
+        MidiRecorder recorder;
+
+        const int    block        = 512;
+        const double samplesPerBeat = 60.0 / bpm * sampleRate;
+        const auto   beatToSample = [&](double beat) { return (int64_t) (beat * samplesPerBeat); };
+
+        // One bar of count-in, exactly as AudioEngine::beginMidiRecording
+        // computes it — the take must start at the first note actually
+        // played, not where the transport was armed.
+        const int64_t leadIn = beatToSample(4.0);
+        recorder.arm(leadIn);
+
+        // Two notes: one at take-beat 0, one at take-beat 1, each a beat
+        // long. Held against the block grid rather than aligned to it, so the
+        // block-relative offset arithmetic is genuinely exercised.
+        struct Played { double beat; int note; bool on; };
+        const std::vector<Played> performance {
+            { 0.0, 60, true }, { 1.0, 60, false },
+            { 1.0, 67, true }, { 2.0, 67, false },
+        };
+
+        std::vector<RecordedMidiEvent> take;
+        const int64_t totalSamples = leadIn + beatToSample(3.0);
+
+        for (int64_t playhead = 0; playhead < totalSamples; playhead += block)
+        {
+            // Whatever falls inside this block, at its offset within it —
+            // what AudioEngine::captureMidi hands over each callback.
+            std::vector<RecordedMidiEvent> blockEvents;
+            for (const auto& played : performance)
+            {
+                const int64_t at = leadIn + beatToSample(played.beat);
+                if (at >= playhead && at < playhead + block)
+                    blockEvents.push_back({ at - playhead, played.note, played.on ? 0.8f : 0.0f, played.on });
+            }
+
+            recorder.process(blockEvents.data(), (int) blockEvents.size(), block, true, playhead);
+            recorder.drain(take); // the app's timer, every tick
+        }
+
+        recorder.disarm();
+        recorder.process(nullptr, 0, block, true, totalSamples);
+        recorder.drain(take);
+
+        const int64_t startSample = recorder.startPlayheadSamples();
+        const int64_t endSample   = recorder.endPlayheadSamples();
+
+        // The count-in must have been skipped: capture starts a bar in, not
+        // at zero. Compared against the block grid, since capture begins on
+        // the first *block* after the lead-in elapses.
+        const bool countInSkipped = startSample >= leadIn && startSample < leadIn + block;
+
+        std::vector<TimedMidiEvent> timed;
+        const double takeStartBeats = (double) startSample / samplesPerBeat;
+        for (const auto& event : take)
+            timed.push_back({ (double) event.timeSamples / samplesPerBeat - takeStartBeats,
+                              event.noteNumber, event.velocity, event.noteOn });
+
+        const double takeEndBeats = (double) endSample / samplesPerBeat - takeStartBeats;
+        auto notes = MidiCapture::notesFromEvents(std::move(timed), takeEndBeats);
+
+        const bool notesPaired = notes.size() == 2
+                              && notes[0].noteNumber == 60 && notes[1].noteNumber == 67
+                              && std::abs(notes[0].startBeats - 0.0) < 0.05
+                              && std::abs(notes[1].startBeats - 1.0) < 0.05
+                              && std::abs(notes[0].lengthBeats - 1.0) < 0.05
+                              && std::abs(notes[1].lengthBeats - 1.0) < 0.05;
+
+        Pattern recorded;
+        recorded.lengthBeats = MidiCapture::clipLengthForTake(takeEndBeats, 4.0);
+        recorded.notes       = std::move(notes);
+
+        const auto  recordedBuffer = OfflineRenderer::render({ recorded }, std::vector<float> { 0.0f },
+                                                             bpm, sampleRate, 2.0);
+        const float rmsRecNote1 = recordedBuffer.getRMSLevel(0, 0, shortWin);
+        const float rmsRecNote2 = recordedBuffer.getRMSLevel(0, (int) (0.5 * sampleRate), shortWin);
+        // Past both notes' one-beat length (they end at 1.0s), so silence
+        // here confirms the recorded lengths are real rather than notes
+        // running on to the end of the clip.
+        const float rmsRecAfter = recordedBuffer.getRMSLevel(0, (int) (1.4 * sampleRate), shortWin);
+
+        midiRecordingWorks = countInSkipped && notesPaired
+                          && recorder.droppedEventCount() == 0
+                          && rmsRecNote1 > 0.001f && rmsRecNote2 > 0.001f
+                          && rmsRecAfter < 0.001f;
     }
 
     // Per-pad mix check: the same pattern again, but with the kick pulled
@@ -2754,6 +2857,7 @@ int main(int argc, char** argv)
               << "  audioTrackWorks=" << (audioTrackWorks ? 1 : 0)
               << "  multiClipAudioGates=" << (multiClipAudioGates ? 1 : 0)
               << "  midiRoundTripWorks=" << (midiRoundTripWorks ? 1 : 0)
+              << "  midiRecordingWorks=" << (midiRecordingWorks ? 1 : 0)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
               << "  generativeLoopWorks=" << (generativeLoopWorks ? 1 : 0)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
@@ -2819,6 +2923,7 @@ int main(int argc, char** argv)
                  && perTrackAutomationWorks
                  && soloMatchesArpOnly && stemsSumToMix && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
+                 && midiRecordingWorks
                  && generativeLoopWorks
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks

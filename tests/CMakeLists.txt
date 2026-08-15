@@ -15,6 +15,8 @@ add_executable(looper_tests
   engine/GenerativeLoopTests.cpp
   engine/GenreTests.cpp
   engine/MetronomeMathTests.cpp
+  engine/MidiCaptureTests.cpp
+  engine/MidiRecorderTests.cpp
   engine/NoteOpsTests.cpp
   engine/OscillatorTests.cpp
   engine/AutomationCurveTests.cpp
@@ -57,6 +59,7 @@ add_executable(looper_tests
   app/ScrollFollowTests.cpp
   app/ChordStampTests.cpp
   app/TrackSelectionTests.cpp
+  app/RecordSourceChoiceTests.cpp
   app/DragCommitTests.cpp
   app/ClipLengthRepairTests.cpp)
 

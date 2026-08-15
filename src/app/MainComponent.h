@@ -12,6 +12,9 @@
 #include "engine/DrumKitStyle.h"
 #include "engine/GuitarTone.h"
 #include "engine/MasteringPreset.h"
+#include "engine/MidiCapture.h"
+#include "app/RecordSourceChoice.h"
+#include "app/MicrophonePermission.h"
 #include "engine/AudioEdits.h"
 #include "engine/AudioExport.h"
 #include "engine/TimeStretch.h"
@@ -168,6 +171,46 @@ private:
     void                   repairRecordedClipLengths();
     void                   toggleRecording();
     void                   finishRecordingIfReady();
+
+    /**
+        Decides what pressing Record captures, from the armed track's type
+        *and* what is actually plugged in.
+
+        The armed track's type alone is not enough, which is exactly how this
+        first shipped broken: with the default Instrument track selected,
+        Record chose MIDI and captured nothing on a machine with only a
+        microphone. What a track *can* hold and what there is to record *from*
+        are two different questions, and both have to be asked.
+
+        @p explanation is filled in whenever the answer is worth saying out
+        loud — why nothing can be recorded, or why a take is going somewhere
+        other than the armed track.
+    */
+    app::RecordSource      chooseRecordSource(int trackIndex, juce::String& explanation) const;
+
+    /**
+        Makes sure the OS microphone permission is settled before an audio take
+        starts, prompting for it if it has never been asked and offering System
+        Settings if it was refused.
+
+        Returns true if recording can go ahead right now. False means this has
+        taken over: either a prompt is up (and Record retries itself once the
+        answer arrives) or the user has been told why it cannot proceed. Never
+        called for a MIDI take — a controller needs no microphone, and
+        prompting for one would be a non-sequitur.
+    */
+    bool                   ensureMicrophoneAccess();
+
+    /** Guards the one automatic retry after a permission prompt, so a grant
+        that still leaves no usable input reports that instead of prompting in
+        a loop. */
+    bool                   retryingAfterMicPermission_ = false;
+    void                   toggleMidiRecording();
+    void                   finishMidiRecordingIfReady();
+    /** Turns the drained take into a clip on the target track. Split out of
+        finishMidiRecordingIfReady so the beats conversion and the commit can
+        be read (and reasoned about) apart from the take's lifecycle. */
+    void                   commitMidiTake(int targetTrack, int64_t startSample, int64_t endSample);
     juce::File             recordingsDirectory() const;
     juce::File             presetsDirectory() const;
     void                   refreshPresetList();
@@ -402,6 +445,22 @@ private:
 
     juce::File                  recordingFile_;
     int                         recordingTargetTrack_ = -1; // -1 = a new track
+
+    // A MIDI take in progress. Separate flags from the audio take's rather
+    // than one shared "recording" flag: the two takes finish through different
+    // engine calls, and a single flag would make "which recorder do I ask" a
+    // question with two possible answers at the moment it matters most.
+    bool                        awaitingMidiTake_       = false;
+    int                         midiRecordingTargetTrack_ = -1;
+
+    // Timer ticks since MIDI inputs were last re-enumerated — see
+    // timerCallback for why this is throttled rather than done every tick.
+    int                         midiRescanTicks_ = 0;
+
+    // Drained from the engine's ring on every timer tick, not only at the end
+    // of the take — which is what keeps the ring small and the take unbounded
+    // (see engine::MidiRecorder).
+    std::vector<engine::RecordedMidiEvent> midiTakeEvents_;
 
     // App-level preferences (not project data): which panel lives in which
     // dock region, and the file browser's user bookmarks. Saved on the

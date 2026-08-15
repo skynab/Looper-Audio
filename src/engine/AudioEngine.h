@@ -16,6 +16,7 @@
 #include "engine/AudioFilePlayerNode.h"
 #include "engine/DrumKitNode.h"
 #include "engine/AudioRecorder.h"
+#include "engine/MidiRecorder.h"
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
 #include "engine/EqEffect.h"
@@ -157,6 +158,43 @@ public:
         audio device has no active input channels. Capturing only actually
         happens while the transport is playing, and only after any count-in
         (see setCountInBars) has elapsed. */
+    // ---- what is actually connected (message thread) ----
+    /**
+        Re-enumerates MIDI inputs, registering any that have appeared and
+        dropping any that have gone. Returns true if the set changed.
+
+        This used to happen once, in the constructor — so a controller plugged
+        in after launch was never routed anywhere: it could not play, let alone
+        record, and nothing said why. Called on a slow cadence from the UI
+        timer and again whenever a take is armed.
+    */
+    bool refreshMidiInputs();
+
+    /** True if any MIDI input device is currently registered. What makes
+        "record MIDI or record audio?" answerable from what is really plugged
+        in rather than from the armed track's type alone. */
+    bool hasMidiInput() const;
+
+    /** True if the open audio device actually has input channels — i.e. there
+        is something to record audio *from*. Distinct from inputOpenError(),
+        which says why opening one failed. */
+    bool hasAudioInput() const;
+
+    /**
+        Re-opens the audio device asking for input again, and returns true if
+        it now has some.
+
+        Exists because the input is opened once at startup, and a permission
+        granted *after* that is invisible until something re-asks: the app
+        would keep reporting "no audio input" with the microphone switched on
+        in System Settings, and the only advice that worked was to restart it.
+        Called after a permission grant, so recording can start immediately.
+
+        Falls back to output-only exactly as the constructor does if the input
+        still cannot be opened — playback must never be the price of asking.
+    */
+    bool reopenAudioInput();
+
     /** Why the audio input could not be opened, or empty if it did.
 
         Non-empty means the app fell back to output only: playback works,
@@ -186,6 +224,41 @@ public:
     /** Closes the take's file and returns it; empty if nothing was captured.
         Valid only after isRecordingFinished() is observed true. */
     juce::File finishRecordedTake() { return recorder_.finishTake(); }
+
+    // ---- MIDI recording (message thread) ----
+    /**
+        Arms a MIDI take: incoming notes are captured instead of only being
+        played through the armed track.
+
+        The audio counterpart of this, beginRecording, can fail (no input
+        device, unopenable file) and so returns bool. This cannot: MIDI capture
+        needs no device to be open and no file to exist — a controller that is
+        absent simply sends nothing, which is an empty take rather than an
+        error. Count-in is shared with the audio path (see setCountInBars).
+    */
+    void beginMidiRecording();
+
+    /** True while a MIDI take's count-in is still running. */
+    bool isMidiCountingIn() const noexcept { return midiRecorder_.leadInRemaining() > 0; }
+    void stopMidiRecording() { midiRecorder_.disarm(); }
+    bool isMidiRecordingFinished() const noexcept { return midiRecorder_.isFinished(); }
+    int64_t midiRecordedEventCount() const noexcept { return midiRecorder_.capturedEventCount(); }
+
+    /** Events lost because the message thread stopped draining. Non-zero means
+        the take is missing notes — see MidiRecorder::droppedEventCount. */
+    int64_t midiRecordedDroppedEvents() const noexcept { return midiRecorder_.droppedEventCount(); }
+
+    /** Where the transport was when MIDI capture began / stopped, in samples,
+        or -1. The start is what positions the clip; the end is what bounds a
+        note still held when the take stopped. */
+    int64_t midiTakeStartSample() const noexcept { return midiRecorder_.startPlayheadSamples(); }
+    int64_t midiTakeEndSample() const noexcept { return midiRecorder_.endPlayheadSamples(); }
+
+    /** Moves everything captured since the last call onto @p destination.
+        Call on a timer during the take and once more after
+        isMidiRecordingFinished(), so the ring never has to hold a whole take
+        (see MidiRecorder). */
+    void drainMidiTake(std::vector<RecordedMidiEvent>& destination) { midiRecorder_.drain(destination); }
 
     /** Dry input monitoring: input summed straight to the output, after the
         master bus. Off by default — monitoring a built-in microphone through
@@ -565,7 +638,21 @@ private:
 
     juce::String  inputOpenError_;
 
+    // MIDI input identifiers this engine has registered a callback for.
+    // Tracked rather than re-derived from juce::MidiInput::getAvailableDevices()
+    // because registering the same device twice would deliver every message
+    // twice, and a device that has been unplugged is no longer in that list at
+    // all — so it could never be unregistered. Message thread only.
+    juce::StringArray registeredMidiInputs_;
+
     AudioRecorder recorder_;
+    MidiRecorder  midiRecorder_;
+
+    // Scratch for translating a block's juce::MidiBuffer into the PODs
+    // MidiRecorder takes. Sized once, on the message thread, so the audio
+    // thread never grows it — and capped, so a stuck controller spraying
+    // events can't make a block's translation unbounded.
+    std::vector<RecordedMidiEvent> midiCaptureScratch_;
 
     // Drains the recorder's FIFO to disk. Started once and left running: it
     // idles when nothing is recording, and starting a thread at the moment the
@@ -578,6 +665,21 @@ private:
     Metronome     metronome_;
     int           countInBars_ = 0; // message thread only; read when arming
     std::atomic<double> launchQuantumBeats_ { 4.0 }; // one bar of 4/4
+
+    /** Most note events one block will hand to the MIDI recorder. Well past
+        anything a human can play in a buffer; a stuck controller past it is
+        counted as dropped like any other overflow rather than allowed to grow
+        the scratch buffer on the audio thread. */
+    static constexpr std::size_t kMaxCapturedEventsPerBlock = 256;
+
+    /** The count-in for a take about to be armed, in samples, from the tempo
+        in force where it will start. Message thread; shared by both
+        recorders so a MIDI take and an audio take count in identically. */
+    int64_t countInLeadInSamples() const;
+
+    /** Translates a block's note messages into PODs and offers them to the
+        MIDI recorder. Audio thread; allocation-free. */
+    void captureMidi(const juce::MidiBuffer& midi, const ProcessContext& context) noexcept;
 
     /** Rebuilds and submits a track's chain from chainStructure_. Message
         thread. Also called when the device (re)starts, since a chain must be

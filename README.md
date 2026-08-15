@@ -268,6 +268,65 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > suite — including `rmsDry=0.149266`, `rmsFiltered=0.103703`, and three new checks proving the new
 > DSP actually changes the sound — is unchanged. See [`docs/PLAN.md`](docs/PLAN.md) §26 for the
 > full write-up, including why a fast path rather than one unified render loop.
+>
+> **MIDI recording works — you can play a part in.** `§2` of the plan has promised
+> "multi-track audio **+ MIDI** recording" from the start and only the audio half was
+> real: incoming MIDI was played through the armed track and never captured, so every
+> note in every project had to be drawn with the mouse or generated. Now **Record works
+> out what to capture from the armed track's type *and* what is actually plugged in** —
+> an Instrument/Drum/Guitar track with a controller connected records MIDI into a new
+> clip on that track, positioned where capture actually began (after any count-in) and
+> committed as one undoable step, opened in the piano roll the way **Add Clip** opens
+> the clip it makes; an Audio track records audio through the existing, untouched path;
+> and a synth track with *no* controller attached falls back to a microphone take on a
+> new track (what the app did before MIDI recording existed) and says so in the status
+> bar rather than silently capturing nothing. No new UI and no mode to forget the state
+> of: one Record button that explains itself.
+>
+> Routing on the armed track's type *alone* was the first attempt and it shipped broken
+> — with the default Instrument track selected, Record chose MIDI and captured nothing
+> at all on a machine with only a microphone, so the button appeared dead. The fix
+> separated the two questions that had been conflated ("what can this track hold?" and
+> "what is there to record from?") into `app::RecordSourceChoice`, a JUCE-free decision
+> table with every row tested. Fixed alongside it: MIDI inputs were enumerated **once**
+> at startup, so a controller plugged in after launch was invisible for the whole
+> session — it could not record, and could not even play. They are now re-scanned on a
+> slow cadence and again whenever a take is armed.
+>
+> **Record now asks for microphone permission itself**, instead of telling you to go
+> and enable it. macOS shows its permission prompt only once, when an app first opens
+> an input — which here happened at launch, before there was any reason to care — and
+> after that it never asks again, so a dismissed prompt left recording permanently
+> broken with only a "check System Settings, then restart" message to explain it.
+> Pressing Record now settles the permission first: never asked → the system prompt
+> appears *now*, and on a grant the take starts by itself; already denied → a dialog
+> with an **Open Settings** button that opens the Privacy & Security microphone list
+> directly; granted after launch → the audio input is simply re-opened
+> (`AudioEngine::reopenAudioInput`), so restarting the app has stopped being part of
+> the fix. A MIDI take never triggers any of this — a controller needs no microphone.
+> Implemented as a small AVFoundation shim (`app::MicrophonePermission`) because JUCE
+> has no macOS equivalent; on Windows and Linux it reports "not required", since
+> neither has a per-app gate an app can query.
+>
+> Two new JUCE-free, headless-tested modules back it, following the same "pull the math
+> out where it can be tested" rule as `SequencerMath`/`PianoRollGeometry`/`Scale`:
+> `engine::MidiCapture` (note pairing — velocity-0 note-ons treated as note-offs, notes
+> still held at the end of the take clamped rather than dropped, FIFO retrigger, unmatched
+> note-offs ignored) and `engine::MidiRecorder` (the capture state machine, deliberately
+> mirroring `AudioRecorder`'s arm/disarm/lead-in/finished lifecycle, with a pre-allocated
+> `rt::SpscRingBuffer` drained on the message thread every timer tick so the ring stays
+> small and the take stays unbounded — and overflow *counted*, never swallowed).
+>
+> The bounce tool earned its keep here: the new `midiRecordingWorks` check failed on its
+> first run and caught a real bug, not a test artifact. Skipping a count-in by dropping
+> whole blocks — what `AudioRecorder` does — discards the block the lead-in ends *inside*,
+> and that block holds the downbeat the count-in was counting to, i.e. exactly where a
+> player puts their first note. Capture now starts mid-block at the exact sample the
+> count-in ended on. All 562 headless tests pass and the full bounce suite, including
+> `rmsDry=0.149266` and `rmsFiltered=0.103702`, is unchanged — nothing here touches the
+> signal path. See [`docs/PLAN.md`](docs/PLAN.md) §27. **What can't be verified
+> headlessly: whether a real hardware controller reaches the callback and records in
+> time — try it live.**
 
 ## Tech stack
 

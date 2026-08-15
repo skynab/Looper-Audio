@@ -50,21 +50,91 @@ AudioEngine::AudioEngine()
 
     deviceManager_.addAudioCallback(this);
 
-    // Route every available MIDI input into the collector.
-    for (const auto& input : juce::MidiInput::getAvailableDevices())
-    {
-        deviceManager_.setMidiInputDeviceEnabled(input.identifier, true);
-        deviceManager_.addMidiInputDeviceCallback(input.identifier, this);
-    }
+    refreshMidiInputs();
 }
 
 AudioEngine::~AudioEngine()
 {
-    for (const auto& input : juce::MidiInput::getAvailableDevices())
-        deviceManager_.removeMidiInputDeviceCallback(input.identifier, this);
+    // Whatever we actually registered, not whatever happens to be plugged in
+    // now — a device unplugged during the session is not in
+    // getAvailableDevices() any more, and its callback would never be removed.
+    for (const auto& identifier : registeredMidiInputs_)
+        deviceManager_.removeMidiInputDeviceCallback(identifier, this);
 
     deviceManager_.removeAudioCallback(this);
     deviceManager_.closeAudioDevice();
+}
+
+bool AudioEngine::reopenAudioInput()
+{
+    // The same two-step the constructor does, and for the same reason: asking
+    // for input is allowed to fail, but it must never cost the output device.
+    // If this second attempt also fails we are no worse off than before it.
+    inputOpenError_ = deviceManager_.initialiseWithDefaultDevices(2, 2);
+
+    if (inputOpenError_.isNotEmpty())
+    {
+        const auto outputOnlyError = deviceManager_.initialiseWithDefaultDevices(0, 2);
+
+        juce::Logger::writeToLog("Audio input still unavailable (" + inputOpenError_
+                                 + ") - reopening output only");
+
+        if (outputOnlyError.isNotEmpty())
+            juce::Logger::writeToLog("Audio output also unavailable: " + outputOnlyError);
+    }
+
+    return hasAudioInput();
+}
+
+bool AudioEngine::refreshMidiInputs()
+{
+    const auto available = juce::MidiInput::getAvailableDevices();
+
+    juce::StringArray current;
+    for (const auto& input : available)
+        current.add(input.identifier);
+
+    bool changed = false;
+
+    // Newly arrived: enable and register. Registering an identifier twice
+    // would deliver every message twice, so what has already been registered
+    // is tracked here rather than re-derived from the device list.
+    for (const auto& input : available)
+    {
+        if (registeredMidiInputs_.contains(input.identifier))
+            continue;
+
+        deviceManager_.setMidiInputDeviceEnabled(input.identifier, true);
+        deviceManager_.addMidiInputDeviceCallback(input.identifier, this);
+        registeredMidiInputs_.add(input.identifier);
+        changed = true;
+    }
+
+    // Gone: unregister, so a controller can be unplugged and replaced without
+    // accumulating dead callbacks for the engine's whole lifetime.
+    for (int i = registeredMidiInputs_.size(); --i >= 0;)
+    {
+        const auto identifier = registeredMidiInputs_[i];
+        if (current.contains(identifier))
+            continue;
+
+        deviceManager_.removeMidiInputDeviceCallback(identifier, this);
+        registeredMidiInputs_.remove(i);
+        changed = true;
+    }
+
+    return changed;
+}
+
+bool AudioEngine::hasMidiInput() const
+{
+    return ! registeredMidiInputs_.isEmpty();
+}
+
+bool AudioEngine::hasAudioInput() const
+{
+    auto* device = deviceManager_.getCurrentAudioDevice();
+    return device != nullptr && device->getActiveInputChannels().countNumberOfSetBits() > 0;
 }
 
 void AudioEngine::handleIncomingMidiMessage(juce::MidiInput* /*source*/, const juce::MidiMessage& message)
@@ -220,15 +290,11 @@ void AudioEngine::setTrackDrumKit(int index, const std::vector<DrumPadSpec>& pad
     track.drumKit.setPadMap(map);
 }
 
-bool AudioEngine::beginRecording(const juce::File& destination)
+int64_t AudioEngine::countInLeadInSamples() const
 {
-    auto* device = deviceManager_.getCurrentAudioDevice();
-    if (device == nullptr || device->getActiveInputChannels().countNumberOfSetBits() == 0)
-        return false;
-
     // The count-in is expressed in samples here, on the message thread, from
     // the tempo in force when recording starts — the audio thread only ever
-    // counts it down (see AudioRecorder::process).
+    // counts it down (see AudioRecorder::process, MidiRecorder::process).
     // Measured from where the take will actually start rather than from a
     // single samples-per-bar figure: with a tempo map a bar's length depends on
     // where it is, so a count-in at bar 40 is not necessarily a count-in at
@@ -236,13 +302,28 @@ bool AudioEngine::beginRecording(const juce::File& destination)
     const auto&   tempoMap  = transport_.tempoMap();
     const int64_t startFrom = transport_.playheadForUI();
 
-    const double startBeat = tempoMap.ppqFromSamples(startFrom);
+    const double startBeat  = tempoMap.ppqFromSamples(startFrom);
     const double countBeats = tempoMap.quartersPerBar() * (double) countInBars_;
-    const auto   leadIn     = tempoMap.samplesFromPpq(startBeat + countBeats) - startFrom;
+    return tempoMap.samplesFromPpq(startBeat + countBeats) - startFrom;
+}
+
+bool AudioEngine::beginRecording(const juce::File& destination)
+{
+    auto* device = deviceManager_.getCurrentAudioDevice();
+    if (device == nullptr || device->getActiveInputChannels().countNumberOfSetBits() == 0)
+        return false;
 
     // Opening the file is part of arming: a take that was never going to be
     // written should fail before the user plays it, not after.
-    return recorder_.arm(destination, recordWriterThread_, leadIn);
+    return recorder_.arm(destination, recordWriterThread_, countInLeadInSamples());
+}
+
+void AudioEngine::beginMidiRecording()
+{
+    // Grown on the message thread, before the audio thread can need it: the
+    // capture translation in the callback must never allocate.
+    midiCaptureScratch_.reserve(kMaxCapturedEventsPerBlock);
+    midiRecorder_.arm(countInLeadInSamples());
 }
 
 void AudioEngine::setActiveTrackCount(int count)
@@ -660,6 +741,14 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
     recorder_.process(inputChannelData, numInputChannels, numSamples,
                       context.transport.playing, context.transport.playheadSamples);
 
+    // Before processBlock, so what is captured is exactly what the armed track
+    // is about to play — the take and the monitoring can't disagree. Capturing
+    // here rather than in handleIncomingMidiMessage is what makes the timing
+    // sample-accurate: the collector has already placed each message at its
+    // offset within this block, and on-screen keyboard input comes through the
+    // same buffer, so it records too.
+    captureMidi(incomingMidi_, context);
+
     processBlock(output, incomingMidi_, context);
 
     // Dry input monitoring, mixed in *after* the master bus for the same
@@ -673,6 +762,58 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
     // sits outside processBlock, which is what renderOffline renders).
     // `force` sounds it through a count-in even when it's otherwise off.
     metronome_.process(output, context, isCountingIn());
+}
+
+void AudioEngine::captureMidi(const juce::MidiBuffer& midi, const ProcessContext& context) noexcept
+{
+    const bool armed = midiRecorder_.isArmed();
+
+    // No take armed and none still closing is the overwhelmingly common case,
+    // and it must cost nothing. The second half of that condition is load-
+    // bearing: process() is what publishes finished_ once a take is disarmed,
+    // so returning on `! armed` alone would leave every take permanently
+    // unfinished and the UI stuck mid-record.
+    if (! armed && midiRecorder_.isFinished())
+        return;
+
+    midiCaptureScratch_.clear();
+
+    // A disarmed-but-unfinished take still needs its process() call below, but
+    // has nothing left to capture — so the buffer walk is what's skipped, not
+    // the call.
+    if (armed)
+    {
+        for (const auto metadata : midi)
+        {
+            const auto message = metadata.getMessage();
+
+            // Notes only. Pitch bend, CC and aftertouch are real performance
+            // data and worth recording one day, but a Pattern has nowhere to
+            // put them — capturing them now would mean silently discarding
+            // them later.
+            if (! message.isNoteOnOrOff())
+                continue;
+
+            if (midiCaptureScratch_.size() >= kMaxCapturedEventsPerBlock)
+                break; // never grown on this thread
+
+            RecordedMidiEvent event;
+            event.timeSamples = (int64_t) metadata.samplePosition;
+            event.noteNumber  = message.getNoteNumber();
+            event.velocity    = message.getFloatVelocity();
+            // A note-on with velocity 0 is left as-is rather than normalised
+            // here: MidiCapture treats it as a note-off, and translating it at
+            // this layer would hide from the take what the controller
+            // actually sent.
+            event.noteOn      = message.isNoteOn();
+
+            midiCaptureScratch_.push_back(event);
+        }
+    }
+
+    midiRecorder_.process(midiCaptureScratch_.data(), (int) midiCaptureScratch_.size(),
+                          context.numSamples, context.transport.playing,
+                          context.transport.playheadSamples);
 }
 
 void AudioEngine::mixInputMonitoring(juce::AudioBuffer<float>& output,
