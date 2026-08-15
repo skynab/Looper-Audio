@@ -6813,7 +6813,9 @@ void MainComponent::updateLoopRegion()
 
     uiTempoMap_.setSampleRate(sampleRate);
 
-    const auto endSamples = (int64_t) std::llround(loopEndBeats() * uiTempoMap_.samplesPerBeat());
+    // Through the map, not a multiplication: the loop end is a musical
+    // position, and where it falls in samples depends on every tempo before it.
+    const auto endSamples = uiTempoMap_.samplesFromPpq(loopEndBeats());
     post(Cmd::SetLoopRegion, 0.0, (double) endSamples);
 }
 

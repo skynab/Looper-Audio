@@ -206,9 +206,16 @@ bool AudioEngine::beginRecording(const juce::File& destination)
     // The count-in is expressed in samples here, on the message thread, from
     // the tempo in force when recording starts — the audio thread only ever
     // counts it down (see AudioRecorder::process).
-    const auto&  tempoMap      = transport_.tempoMap();
-    const double samplesPerBar = tempoMap.samplesPerBeat() * tempoMap.quartersPerBar();
-    const auto   leadIn        = (int64_t) std::llround(samplesPerBar * (double) countInBars_);
+    // Measured from where the take will actually start rather than from a
+    // single samples-per-bar figure: with a tempo map a bar's length depends on
+    // where it is, so a count-in at bar 40 is not necessarily a count-in at
+    // bar 1.
+    const auto&   tempoMap  = transport_.tempoMap();
+    const int64_t startFrom = transport_.playheadForUI();
+
+    const double startBeat = tempoMap.ppqFromSamples(startFrom);
+    const double countBeats = tempoMap.quartersPerBar() * (double) countInBars_;
+    const auto   leadIn     = tempoMap.samplesFromPpq(startBeat + countBeats) - startFrom;
 
     // Opening the file is part of arming: a take that was never going to be
     // written should fail before the user plays it, not after.
