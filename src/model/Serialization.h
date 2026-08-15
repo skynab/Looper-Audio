@@ -71,7 +71,7 @@ namespace looper::model
           the tolerant way, and every default is the behaviour that existed
           before them. Appended rather than grouped with the other drive
           fields because the line is positional. */
-inline constexpr int kFormatVersion = 31;
+inline constexpr int kFormatVersion = 32;
 namespace detail
 {
     inline std::string num(double v)
@@ -116,6 +116,12 @@ inline std::string serialize(const Song& song)
     std::ostringstream out;
     out << "LOOPER " << kFormatVersion << "\n";
     out << "BPM " << detail::num(song.bpm) << "\n";
+
+    // Only the changes *after* the start: BPM already carries beat 0, and
+    // writing it twice would give two sources of truth for the same number.
+    out << "TEMPOS " << song.tempoChanges.size() << "\n";
+    for (const auto& change : song.tempoChanges)
+        out << "TEMPOAT " << detail::num(change.beat) << " " << detail::num(change.bpm) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
     out << "NEXTID " << song.nextId << "\n";
@@ -434,6 +440,27 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
     Song song;
 
     if (! readTagged("BPM", rest))    return fail("missing tempo"); song.bpm = std::strtod(rest.c_str(), nullptr);
+
+    // Read only if present: a file written before v32 has no tempo changes,
+    // which is exactly what one tempo for the whole song means.
+    if (readTagged("TEMPOS", rest))
+    {
+        const int count = std::atoi(rest.c_str());
+        for (int i = 0; i < count; ++i)
+        {
+            if (! readTagged("TEMPOAT", rest))
+                return fail("truncated tempo map");
+
+            std::istringstream ts(rest);
+            engine::TempoChange change;
+            ts >> change.beat >> change.bpm;
+
+            // Dropped rather than trusted: a zero or negative tempo divides by
+            // zero deep inside playback, and beat 0 is BPM's job.
+            if (change.bpm > 0.0 && change.beat > 0.0)
+                song.tempoChanges.push_back(change);
+        }
+    }
     if (! readTagged("TSNUM", rest))  return fail("missing time signature"); song.timeSigNumerator = std::atoi(rest.c_str());
     if (! readTagged("TSDEN", rest))  return fail("missing time signature"); song.timeSigDenominator = std::atoi(rest.c_str());
     if (! readTagged("NEXTID", rest)) return fail("missing id counter"); song.nextId = std::atoi(rest.c_str());

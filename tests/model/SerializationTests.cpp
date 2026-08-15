@@ -756,3 +756,85 @@ TEST_CASE("A project from before per-clip gain opens at unity", "[model][io]")
     REQUIRE(song.tracks[0].clips.size() == 1);
     REQUIRE(song.tracks[0].clips[0].gainDb == 0.0f);
 }
+
+TEST_CASE("Tempo changes round-trip", "[model][io]")
+{
+    Song original = makeSampleSong();
+    original.bpm = 128.0;
+    original.tempoChanges = { { 16.0, 90.0 }, { 32.0, 160.0 } };
+
+    Song        restored;
+    std::string error;
+    REQUIRE(deserialize(serialize(original), restored, &error));
+
+    CHECK(restored.bpm == 128.0);
+    REQUIRE(restored.tempoChanges.size() == 2);
+    CHECK(restored.tempoChanges[0].beat == 16.0);
+    CHECK(restored.tempoChanges[0].bpm == 90.0);
+    CHECK(restored.tempoChanges[1].beat == 32.0);
+    CHECK(restored.tempoChanges[1].bpm == 160.0);
+}
+
+TEST_CASE("A v31 project is one tempo for the whole song", "[model][io]")
+{
+    // No TEMPOS record at all. Absent has to mean "one tempo", which is what
+    // BPM alone always meant — so an old project migrates by definition.
+    const std::string v31 =
+        "LOOPER 31\n"
+        "BPM 137\n"
+        "TSNUM 4\n"
+        "TSDEN 4\n"
+        "NEXTID 3\n"
+        "FILTER 0 0 1000 0.707\n"
+        "DELAY 0 300 0.35 0.3\n"
+        "REVERB 0 0.5 0.5 0.3\n"
+        "SENDBUS 0 0 0.5 0.5 300 0.35 0.5\n"
+        "EQ 0 0 0 0\n"
+        "MASTERING 0 0 0 0 0 0 0 0 0 0 200 0.707 1000 0.707 4000 0.707\n"
+        "PROJECTROOT \n"
+        "AUTO 0\n"
+        "SCENES 0\n"
+        "TRACKS 0\n";
+
+    Song        song;
+    std::string error;
+    REQUIRE(deserialize(v31, song, &error));
+
+    CHECK(song.bpm == 137.0);
+    CHECK(song.tempoChanges.empty());
+}
+
+TEST_CASE("A tempo change with a nonsense value is dropped, not loaded", "[model][io]")
+{
+    // These come from a document. A zero or negative tempo divides by zero
+    // deep inside playback, and beat 0 belongs to BPM.
+    const std::string bad =
+        "LOOPER 32\n"
+        "BPM 120\n"
+        "TEMPOS 4\n"
+        "TEMPOAT 8 0\n"
+        "TEMPOAT 12 -40\n"
+        "TEMPOAT 0 200\n"
+        "TEMPOAT 16 90\n"
+        "TSNUM 4\n"
+        "TSDEN 4\n"
+        "NEXTID 3\n"
+        "FILTER 0 0 1000 0.707\n"
+        "DELAY 0 300 0.35 0.3\n"
+        "REVERB 0 0.5 0.5 0.3\n"
+        "SENDBUS 0 0 0.5 0.5 300 0.35 0.5\n"
+        "EQ 0 0 0 0\n"
+        "MASTERING 0 0 0 0 0 0 0 0 0 0 200 0.707 1000 0.707 4000 0.707\n"
+        "PROJECTROOT \n"
+        "AUTO 0\n"
+        "SCENES 0\n"
+        "TRACKS 0\n";
+
+    Song        song;
+    std::string error;
+    REQUIRE(deserialize(bad, song, &error));
+
+    REQUIRE(song.tempoChanges.size() == 1);
+    CHECK(song.tempoChanges[0].beat == 16.0);
+    CHECK(song.tempoChanges[0].bpm == 90.0);
+}

@@ -865,6 +865,113 @@ int main(int argc, char** argv)
         }
     }
 
+    // Tempo changes.
+    //
+    // The check the whole tempo-map conversion rests on, and the only one that
+    // renders audio with two tempos in it: everything else proves the
+    // *single*-tempo case is unchanged, which is the regression half of the
+    // job rather than the feature half.
+    //
+    // Driven through Sequencer directly rather than OfflineRenderer, because
+    // that harness renders at one constant BPM by construction. Building the
+    // per-block snapshots from a real TempoMap here is exactly what
+    // AudioEngine does live, so it exercises the converted scheduling path.
+    bool tempoChangeMovesNotes = false;
+    {
+        constexpr double tempoRate  = 48000.0;
+        constexpr int    tempoBlock = 512;
+
+        // A note on every beat for eight beats, at 120bpm until beat 4 and
+        // 60bpm after — so beats 4..7 should take twice as long as beats 0..3.
+        Pattern pattern;
+        pattern.lengthBeats = 64.0; // long enough not to loop within the render
+        for (int beat = 0; beat < 8; ++beat)
+            pattern.notes.push_back({ (double) beat, 0.25, 60, 0.9f });
+
+        auto onsetsFor = [&](const TempoMap& map)
+        {
+            Sequencer sequencer;
+            ClipSlot slot;
+            slot.pattern     = pattern;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 64.0;
+            sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            std::vector<int> onsets;
+            const int total = (int) (tempoRate * 14.0);
+
+            for (int pos = 0; pos < total; pos += tempoBlock)
+            {
+                const int n = std::min(tempoBlock, total - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = tempoRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                context.transport.playheadSamples    = pos;
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+                context.transport.ppqPosition        = map.ppqFromSamples(pos);
+                context.transport.ppqAtBlockEnd      = map.ppqFromSamples(pos + n);
+                context.transport.bpm                = map.tempoAtBeat(context.transport.ppqPosition);
+
+                juce::MidiBuffer midi;
+                sequencer.renderBlock(midi, context);
+
+                for (const auto metadata : midi)
+                    if (metadata.getMessage().isNoteOn())
+                        onsets.push_back(pos + metadata.samplePosition);
+            }
+            return onsets;
+        };
+
+        TempoMap steady;
+        steady.setSampleRate(tempoRate);
+        steady.setTempo(120.0);
+
+        TempoMap changing;
+        changing.setSampleRate(tempoRate);
+        changing.setTempoChanges({ { 0.0, 120.0 }, { 4.0, 60.0 } });
+
+        const auto steadyOnsets   = onsetsFor(steady);
+        const auto changingOnsets = onsetsFor(changing);
+
+        // Eight notes either way: a tempo change must move notes, not lose them.
+        const bool bothPlayedEverything = steadyOnsets.size() == 8 && changingOnsets.size() == 8;
+
+        bool beforeMatches = false, afterMoved = false, landsWhereMapSays = false;
+
+        if (bothPlayedEverything)
+        {
+            // Before the change the two renders agree...
+            beforeMatches = true;
+            for (int i = 0; i < 4; ++i)
+                if (std::abs(steadyOnsets[(size_t) i] - changingOnsets[(size_t) i]) > tempoBlock)
+                    beforeMatches = false;
+
+            // ...and after it they measurably do not. Without this a map that
+            // was ignored entirely would pass everything else here.
+            afterMoved = changingOnsets[7] > steadyOnsets[7] + (int) tempoRate;
+
+            // And each onset is where the map says, not merely somewhere later.
+            landsWhereMapSays = true;
+            for (int beat = 0; beat < 8; ++beat)
+            {
+                const auto expected = (int) changing.samplesFromPpq((double) beat);
+                if (std::abs(changingOnsets[(size_t) beat] - expected) > tempoBlock)
+                    landsWhereMapSays = false;
+            }
+        }
+
+        tempoChangeMovesNotes = bothPlayedEverything && beforeMatches && afterMoved
+                             && landsWhereMapSays;
+
+        std::cout << "tempo map: notes=" << changingOnsets.size()
+                  << " lastSteady=" << (steadyOnsets.size() == 8 ? steadyOnsets[7] : -1)
+                  << " lastChanging=" << (changingOnsets.size() == 8 ? changingOnsets[7] : -1)
+                  << " expectedLast=" << changing.samplesFromPpq(7.0) << "\n";
+    }
+
     // Guitar checks. The DSP itself is covered by unit tests; what the bounce
     // tool adds is the *performance* model, which is what separates a guitar
     // from a synth with a plucked patch.
@@ -2558,6 +2665,7 @@ int main(int argc, char** argv)
               << "  guitarPicksLowestFret=" << (guitarPicksLowestFret ? 1 : 0)
               << "  guitarHammerOn=" << (guitarHammerOn ? 1 : 0)
               << "  guitarPalmMuteChugs=" << (guitarPalmMuteChugs ? 1 : 0)
+              << "  tempoChangeMovesNotes=" << (tempoChangeMovesNotes ? 1 : 0)
               << "  chorusChangesSound=" << (chorusChangesSound ? 1 : 0)
               << "  chorusDepthMatters=" << (chorusDepthMatters ? 1 : 0)
               << "  wobbleChangesSound=" << (wobbleChangesSound ? 1 : 0)
@@ -2612,7 +2720,7 @@ int main(int argc, char** argv)
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks
                  && guitarSounds && guitarCutsSameString && guitarPlaysSixAtOnce
-                 && guitarPicksLowestFret && guitarHammerOn && guitarPalmMuteChugs
+                 && guitarPicksLowestFret && guitarHammerOn && guitarPalmMuteChugs && tempoChangeMovesNotes
                  && filterEnvChangesSound && subOscChangesSound && unisonChangesSound
                  && effectChainOrderMatters && effectChainRunsAllNodes
                  && sessionLaunchQuantizes && sessionStopWorks

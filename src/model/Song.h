@@ -5,6 +5,7 @@
 
 #include "model/AutomationLane.h"
 #include "model/Effects.h"
+#include "engine/TempoMap.h"
 #include "model/Track.h"
 
 namespace looper::model
@@ -25,9 +26,20 @@ struct Scene
 
 struct Song
 {
+    /** The tempo at the start of the song.
+
+        Kept alongside tempoChanges rather than replaced by it: it is read in
+        fifteen places across the app, and every one of them is correct for a
+        single-tempo project. tempoChanges[0] mirrors it, and the two are kept
+        in step by model::tempoChangesFor / applyTempo below. */
     double bpm                = 120.0;
     int    timeSigNumerator   = 4;
     int    timeSigDenominator = 4;
+
+    /** Tempo changes after the start, sorted by beat. Empty means one tempo
+        for the whole song, which is what every project written before format
+        version 32 means. See engine::TempoMap. */
+    std::vector<engine::TempoChange> tempoChanges;
 
     std::vector<Track> tracks;
     std::vector<Scene> scenes; // session-grid rows; every track's sessionSlots matches this length
