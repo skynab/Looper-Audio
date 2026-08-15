@@ -22,6 +22,8 @@
 #include "model/PresetSerialization.h"
 #include "model/Song.h"
 
+#include "OfflineRenderJob.h"
+
 #include "ArrangementView.h"
 #include "DockWorkspace.h"
 #include "DrumsPane.h"
@@ -141,11 +143,13 @@ private:
     void                   updateWindowTitle();
     static bool            isSilentAudioFile(const juce::File& file);
     void                   exportAudioDialog();
+    struct ExportTask;
     void                   exportProject(const engine::ExportOptions& options);
-    int                    exportStems(const juce::File& masterFile,
-                                       const engine::ExportOptions& options,
-                                       double lengthBeats,
-                                       bool& anyFailure);
+    std::vector<ExportTask> buildExportTasks(const juce::File& masterFile,
+                                             const engine::ExportOptions& options,
+                                             bool& folderFailed);
+    void                   startExport(const std::vector<ExportTask>& tasks,
+                                       const juce::File& masterFile);
     void                   showAudioSettings();
     void                   importAudioToNewTrack();
     void                   importAudioFileAtBeat(const juce::File& file, double startBeats, int targetTrackIndex = -1);
@@ -380,6 +384,14 @@ private:
     // exist before a note is played now that recording streams to it, and the
     // target track is whatever was selected then rather than whatever happens
     // to be selected by the time the user hits stop.
+    // Non-null while an export is rendering. Owned here rather than
+    // self-deleting so that quitting mid-export can stop the thread before the
+    // engine it is rendering through is destroyed.
+    std::unique_ptr<app::OfflineRenderJob> renderJob_;
+
+    // Set while that job owns the engine — see timerCallback.
+    bool                        offlineRenderInProgress_ = false;
+
     juce::File                  recordingFile_;
     int                         recordingTargetTrack_ = -1; // -1 = a new track
 

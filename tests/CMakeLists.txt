@@ -53,6 +53,7 @@ add_executable(looper_tests
   app/ClipPreviewTests.cpp
   app/AudioSelectionTests.cpp
   app/WaveformPeaksTests.cpp
+  app/RenderProgressTests.cpp
   app/ScrollFollowTests.cpp
   app/ChordStampTests.cpp
   app/TrackSelectionTests.cpp

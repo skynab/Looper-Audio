@@ -406,6 +406,17 @@ public:
             summing to something quite unlike the mix — stems are pre-master by
             definition, and the master file is where that processing belongs. */
         bool applyMasterBus = true;
+
+        /** Called periodically from whichever thread is rendering, with
+            progress in 0..1. Return false to cancel.
+
+            Cancelling still restores the engine - the device callback comes
+            back, the transport is put back, and everything is re-prepared for
+            the device's rate - and renderOffline then returns an **empty**
+            buffer. Empty rather than partial on purpose: a caller that wrote
+            whatever it got back would otherwise produce a truncated file and
+            report success. */
+        std::function<bool (double)> onProgress;
     };
 
     juce::AudioBuffer<float> renderOffline(const OfflineRenderOptions& options);

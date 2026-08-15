@@ -785,7 +785,15 @@ juce::AudioBuffer<float> AudioEngine::renderOffline(const OfflineRenderOptions& 
 
     juce::MidiBuffer noLiveMidi;
 
-    for (int pos = 0; pos < totalSamples; pos += blockSize)
+    // Every 16th block rather than every block: at 512 samples that is roughly
+    // every 190ms, which is smooth enough for a progress bar while keeping a
+    // std::function call out of the inner loop.
+    constexpr int kBlocksPerProgressReport = 16;
+
+    bool cancelled = false;
+    int  blockIndex = 0;
+
+    for (int pos = 0; pos < totalSamples; pos += blockSize, ++blockIndex)
     {
         const int n = juce::jmin(blockSize, totalSamples - pos);
 
@@ -797,6 +805,15 @@ juce::AudioBuffer<float> AudioEngine::renderOffline(const OfflineRenderOptions& 
         juce::AudioBuffer<float> view(output.getArrayOfWritePointers(), 2, pos, n);
         noLiveMidi.clear();
         processBlock(view, noLiveMidi, context, options.soloTrack, options.applyMasterBus);
+
+        if (options.onProgress != nullptr && blockIndex % kBlocksPerProgressReport == 0)
+        {
+            if (! options.onProgress((double) (pos + n) / (double) totalSamples))
+            {
+                cancelled = true;
+                break; // the restore below still runs — that is the point of breaking rather than returning
+            }
+        }
     }
 
     // Back to the *device* rate, not the render rate: everything above was
@@ -815,6 +832,10 @@ juce::AudioBuffer<float> AudioEngine::renderOffline(const OfflineRenderOptions& 
     transport_.seek(wasPlayhead);
 
     deviceManager_.addAudioCallback(this);
+
+    if (cancelled)
+        output.setSize(2, 0); // see OfflineRenderOptions::onProgress
+
     return output;
 }
 
