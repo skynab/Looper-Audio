@@ -13,6 +13,18 @@ struct TempoChange
     double beat = 0.0;   // quarter-note position where this tempo starts
     double bpm  = 120.0;
 
+    /**
+        Reach this tempo by *sliding* from the previous one rather than
+        jumping to it — an accelerando or ritardando across the whole segment
+        before this change.
+
+        The flag is on the change the ramp arrives at, not the one it leaves,
+        for a practical reason: the entry at beat 0 has nothing before it, so
+        "ramp away from here" would need a flag that can never be set, while
+        "ramp into here" is meaningless at the start and simply always false.
+    */
+    bool ramp = false;
+
     bool operator==(const TempoChange&) const = default;
 };
 
@@ -40,9 +52,25 @@ struct TempoChange
     are kept in double rather than int64 so rounding does not accumulate across
     a long song.
 
-    Stepped changes only: tempo jumps at a change and holds. Ramps
-    (accelerando, ritardando) are a strict extension of this structure - the
-    same list with an interpolation flag - and deliberately are not here yet.
+    **Stepped and ramped segments.** A segment holds one tempo, or slides
+    linearly to the next one when the change it arrives at is marked `ramp`.
+
+    A ramp is where the arithmetic stops being a multiply. With tempo varying
+    linearly in beats, the time to cross a segment is an integral rather than a
+    product:
+
+        tempo(b) = t0 + m(b - b0),  m = (t1 - t0) / (b1 - b0)
+        seconds  = integral of 60/tempo(b) db  =  (60/m) ln(tempo(b) / t0)
+
+    and its inverse - which is what turns a sample position back into a beat -
+    is the exponential:
+
+        tempo = t0 exp(m s / (60 R)),   b = b0 + (tempo - t0) / m
+
+    Both are exact and closed-form, so a ramp costs a log or an exp per
+    conversion rather than any stepping or approximation. When t0 and t1 are
+    equal m is zero and both collapse to the linear case, which is handled
+    explicitly - not by hoping the limit works out numerically.
 
     No JUCE dependency, so it unit-tests fast and headless.
 */
@@ -115,6 +143,9 @@ public:
                 cleaned.push_back(change);
         }
 
+        // Nothing precedes the start, so a ramp into it cannot mean anything.
+        cleaned.front().ramp = false;
+
         changes_ = std::move(cleaned);
         rebuild();
     }
@@ -136,7 +167,22 @@ public:
         BPM is. */
     double tempo() const noexcept { return changes_.front().bpm; }
 
-    double tempoAtBeat(double beat) const noexcept { return changes_[(size_t) segmentForBeat(beat)].bpm; }
+    double tempoAtBeat(double beat) const noexcept
+    {
+        const int index = segmentForBeat(beat);
+        const auto& from = changes_[(size_t) index];
+
+        if (! segmentRamps(index))
+            return from.bpm;
+
+        const auto&  to   = changes_[(size_t) index + 1];
+        const double span = to.beat - from.beat;
+        if (span <= 0.0)
+            return from.bpm;
+
+        const double through = std::clamp((beat - from.beat) / span, 0.0, 1.0);
+        return from.bpm + (to.bpm - from.bpm) * through;
+    }
 
     /** Samples per quarter note **at a given beat**. There is no position-free
         answer once the map can hold more than one tempo, which is why this
@@ -157,8 +203,7 @@ public:
 
         const int index = segmentForSamples(position);
         return changes_[(size_t) index].beat
-             + (position - cumulativeSamples_[(size_t) index])
-                   / samplesPerBeatFor(changes_[(size_t) index].bpm);
+             + beatsAcross(index, position - cumulativeSamples_[(size_t) index]);
     }
 
     int64_t samplesFromPpq(double ppq) const noexcept
@@ -175,8 +220,7 @@ public:
 
         const int index = segmentForBeat(ppq);
         return cumulativeSamples_[(size_t) index]
-             + (ppq - changes_[(size_t) index].beat)
-                   * samplesPerBeatFor(changes_[(size_t) index].bpm);
+             + samplesAcross(index, ppq - changes_[(size_t) index].beat);
     }
 
     /** 1-based bar and beat (beat counted in the time signature's denominator unit) plus fractional tick. */
@@ -204,6 +248,67 @@ public:
 
 private:
     double samplesPerBeatFor(double bpm) const noexcept { return sampleRate_ * 60.0 / bpm; }
+
+    /** Whether segment @p index slides rather than holds. The last segment
+        never does: there is no next tempo to slide to. */
+    bool segmentRamps(int index) const noexcept
+    {
+        return index + 1 < (int) changes_.size()
+            && changes_[(size_t) index + 1].ramp
+            && changes_[(size_t) index + 1].beat > changes_[(size_t) index].beat;
+    }
+
+    /** Tempo slope across segment @p index, in bpm per beat, or 0 when it
+        holds or the two tempos are close enough that the ramp is the linear
+        case in disguise. */
+    double slopeOf(int index) const noexcept
+    {
+        if (! segmentRamps(index))
+            return 0.0;
+
+        const auto&  from = changes_[(size_t) index];
+        const auto&  to   = changes_[(size_t) index + 1];
+        const double rise = to.bpm - from.bpm;
+
+        // Relative, not absolute: a 0.001bpm slope over 200 beats is a real
+        // ramp, while the same difference over half a beat is noise. Below
+        // this the logarithm loses more precision than the ramp is worth.
+        if (std::abs(rise) < from.bpm * 1.0e-9)
+            return 0.0;
+
+        return rise / (to.beat - from.beat);
+    }
+
+    /** Samples taken to travel @p beats into segment @p index. */
+    double samplesAcross(int index, double beats) const noexcept
+    {
+        const double from  = changes_[(size_t) index].bpm;
+        const double slope = slopeOf(index);
+
+        if (slope == 0.0)
+            return beats * samplesPerBeatFor(from);
+
+        // seconds = (60/m) ln(tempo(b) / t0)
+        const double tempoHere = from + slope * beats;
+        if (tempoHere <= 0.0)
+            return beats * samplesPerBeatFor(from); // a ramp through zero is not a tempo
+
+        return sampleRate_ * (60.0 / slope) * std::log(tempoHere / from);
+    }
+
+    /** The inverse: beats travelled after @p samples into segment @p index. */
+    double beatsAcross(int index, double samples) const noexcept
+    {
+        const double from  = changes_[(size_t) index].bpm;
+        const double slope = slopeOf(index);
+
+        if (slope == 0.0)
+            return samples / samplesPerBeatFor(from);
+
+        // tempo = t0 exp(m s / (60 R)), then b = (tempo - t0) / m
+        const double tempoHere = from * std::exp(slope * samples / (60.0 * sampleRate_));
+        return (tempoHere - from) / slope;
+    }
 
     /** Index of the change in force at @p beat. */
     int segmentForBeat(double beat) const noexcept
@@ -235,7 +340,7 @@ private:
         {
             const double beats = changes_[i].beat - changes_[i - 1].beat;
             cumulativeSamples_[i] = cumulativeSamples_[i - 1]
-                                  + beats * samplesPerBeatFor(changes_[i - 1].bpm);
+                                  + samplesAcross((int) i - 1, beats);
         }
     }
 

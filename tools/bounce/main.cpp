@@ -877,6 +877,7 @@ int main(int argc, char** argv)
     // per-block snapshots from a real TempoMap here is exactly what
     // AudioEngine does live, so it exercises the converted scheduling path.
     bool tempoChangeMovesNotes = false;
+    bool tempoRampAccelerates  = false;
     {
         constexpr double tempoRate  = 48000.0;
         constexpr int    tempoBlock = 512;
@@ -965,6 +966,46 @@ int main(int argc, char** argv)
 
         tempoChangeMovesNotes = bothPlayedEverything && beforeMatches && afterMoved
                              && landsWhereMapSays;
+
+        // A ramp accelerates *through* the segment rather than stepping at it.
+        //
+        // Checked as the gap between consecutive onsets: under a step the gaps
+        // are two constant values with one jump between them, while under a
+        // ramp every gap is shorter than the last. That difference is the
+        // whole feature, and a ramp implemented as a step would pass a
+        // "notes moved" check but not this one.
+        {
+            TempoMap ramp;
+            ramp.setSampleRate(tempoRate);
+            ramp.setTempoChanges({ { 0.0, 60.0 }, { 8.0, 180.0, true } });
+
+            const auto rampOnsets = onsetsFor(ramp);
+
+            bool everyGapShorter = rampOnsets.size() == 8;
+            for (size_t i = 2; i < rampOnsets.size() && everyGapShorter; ++i)
+            {
+                const int previousGap = rampOnsets[i - 1] - rampOnsets[i - 2];
+                const int thisGap     = rampOnsets[i] - rampOnsets[i - 1];
+
+                // Strictly shorter, allowing a block of scheduling slack.
+                if (thisGap > previousGap - 1)
+                    everyGapShorter = false;
+            }
+
+            // And each onset is where the integral says, not merely earlier.
+            bool matchesIntegral = rampOnsets.size() == 8;
+            for (int beat = 0; beat < 8 && matchesIntegral; ++beat)
+                if (std::abs(rampOnsets[(size_t) beat] - (int) ramp.samplesFromPpq((double) beat))
+                        > tempoBlock)
+                    matchesIntegral = false;
+
+            tempoRampAccelerates = everyGapShorter && matchesIntegral;
+
+            std::cout << "tempo ramp: gaps=";
+            for (size_t i = 1; i < rampOnsets.size(); ++i)
+                std::cout << (rampOnsets[i] - rampOnsets[i - 1]) << " ";
+            std::cout << "\n";
+        }
 
         std::cout << "tempo map: notes=" << changingOnsets.size()
                   << " lastSteady=" << (steadyOnsets.size() == 8 ? steadyOnsets[7] : -1)
@@ -2666,6 +2707,7 @@ int main(int argc, char** argv)
               << "  guitarHammerOn=" << (guitarHammerOn ? 1 : 0)
               << "  guitarPalmMuteChugs=" << (guitarPalmMuteChugs ? 1 : 0)
               << "  tempoChangeMovesNotes=" << (tempoChangeMovesNotes ? 1 : 0)
+              << "  tempoRampAccelerates=" << (tempoRampAccelerates ? 1 : 0)
               << "  chorusChangesSound=" << (chorusChangesSound ? 1 : 0)
               << "  chorusDepthMatters=" << (chorusDepthMatters ? 1 : 0)
               << "  wobbleChangesSound=" << (wobbleChangesSound ? 1 : 0)
@@ -2720,7 +2762,7 @@ int main(int argc, char** argv)
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks
                  && guitarSounds && guitarCutsSameString && guitarPlaysSixAtOnce
-                 && guitarPicksLowestFret && guitarHammerOn && guitarPalmMuteChugs && tempoChangeMovesNotes
+                 && guitarPicksLowestFret && guitarHammerOn && guitarPalmMuteChugs && tempoChangeMovesNotes && tempoRampAccelerates
                  && filterEnvChangesSound && subOscChangesSound && unisonChangesSound
                  && effectChainOrderMatters && effectChainRunsAllNodes
                  && sessionLaunchQuantizes && sessionStopWorks

@@ -102,6 +102,7 @@ public:
     std::function<void(double beat)> onTempoChangeRequested; // add or edit at this beat
     std::function<void(double beat)> onTempoChangeRemoved;
     std::function<void(double fromBeat, double toBeat)> onTempoChangeMoved;
+    std::function<void(double beat)> onTempoRampToggled;
 
     void setSong(const model::Song& song)
     {
@@ -197,6 +198,19 @@ public:
             g.setColour(juce::Colours::orange.withAlpha(0.9f));
             g.fillRect(x, markerTop, 2.0f, geometry_.rulerHeight - markerTop);
 
+            // A ramp is drawn as a slope running back to the previous change,
+            // because that is the span it actually covers — a marker alone
+            // would say the tempo arrives here without saying it has been
+            // moving the whole way.
+            if (change.ramp)
+            {
+                const double previousBeat = i > 0 ? song_.tempoChanges[(size_t) i - 1].beat : 0.0;
+                const float  fromX        = geometry_.xForBeat(previousBeat);
+
+                g.setColour(juce::Colours::orange.withAlpha(0.55f));
+                g.drawLine(fromX, geometry_.rulerHeight - 1.0f, x, markerTop, 1.5f);
+            }
+
             g.setFont(juce::FontOptions(10.0f));
             g.drawText(juce::String(change.bpm, 0),
                        (int) x + 4, (int) markerTop, 44,
@@ -221,7 +235,11 @@ public:
 
         if (existing >= 0)
         {
+            const bool ramped = song_.tempoChanges[(size_t) existing].ramp;
+
             menu.addItem(1, "Edit tempo here...");
+            menu.addItem(3, ramped ? "Jump to this tempo" : "Slide to this tempo (ramp)");
+            menu.addSeparator();
             menu.addItem(2, "Remove tempo change");
         }
         else
@@ -242,6 +260,8 @@ public:
                 self->onTempoChangeRequested(beat);
             else if (result == 2 && self->onTempoChangeRemoved)
                 self->onTempoChangeRemoved(beat);
+            else if (result == 3 && self->onTempoRampToggled)
+                self->onTempoRampToggled(beat);
         });
     }
 

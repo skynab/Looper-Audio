@@ -243,3 +243,149 @@ TEST_CASE("Changing the sample rate rescales the whole map", "[engine][tempo]")
         CHECK(seconds48 == Approx(seconds44));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Ramps.
+
+TEST_CASE("A ramp takes the time the integral says", "[engine][tempo][ramp]")
+{
+    // The closed form checked against brute-force numerical integration, which
+    // is an independent derivation rather than a restatement of the same
+    // algebra. If the logarithm is wrong, these disagree.
+    constexpr double rate = 48000.0;
+
+    TempoMap map;
+    map.setSampleRate(rate);
+    map.setTempoChanges({ { 0.0, 60.0 }, { 16.0, 180.0, true } });
+
+    // Integrate 60/tempo(b) db in very small steps.
+    const double b0 = 0.0, b1 = 16.0, t0 = 60.0, t1 = 180.0;
+    const int    steps = 2000000;
+    double       seconds = 0.0;
+
+    for (int i = 0; i < steps; ++i)
+    {
+        const double b = b0 + (b1 - b0) * (i + 0.5) / steps;
+        const double tempo = t0 + (t1 - t0) * (b - b0) / (b1 - b0);
+        seconds += (60.0 / tempo) * (b1 - b0) / steps;
+    }
+
+    const double expected = seconds * rate;
+    const double actual   = map.sampleOffsetForPpq(16.0);
+
+    INFO("numerical " << expected << "  closed form " << actual);
+    CHECK(actual == Approx(expected).epsilon(1.0e-6));
+}
+
+TEST_CASE("A ramp round-trips beats and samples", "[engine][tempo][ramp]")
+{
+    // The exponential inverse has to undo the logarithm exactly, or the
+    // playhead and the notes disagree about where they are.
+    TempoMap map;
+    map.setSampleRate(44100.0);
+    map.setTempoChanges({ { 0.0, 90.0 }, { 8.0, 160.0, true },
+                          { 24.0, 70.0, true }, { 40.0, 120.0 } });
+
+    for (double beat = 0.0; beat < 56.0; beat += 0.05)
+    {
+        const double samples = map.sampleOffsetForPpq(beat);
+        const double back    = map.ppqFromSamples((int64_t) std::llround(samples));
+
+        INFO("beat " << beat << " -> " << samples << " -> " << back);
+        CHECK(back == Approx(beat).margin(1.0e-3));
+    }
+}
+
+TEST_CASE("A ramp between equal tempos is the flat case", "[engine][tempo][ramp]")
+{
+    // Where the slope is zero the integral is undefined and the code has to
+    // take the linear branch rather than divide by it.
+    TempoMap ramped;
+    ramped.setSampleRate(48000.0);
+    ramped.setTempoChanges({ { 0.0, 120.0 }, { 8.0, 120.0, true } });
+
+    TempoMap flat;
+    flat.setSampleRate(48000.0);
+    flat.setTempo(120.0);
+
+    for (double beat : { 0.0, 1.0, 4.0, 8.0, 12.0 })
+    {
+        INFO("beat " << beat);
+        CHECK(ramped.sampleOffsetForPpq(beat) == Approx(flat.sampleOffsetForPpq(beat)));
+    }
+}
+
+TEST_CASE("A ramp's tempo slides rather than steps", "[engine][tempo][ramp]")
+{
+    TempoMap map;
+    map.setSampleRate(48000.0);
+    map.setTempoChanges({ { 0.0, 100.0 }, { 10.0, 200.0, true } });
+
+    CHECK(map.tempoAtBeat(0.0) == Approx(100.0));
+    CHECK(map.tempoAtBeat(2.5) == Approx(125.0));
+    CHECK(map.tempoAtBeat(5.0) == Approx(150.0));
+    CHECK(map.tempoAtBeat(10.0) == Approx(200.0));
+    CHECK(map.tempoAtBeat(50.0) == Approx(200.0)); // holds after the ramp ends
+}
+
+TEST_CASE("A stepped change still steps when it isn't ramped", "[engine][tempo][ramp]")
+{
+    // The flag has to actually gate the behaviour, or every change would ramp
+    // and the earlier work would be silently undone.
+    TempoMap map;
+    map.setSampleRate(48000.0);
+    map.setTempoChanges({ { 0.0, 100.0 }, { 10.0, 200.0, false } });
+
+    CHECK(map.tempoAtBeat(5.0) == Approx(100.0));
+    CHECK(map.tempoAtBeat(9.999) == Approx(100.0));
+    CHECK(map.tempoAtBeat(10.0) == Approx(200.0));
+}
+
+TEST_CASE("An accelerando lands between its two tempos", "[engine][tempo][ramp]")
+{
+    // A sanity bound on the integral that needs no calculus: speeding up from
+    // 60 to 120 across 16 beats must take less time than 16 beats at 60 and
+    // more than 16 beats at 120.
+    constexpr double rate = 48000.0;
+
+    TempoMap ramp;
+    ramp.setSampleRate(rate);
+    ramp.setTempoChanges({ { 0.0, 60.0 }, { 16.0, 120.0, true } });
+
+    const double atSlow = 16.0 * rate * 60.0 / 60.0;
+    const double atFast = 16.0 * rate * 60.0 / 120.0;
+    const double actual = ramp.sampleOffsetForPpq(16.0);
+
+    INFO("slow " << atSlow << "  ramp " << actual << "  fast " << atFast);
+    CHECK(actual < atSlow);
+    CHECK(actual > atFast);
+}
+
+TEST_CASE("Time never runs backwards through a ramp", "[engine][tempo][ramp]")
+{
+    TempoMap map;
+    map.setSampleRate(48000.0);
+    map.setTempoChanges({ { 0.0, 200.0 }, { 4.0, 40.0, true }, { 12.0, 240.0, true },
+                          { 20.0, 60.0 } });
+
+    double previous = -1.0;
+    for (double beat = 0.0; beat < 32.0; beat += 0.02)
+    {
+        const double samples = map.sampleOffsetForPpq(beat);
+        INFO("beat " << beat << " -> " << samples);
+        CHECK(samples > previous);
+        previous = samples;
+    }
+}
+
+TEST_CASE("A ramp into the start is ignored", "[engine][tempo][ramp]")
+{
+    // Nothing precedes beat 0, so there is nothing to slide from. The flag has
+    // to be cleared rather than left to mean something undefined later.
+    TempoMap map;
+    map.setSampleRate(48000.0);
+    map.setTempoChanges({ { 0.0, 120.0, true }, { 8.0, 90.0 } });
+
+    REQUIRE(map.tempoChanges().size() == 2);
+    CHECK_FALSE(map.tempoChanges().front().ramp);
+}

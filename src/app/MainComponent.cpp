@@ -1120,6 +1120,7 @@ MainComponent::MainComponent()
 
     arrangementView_.onTempoChangeRequested = [this](double beat) { editTempoChangeAt(beat); };
     arrangementView_.onTempoChangeRemoved    = [this](double beat) { removeTempoChangeAt(beat); };
+    arrangementView_.onTempoRampToggled      = [this](double beat) { toggleTempoRamp(beat); };
     arrangementView_.onTempoChangeMoved      = [this](double from, double to)
     {
         moveTempoChange(from, to);
@@ -5693,7 +5694,15 @@ void MainComponent::toggleRecording()
 
         if (! engine_.beginRecording(file))
         {
-            showError("Could not start recording (no audio input device, or the file could not be created)");
+            // Names microphone permission first when that is what actually
+            // happened, rather than making the user guess between three
+            // possible causes.
+            if (engine_.inputOpenError().isNotEmpty())
+                showError("No audio input - check microphone permission "
+                          "(System Settings > Privacy & Security > Microphone), then restart");
+            else
+                showError("Could not start recording (no audio input device, "
+                          "or the file could not be created)");
             return;
         }
 
@@ -6888,6 +6897,20 @@ void MainComponent::moveTempoChange(double fromBeat, double toBeat)
         std::sort(s.tempoChanges.begin(), s.tempoChanges.end(),
                   [](const engine::TempoChange& a, const engine::TempoChange& b)
                   { return a.beat < b.beat; });
+    });
+
+    pushTempoMap();
+}
+
+/** Switches the change at @p beat between jumping to its tempo and sliding to
+    it from the one before. */
+void MainComponent::toggleTempoRamp(double beat)
+{
+    history_.edit("Tempo ramp", [beat](model::Song& s)
+    {
+        for (auto& change : s.tempoChanges)
+            if (std::abs(change.beat - beat) < 1.0e-9)
+                change.ramp = ! change.ramp;
     });
 
     pushTempoMap();

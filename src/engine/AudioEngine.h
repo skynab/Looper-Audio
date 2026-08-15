@@ -157,6 +157,13 @@ public:
         audio device has no active input channels. Capturing only actually
         happens while the transport is playing, and only after any count-in
         (see setCountInBars) has elapsed. */
+    /** Why the audio input could not be opened, or empty if it did.
+
+        Non-empty means the app fell back to output only: playback works,
+        recording does not. On macOS the usual cause is a denied microphone
+        permission. */
+    juce::String inputOpenError() const { return inputOpenError_; }
+
     /** Arms a take, streamed to @p destination as it is played. Returns false
         if there is no input device or the file could not be opened. */
     bool beginRecording(const juce::File& destination);
@@ -555,6 +562,8 @@ private:
     using TempoChangeList = std::vector<TempoChange>;
     rt::SpscRingBuffer<TempoChangeList*> tempoInbox_   { 8 };
     rt::SpscRingBuffer<TempoChangeList*> tempoReclaim_ { 16 };
+
+    juce::String  inputOpenError_;
 
     AudioRecorder recorder_;
 

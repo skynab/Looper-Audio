@@ -117,6 +117,7 @@ private:
     void   setTempoAtPlayhead(double bpm);
     void   editTempoChangeAt(double beat);
     void   applyTempoChange(double beat, double bpm);
+    void   toggleTempoRamp(double beat);
     void   moveTempoChange(double fromBeat, double toBeat);
     void   removeTempoChangeAt(double beat);
     void   pushTempoMap();

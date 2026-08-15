@@ -71,7 +71,7 @@ namespace looper::model
           the tolerant way, and every default is the behaviour that existed
           before them. Appended rather than grouped with the other drive
           fields because the line is positional. */
-inline constexpr int kFormatVersion = 32;
+inline constexpr int kFormatVersion = 33;
 namespace detail
 {
     inline std::string num(double v)
@@ -121,7 +121,8 @@ inline std::string serialize(const Song& song)
     // writing it twice would give two sources of truth for the same number.
     out << "TEMPOS " << song.tempoChanges.size() << "\n";
     for (const auto& change : song.tempoChanges)
-        out << "TEMPOAT " << detail::num(change.beat) << " " << detail::num(change.bpm) << "\n";
+        out << "TEMPOAT " << detail::num(change.beat) << " " << detail::num(change.bpm)
+            << " " << (change.ramp ? 1 : 0) << "\n";
     out << "TSNUM " << song.timeSigNumerator << "\n";
     out << "TSDEN " << song.timeSigDenominator << "\n";
     out << "NEXTID " << song.nextId << "\n";
@@ -453,7 +454,12 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
 
             std::istringstream ts(rest);
             engine::TempoChange change;
-            ts >> change.beat >> change.bpm;
+
+            // Seeded false: a v32 line stops after the tempo, and every change
+            // written before ramps existed was a step.
+            int ramp = 0;
+            ts >> change.beat >> change.bpm >> ramp;
+            change.ramp = ramp != 0;
 
             // Dropped rather than trusted: a zero or negative tempo divides by
             // zero deep inside playback, and beat 0 is BPM's job.

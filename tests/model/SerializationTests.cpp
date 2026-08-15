@@ -884,3 +884,52 @@ TEST_CASE("A song with no changes has a one-entry map", "[model][tempo]")
     CHECK(map[0].bpm == 118.0);
     CHECK(tempoAtBeat(song, 999.0) == 118.0);
 }
+
+TEST_CASE("A tempo ramp round-trips", "[model][io]")
+{
+    Song original = makeSampleSong();
+    original.bpm = 90.0;
+    original.tempoChanges = { { 8.0, 150.0, true }, { 24.0, 100.0, false } };
+
+    Song        restored;
+    std::string error;
+    REQUIRE(deserialize(serialize(original), restored, &error));
+
+    REQUIRE(restored.tempoChanges.size() == 2);
+    CHECK(restored.tempoChanges[0].ramp);
+    CHECK_FALSE(restored.tempoChanges[1].ramp);
+    CHECK(restored == original);
+}
+
+TEST_CASE("A v32 tempo change is a step, not a ramp", "[model][io]")
+{
+    // v32's TEMPOAT line ends after the tempo. Absent has to mean "step",
+    // which is what every change written before ramps existed was — reading
+    // one as a ramp would silently reshape an existing arrangement.
+    const std::string v32 =
+        "LOOPER 32\n"
+        "BPM 120\n"
+        "TEMPOS 1\n"
+        "TEMPOAT 16 80\n"
+        "TSNUM 4\n"
+        "TSDEN 4\n"
+        "NEXTID 3\n"
+        "FILTER 0 0 1000 0.707\n"
+        "DELAY 0 300 0.35 0.3\n"
+        "REVERB 0 0.5 0.5 0.3\n"
+        "SENDBUS 0 0 0.5 0.5 300 0.35 0.5\n"
+        "EQ 0 0 0 0\n"
+        "MASTERING 0 0 0 0 0 0 0 0 0 0 200 0.707 1000 0.707 4000 0.707\n"
+        "PROJECTROOT \n"
+        "AUTO 0\n"
+        "SCENES 0\n"
+        "TRACKS 0\n";
+
+    Song        song;
+    std::string error;
+    REQUIRE(deserialize(v32, song, &error));
+
+    REQUIRE(song.tempoChanges.size() == 1);
+    CHECK(song.tempoChanges[0].bpm == 80.0);
+    CHECK_FALSE(song.tempoChanges[0].ramp);
+}

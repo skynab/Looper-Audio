@@ -22,9 +22,32 @@ AudioEngine::AudioEngine()
     // hits record is exactly the wrong moment to be doing it.
     recordWriterThread_.startThread(juce::Thread::Priority::normal);
 
-    // Request up to 2 input channels too (for recording); JUCE falls back to
-    // however many the device actually has, including zero.
-    deviceManager_.initialiseWithDefaultDevices(2, 2);
+    // Input is asked for, but never at the cost of output.
+    //
+    // This used to be a bare initialiseWithDefaultDevices(2, 2) whose result
+    // was ignored, on the assumption that JUCE would quietly fall back to
+    // however many inputs the device actually had. It does not: if the input
+    // cannot be opened the *whole* call fails and no device opens at all — no
+    // output, so the transport never advances and the app looks like it has
+    // stopped responding to the transport controls entirely.
+    //
+    // That became reachable the moment this app started asking macOS for real
+    // microphone access. Before then the OS handed over silent input without
+    // gating it; now a denied permission is a genuine failure to open the
+    // input, and it must cost recording rather than all audio.
+    inputOpenError_ = deviceManager_.initialiseWithDefaultDevices(2, 2);
+
+    if (inputOpenError_.isNotEmpty())
+    {
+        const auto outputOnlyError = deviceManager_.initialiseWithDefaultDevices(0, 2);
+
+        juce::Logger::writeToLog("Audio input unavailable (" + inputOpenError_
+                                 + ") - opening output only");
+
+        if (outputOnlyError.isNotEmpty())
+            juce::Logger::writeToLog("Audio output also unavailable: " + outputOnlyError);
+    }
+
     deviceManager_.addAudioCallback(this);
 
     // Route every available MIDI input into the collector.
