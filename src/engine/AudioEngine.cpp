@@ -155,6 +155,8 @@ void AudioEngine::setTrackGuitarSettings(int index, const model::GuitarSettings&
     guitar.setMuteOnNoteOff(settings.muteOnNoteOff);
     guitar.setPickupResonanceHz(settings.pickupResonanceHz);
     guitar.setPickupQ(settings.pickupQ);
+    guitar.setPalmMuteDecaySeconds(settings.palmMuteDecaySeconds);
+    guitar.setPalmMuteBrightness(settings.palmMuteBrightness);
 }
 
 void AudioEngine::setTrackGuitarTuning(int index, const std::array<int, kNumGuitarStrings>& tuning)

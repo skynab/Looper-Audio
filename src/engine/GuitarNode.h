@@ -74,6 +74,10 @@ public:
     void setPickupResonanceHz(float hz) { pickupResonanceHz_.store(hz, std::memory_order_relaxed); }
     void setPickupQ(float q)            { pickupQ_.store(q, std::memory_order_relaxed); }
 
+    /** What a palm-muted note sounds like - see model::GuitarSettings. */
+    void setPalmMuteDecaySeconds(float seconds) { palmMuteDecay_.store(seconds, std::memory_order_relaxed); }
+    void setPalmMuteBrightness(float value)     { palmMuteBrightness_.store(value, std::memory_order_relaxed); }
+
     /** Open-string pitch of one string, as a MIDI note. Drop-D is
         setOpenNote(0, 38). */
     void setOpenNote(int stringIndex, int midiNote)
@@ -99,7 +103,8 @@ public:
 
             const auto message = metadata.getMessage();
             if (message.isNoteOn())
-                pluckNote(message.getNoteNumber(), message.getFloatVelocity());
+                pluckNote(message.getNoteNumber(), message.getFloatVelocity(),
+                          message.getChannel() == 2); // see PatternPlayback::channelFor
             else if (message.isNoteOff())
                 releaseNote(message.getNoteNumber());
         }
@@ -164,7 +169,7 @@ private:
         oldest. That isn't voice stealing to save CPU; it's the hand having to
         leave one note to play another.
     */
-    void pluckNote(int midiNote, float velocity)
+    void pluckNote(int midiNote, float velocity, bool palmMuted)
     {
         int best       = -1;
         int bestFret   = kMaxFret + 1;
@@ -210,7 +215,16 @@ private:
 
         if (best >= 0)
         {
+            palmMuted_[(size_t) best] = palmMuted;
+
             auto& string = strings_[(size_t) best];
+            // Applied here, not only from applySettings at the top of the
+            // block: the block's settings were pushed before this note-on was
+            // read, so a note plucked mid-block would otherwise chug from the
+            // *next* block - about 10ms late, on the one articulation whose
+            // whole character is its attack.
+            applyStringSettings(best);
+
             string.mute(0.0f); // a fresh pluck lifts any damping the last note left
             string.setFrequency(midiNoteToHertz(midiNote));
             string.pluck(velocity);
@@ -223,6 +237,8 @@ private:
         if (hammerOn >= 0)
         {
             // Hand already on the string: re-fret without striking it again.
+            // The picking hand decides palm muting, and it hasn't moved, so a
+            // hammer-on inherits whatever the string was already doing.
             auto& string = strings_[(size_t) hammerOn];
             string.setFrequency(midiNoteToHertz(midiNote));
 
@@ -234,7 +250,10 @@ private:
         if (oldest < 0)
             return; // no string can reach this note at all; better silent than wrong
 
+        palmMuted_[(size_t) oldest] = palmMuted;
+
         auto& string = strings_[(size_t) oldest];
+        applyStringSettings(oldest);
         string.mute(0.0f);
         string.setFrequency(midiNoteToHertz(midiNote));
         string.pluck(velocity);
@@ -267,21 +286,53 @@ private:
 
     void applySettings()
     {
-        const float decay     = decaySeconds_.load(std::memory_order_relaxed);
-        const float bright    = brightness_.load(std::memory_order_relaxed);
-        const float position  = pickPosition_.load(std::memory_order_relaxed);
-        const float hardness  = pickHardness_.load(std::memory_order_relaxed);
-
         pickup_.setResonanceHz(pickupResonanceHz_.load(std::memory_order_relaxed));
         pickup_.setQ(pickupQ_.load(std::memory_order_relaxed));
 
-        for (auto& string : strings_)
-        {
-            string.setDecaySeconds(decay);
-            string.setBrightness(bright);
-            string.setPickPosition(position);
-            string.setPickHardness(hardness);
-        }
+        // Per string rather than uniform, because a palm-muted string wants a
+        // different decay and brightness from an open one and this is the
+        // once-per-block place those atomics reach the strings.
+        for (int s = 0; s < kNumGuitarStrings; ++s)
+            applyStringSettings(s);
+    }
+
+    /** Pushes the current settings to one string, choosing the palm-muted
+        values if that string is currently holding a muted note. */
+    void applyStringSettings(int stringIndex)
+    {
+        if (stringIndex < 0 || stringIndex >= kNumGuitarStrings)
+            return;
+
+        const bool muted = palmMuted_[(size_t) stringIndex];
+
+        const float palmBright = palmMuteBrightness_.load(std::memory_order_relaxed);
+
+        const float decay  = muted ? palmMuteDecay_.load(std::memory_order_relaxed)
+                                   : decaySeconds_.load(std::memory_order_relaxed);
+        const float bright = muted ? palmBright
+                                   : brightness_.load(std::memory_order_relaxed);
+
+        // The excitation is damped too, not just the loop - and this is the
+        // part that actually makes a chug dark.
+        //
+        // Measured: setting only the loop's brightness made a muted note come
+        // out *brighter* than an open one. The loop filter darkens the tone a
+        // little on each round trip, so a short decay means fewer trips and
+        // less darkening; the note dies before it can get dark. That is a real
+        // property of the string model, not a bug in it.
+        //
+        // A palm mute is dark because the hand is resting on the string when it
+        // is struck, so the strike itself is muffled. pickHardness is exactly
+        // that control ("a soft pluck excites fewer partials"), so scaling it
+        // by the palm-mute brightness damps the burst the same way the hand
+        // does.
+        const float hardness = pickHardness_.load(std::memory_order_relaxed);
+
+        auto& string = strings_[(size_t) stringIndex];
+        string.setDecaySeconds(decay);
+        string.setBrightness(bright);
+        string.setPickPosition(pickPosition_.load(std::memory_order_relaxed));
+        string.setPickHardness(muted ? hardness * palmBright : hardness);
     }
 
     std::array<GuitarString, kNumGuitarStrings> strings_;
@@ -290,6 +341,11 @@ private:
     // Audio-thread state: which note each string holds, and when it was struck.
     std::array<std::atomic<int>, kNumGuitarStrings> sounding_ { -1, -1, -1, -1, -1, -1 };
     std::array<int, kNumGuitarStrings> pluckedAt_ {};
+
+    // Whether each string is currently holding a palm-muted note. Audio thread
+    // only: written when a note is plucked, read when settings are applied,
+    // both of which happen inside process().
+    std::array<bool, kNumGuitarStrings> palmMuted_ {};
     int                                pluckCounter_ = 0;
 
     std::array<std::atomic<int>, kNumGuitarStrings> openNotes_ {
@@ -305,6 +361,8 @@ private:
 
     std::atomic<float> pickupResonanceHz_ { 3000.0f };
     std::atomic<float> pickupQ_           { 1.4f };
+    std::atomic<float> palmMuteDecay_      { 0.18f };
+    std::atomic<float> palmMuteBrightness_ { 0.25f };
 };
 
 } // namespace looper::engine

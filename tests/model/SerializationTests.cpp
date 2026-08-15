@@ -621,6 +621,74 @@ TEST_CASE("A v29 guitar track opens with a real pickup, not a 0Hz one", "[model]
     REQUIRE(guitar.pickupQ == GuitarSettings {}.pickupQ);
 }
 
+TEST_CASE("Note articulation round-trips", "[model][io]")
+{
+    Song original = makeSampleSong();
+    REQUIRE_FALSE(original.tracks.empty());
+
+    auto& notes = original.tracks.front().clips.front().pattern.notes;
+    REQUIRE(notes.size() >= 2);
+
+    notes[0].articulation = looper::engine::Articulation::PalmMute;
+    notes[1].articulation = looper::engine::Articulation::Normal;
+
+    Song        restored;
+    std::string error;
+    REQUIRE(deserialize(serialize(original), restored, &error));
+
+    const auto& back = restored.tracks.front().clips.front().pattern.notes;
+    REQUIRE(back.size() == notes.size());
+    CHECK(back[0].articulation == looper::engine::Articulation::PalmMute);
+    CHECK(back[1].articulation == looper::engine::Articulation::Normal);
+
+    // And the whole song still compares equal, which is what history dedup
+    // relies on — a field that round-trips but breaks operator== would make
+    // every save look like an edit.
+    CHECK(restored == original);
+}
+
+TEST_CASE("A v30 note opens as an open note", "[model][io]")
+{
+    // v30's NOTE line ends after the velocity. Absent must mean Normal: every
+    // note written before articulations existed was played open, and reading
+    // one as a palm mute would silently rewrite old parts.
+    const std::string v30 =
+        "LOOPER 30\n"
+        "BPM 120\n"
+        "TSNUM 4\n"
+        "TSDEN 4\n"
+        "NEXTID 3\n"
+        "FILTER 0 0 1000 0.707\n"
+        "DELAY 0 300 0.35 0.3\n"
+        "REVERB 0 0.5 0.5 0.3\n"
+        "SENDBUS 0 0 0.5 0.5 300 0.35 0.5\n"
+        "EQ 0 0 0 0\n"
+        "MASTERING 0 0 0 0 0 0 0 0 0 0 200 0.707 1000 0.707 4000 0.707\n"
+        "PROJECTROOT \n"
+        "AUTO 0\n"
+        "SCENES 0\n"
+        "TRACKS 1\n"
+        "TRACK 1 0 0 0 0 0 Synth\n"
+        "TAUTOS 0\n"
+        "FXCHAIN 0\n"
+        "SESSION 0\n"
+        "CLIPS 1\n"
+        "CLIP 2 0 0 4 4 \n"
+        "CLIPGAIN 0\n"
+        "NOTES 1\n"
+        "NOTE 0 1 60 0.8\n";
+
+    Song        song;
+    std::string error;
+    REQUIRE(deserialize(v30, song, &error));
+    REQUIRE(song.tracks.size() == 1);
+
+    const auto& notes = song.tracks.front().clips.front().pattern.notes;
+    REQUIRE(notes.size() == 1);
+    CHECK(notes[0].noteNumber == 60);
+    CHECK(notes[0].articulation == looper::engine::Articulation::Normal);
+}
+
 TEST_CASE("Per-clip gain round-trips", "[model][io]")
 {
     Song original = makeSampleSong();

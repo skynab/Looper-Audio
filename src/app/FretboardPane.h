@@ -131,6 +131,10 @@ public:
         setupSlider(muteOnRelease_, 0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
         setupSlider(pickupHz_, 500.0, 8000.0, 10.0, " Hz", [this] { pushSettings(); });
         setupSlider(pickupQ_, 0.5, 4.0, 0.05, "", [this] { pushSettings(); });
+        setupSlider(palmDecay_, 0.05, 1.0, 0.01, " s", [this] { pushSettings(); });
+        palmDecay_.setTooltip("How long a palm-muted note rings - the length of a chug");
+        setupSlider(palmBright_, 0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
+        palmBright_.setTooltip("How dark a palm-muted note is - the picking hand rolls off the top");
 
         setupLabel(decayLabel_, "Decay");
         setupLabel(brightnessLabel_, "Bright");
@@ -139,6 +143,8 @@ public:
         setupLabel(muteOnReleaseLabel_, "Damp off");
         setupLabel(pickupHzLabel_, "Pickup");
         setupLabel(pickupQLabel_, "Pickup Q");
+        setupLabel(palmDecayLabel_, "Mute len");
+        setupLabel(palmBrightLabel_, "Mute tone");
 
         // Tone templates: one button per engine::GuitarTone, each applying
         // its whole GuitarSettings + effect chain in one click. Laid out as
@@ -179,6 +185,8 @@ public:
         muteOnRelease_.setValue(settings.muteOnNoteOff * 100.0, juce::dontSendNotification);
         pickupHz_.setValue(settings.pickupResonanceHz, juce::dontSendNotification);
         pickupQ_.setValue(settings.pickupQ, juce::dontSendNotification);
+        palmDecay_.setValue(settings.palmMuteDecaySeconds, juce::dontSendNotification);
+        palmBright_.setValue(settings.palmMuteBrightness * 100.0, juce::dontSendNotification);
 
         updating_ = false;
         setContentVisible(true);
@@ -409,12 +417,14 @@ public:
         row(muteOnReleaseLabel_, muteOnRelease_);
         row(pickupHzLabel_, pickupHz_);
         row(pickupQLabel_, pickupQ_);
+        row(palmDecayLabel_, palmDecay_);
+        row(palmBrightLabel_, palmBright_);
     }
 
 private:
     static constexpr int kNumFrets      = 22; // 0 (open) through 22
     static constexpr int kTuningHeight  = 26;
-    static constexpr int kToneHeight    = 8 * 22; // the tone-template button row + 7 GuitarSettings sliders
+    static constexpr int kToneHeight    = 10 * 22; // the tone-template button row + 9 GuitarSettings sliders
     // A row of open-shape buttons, the strum controls, and the chord-mode row.
     static constexpr int kChordHeight   = 26 + 22 + 22;
     static constexpr int kLowestTuning  = 28; // E1, low enough for any drop tuning
@@ -520,6 +530,8 @@ private:
         settings_.muteOnNoteOff = (float) (muteOnRelease_.getValue() / 100.0);
         settings_.pickupResonanceHz = (float) pickupHz_.getValue();
         settings_.pickupQ           = (float) pickupQ_.getValue();
+        settings_.palmMuteDecaySeconds = (float) palmDecay_.getValue();
+        settings_.palmMuteBrightness   = (float) (palmBright_.getValue() / 100.0);
 
         onSettingsChanged(settings_);
         repaint(); // a tuning change relabels the whole board
@@ -534,6 +546,7 @@ private:
             &pickPositionLabel_, &pickPosition_, &pickHardnessLabel_,
             &pickHardness_, &muteOnReleaseLabel_, &muteOnRelease_,
             &pickupHzLabel_, &pickupHz_, &pickupQLabel_, &pickupQ_,
+            &palmDecayLabel_, &palmDecay_, &palmBrightLabel_, &palmBright_,
             &strumDirection_, &strumSpread_, &strumHumanise_,
             &strumSpreadLabel_, &strumHumaniseLabel_,
             &chordMode_, &writeToClip_
@@ -574,8 +587,8 @@ private:
     std::array<juce::ComboBox, model::kNumGuitarStrings> tuningBoxes_;
     juce::Label     decayLabel_, brightnessLabel_, pickPositionLabel_, pickHardnessLabel_, muteOnReleaseLabel_;
     juce::Slider    decay_, brightness_, pickPosition_, pickHardness_, muteOnRelease_;
-    juce::Label     pickupHzLabel_, pickupQLabel_;
-    juce::Slider    pickupHz_, pickupQ_;
+    juce::Label     pickupHzLabel_, pickupQLabel_, palmDecayLabel_, palmBrightLabel_;
+    juce::Slider    pickupHz_, pickupQ_, palmDecay_, palmBright_;
     juce::OwnedArray<juce::TextButton> toneButtons_;
 
     juce::OwnedArray<juce::TextButton> chordButtons_;

@@ -81,6 +81,7 @@ if (LOOPER_BUILD_APP)
   add_executable(looper_gui_tests
     gui/FretboardPaneTests.cpp
     gui/ArrangementViewTests.cpp
+    gui/ArticulationTests.cpp
     gui/AudioExportTests.cpp
   gui/AudioEditorPaneTests.cpp
   gui/AudioFileTypesTests.cpp

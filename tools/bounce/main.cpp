@@ -874,9 +874,17 @@ int main(int argc, char** argv)
     bool guitarPlaysSixAtOnce  = false;
     bool guitarPicksLowestFret = false;
     bool guitarHammerOn        = false;
+    bool guitarPalmMuteChugs   = false;
     {
         // Renders a guitar node given (noteNumber, sampleOffset) note-ons.
-        auto renderNotes = [&](const std::vector<std::pair<int, int>>& notes, double durationSeconds)
+        // @p channel carries the articulation: 2 is palm muted, see
+        // PatternPlayback::channelFor.
+        // @p settings, when given, configures the node the way a preset would -
+        // so a check can measure the tone the user actually gets rather than
+        // bare defaults.
+        auto renderNotes = [&](const std::vector<std::pair<int, int>>& notes, double durationSeconds,
+                               int channel = 1,
+                               const looper::model::GuitarSettings* settings = nullptr)
         {
             const int totalSamples = (int) (sampleRate * durationSeconds);
             juce::AudioBuffer<float> mix(2, totalSamples);
@@ -885,6 +893,18 @@ int main(int argc, char** argv)
             GuitarNode guitar;
             guitar.prepare(sampleRate, 512);
             guitar.setDecaySeconds(4.0f);
+
+            if (settings != nullptr)
+            {
+                guitar.setDecaySeconds(settings->decaySeconds);
+                guitar.setBrightness(settings->brightness);
+                guitar.setPickPosition(settings->pickPosition);
+                guitar.setPickHardness(settings->pickHardness);
+                guitar.setPickupResonanceHz(settings->pickupResonanceHz);
+                guitar.setPickupQ(settings->pickupQ);
+                guitar.setPalmMuteDecaySeconds(settings->palmMuteDecaySeconds);
+                guitar.setPalmMuteBrightness(settings->palmMuteBrightness);
+            }
 
             juce::MidiBuffer midi;
 
@@ -895,7 +915,7 @@ int main(int argc, char** argv)
                 midi.clear();
                 for (const auto& [note, offset] : notes)
                     if (offset >= pos && offset < pos + n)
-                        midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.9f), offset - pos);
+                        midi.addEvent(juce::MidiMessage::noteOn(channel, note, 0.9f), offset - pos);
 
                 ProcessContext context;
                 context.sampleRate                   = sampleRate;
@@ -984,6 +1004,96 @@ int main(int argc, char** argv)
             const double f4After = magnitude(rendered, f4, hammerAt + 2000, (int) (0.3 * sampleRate));
 
             guitarHammerOn = after <= before && f4After > 1.0e-4;
+        }
+
+        // Palm muting: the articulation a riff is made of.
+        //
+        // Two claims, because either alone passes for something else. A note
+        // that is merely *short* has been cut off; a note that is merely *dark*
+        // has had its tone knob turned down. A chug is both, and it still has
+        // to sound - a check that only measured shortness would be satisfied by
+        // silence.
+        {
+            constexpr int kLowE = 40;
+
+            // Driven by the preset rather than bare defaults: what matters is
+            // whether a chug reads as a chug in the tone someone will actually
+            // play, and the preset is where the two articulations are dialled
+            // against each other.
+            const auto metal = looper::model::presetForGuitarTone(GuitarTone::ModernMetal).guitar;
+
+            const auto open  = renderNotes({ { kLowE, 0 } }, 1.2, 1, &metal);
+            const auto muted = renderNotes({ { kLowE, 0 } }, 1.2, 2, &metal);
+
+            // Length, measured well after a muted note should have gone: the
+            // node is set to a 4-second decay above, against the default 0.18s
+            // palm mute.
+            const int   tailFrom = (int) (sampleRate * 0.35);
+            const int   tailLen  = (int) (sampleRate * 0.30);
+            const float openTail  = open.getRMSLevel(0, tailFrom, tailLen);
+            const float mutedTail = muted.getRMSLevel(0, tailFrom, tailLen);
+
+            // Darkness, measured *early* and relative to the fundamental. An
+            // absolute high-frequency reading would just restate the level
+            // difference; the ratio says the tone is different, not only
+            // quieter.
+            const int    earlyFrom = (int) (sampleRate * 0.01);
+            const int    earlyLen  = (int) (sampleRate * 0.06);
+
+            // High-band energy as a fraction of the window's total, over a comb
+            // of frequencies rather than one bin, and measured *above* the
+            // pickup's resonance.
+            //
+            // The band matters. Measured across 1.2-5kHz the two articulations
+            // were indistinguishable, because the pickup's resonant peak sits
+            // at 3kHz and imposes its own shape on everything passing through
+            // it. Above that peak the string's own filters have authority
+            // again: the palm-mute brightness control spans 2.6x there against
+            // almost nothing in the midband.
+            //
+            // Not a ratio to the fundamental, which is what this measured
+            // first: E2 is only about five cycles in a 60ms window, so the
+            // correlation at 82Hz leaks badly and a bad denominator made the
+            // muted note look fifteen times brighter than the open one. Divided
+            // by the window's RMS instead, the figure is level-independent
+            // without depending on estimating a low frequency in a short
+            // window.
+            auto brightnessOf = [&](const juce::AudioBuffer<float>& audioBuffer)
+            {
+                double high = 0.0;
+                for (double f = 4500.0; f <= 12000.0; f *= 1.12)
+                {
+                    const double m = magnitude(audioBuffer, f, earlyFrom, earlyLen);
+                    high += m * m;
+                }
+
+                const double rms = (double) audioBuffer.getRMSLevel(0, earlyFrom, earlyLen);
+                return std::sqrt(high) / std::max(rms, 1.0e-12);
+            };
+
+            const double openBrightness  = brightnessOf(open);
+            const double mutedBrightness = brightnessOf(muted);
+
+            // And it does sound: a chug is an attack, not an absence.
+            const float mutedAttack = muted.getRMSLevel(0, 0, (int) (sampleRate * 0.05));
+
+            // Three claims, because any one alone passes for something else. A
+            // note that is only *short* has been cut off. One that is only
+            // *dark* has had its tone knob turned down. And a check for both
+            // that forgot to require sound would be satisfied by silence.
+            //
+            // The darkness margin is deliberately modest: measured, a muted
+            // note is about 18% darker than an open one through this preset.
+            // That is a real and repeatable difference but not a dramatic one,
+            // and asserting a bigger gap than the DSP actually produces is how
+            // a sentinel ends up being tuned to rather than measured against.
+            guitarPalmMuteChugs = mutedAttack > 0.001f
+                               && mutedTail < openTail * 0.25f
+                               && mutedBrightness < openBrightness * 0.9;
+
+            std::cout << "palm mute: openTail=" << openTail << " mutedTail=" << mutedTail
+                      << " openBright=" << openBrightness << " mutedBright=" << mutedBrightness
+                      << " mutedAttack=" << mutedAttack << "\n";
         }
 
         // Allocation preference, checked directly rather than inferred from
@@ -2462,6 +2572,7 @@ int main(int argc, char** argv)
               << "  guitarPlaysSixAtOnce=" << (guitarPlaysSixAtOnce ? 1 : 0)
               << "  guitarPicksLowestFret=" << (guitarPicksLowestFret ? 1 : 0)
               << "  guitarHammerOn=" << (guitarHammerOn ? 1 : 0)
+              << "  guitarPalmMuteChugs=" << (guitarPalmMuteChugs ? 1 : 0)
               << "  chorusChangesSound=" << (chorusChangesSound ? 1 : 0)
               << "  chorusDepthMatters=" << (chorusDepthMatters ? 1 : 0)
               << "  wobbleChangesSound=" << (wobbleChangesSound ? 1 : 0)
@@ -2516,7 +2627,7 @@ int main(int argc, char** argv)
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks
                  && guitarSounds && guitarCutsSameString && guitarPlaysSixAtOnce
-                 && guitarPicksLowestFret && guitarHammerOn
+                 && guitarPicksLowestFret && guitarHammerOn && guitarPalmMuteChugs
                  && filterEnvChangesSound && subOscChangesSound && unisonChangesSound
                  && effectChainOrderMatters && effectChainRunsAllNodes
                  && sessionLaunchQuantizes && sessionStopWorks

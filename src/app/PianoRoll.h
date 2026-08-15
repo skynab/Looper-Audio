@@ -502,6 +502,10 @@ public:
         in a note editor must not sometimes mean "delete everything". */
     bool keyPressed(const juce::KeyPress& key) override
     {
+        // M toggles palm muting on the selection - see togglePalmMuteOnSelection.
+        if (key.getModifiers().getRawFlags() == 0 && key.getTextCharacter() == 'm')
+            return togglePalmMuteOnSelection();
+
         if (! key.isKeyCode(juce::KeyPress::deleteKey)
             && ! key.isKeyCode(juce::KeyPress::backspaceKey))
             return false;
@@ -512,6 +516,57 @@ public:
         const int removed = deleteSelectedNotes();
         if (onNotesDeleted)
             onNotesDeleted(removed);
+
+        return true;
+    }
+
+    /**
+        Flips the selected notes between open and palm-muted.
+
+        All-or-nothing rather than per note: if any selected note is open they
+        all become muted, otherwise they all open up. Toggling each
+        independently would make a mixed selection scramble rather than change,
+        and "make these chug" is what the keystroke means.
+
+        Reported through onChange like every other edit, so it lands in undo as
+        one step. Returns false with nothing selected, which leaves the key
+        unconsumed rather than silently doing nothing to everything.
+    */
+    bool togglePalmMuteOnSelection()
+    {
+        if (selection_.empty())
+            return false;
+
+        bool anyOpen = false;
+        for (int index : selection_)
+            if (juce::isPositiveAndBelow(index, (int) pattern_.notes.size())
+                && pattern_.notes[(size_t) index].articulation
+                                          == engine::Articulation::Normal)
+                anyOpen = true;
+
+        const auto wanted = anyOpen ? engine::Articulation::PalmMute
+                                    : engine::Articulation::Normal;
+
+        bool changed = false;
+        for (int index : selection_)
+        {
+            if (! juce::isPositiveAndBelow(index, (int) pattern_.notes.size()))
+                continue;
+
+            auto& note = pattern_.notes[(size_t) index];
+            if (note.articulation != wanted)
+            {
+                note.articulation = wanted;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            repaint();
+            if (onChange)
+                onChange(pattern_);
+        }
 
         return true;
     }
@@ -654,8 +709,24 @@ public:
             const juce::Rectangle<float> block(geometry_.xForStep(step, w) + 1.0f,
                                                geometry_.yForRow(row, h) + 1.0f,
                                                (float) spanOf(n) * cw - 2.0f, ch - 2.0f);
-            g.setColour(juce::Colours::limegreen.withAlpha(0.4f + 0.6f * juce::jlimit(0.0f, 1.0f, n.velocity)));
+            const bool palmMuted = n.articulation == engine::Articulation::PalmMute;
+
+            // A muted note is a different *colour*, not a dimmer green: green's
+            // brightness already carries velocity, so shading it would make a
+            // quiet open note and a loud chug look the same. Orange reads as a
+            // different kind of note at a glance, which is the whole reason
+            // this is a visible flag rather than a velocity trick.
+            g.setColour((palmMuted ? juce::Colours::orange : juce::Colours::limegreen)
+                            .withAlpha(0.4f + 0.6f * juce::jlimit(0.0f, 1.0f, n.velocity)));
             g.fillRect(block);
+
+            if (palmMuted)
+            {
+                // A bar across the note, so the two are still distinguishable
+                // without relying on colour alone.
+                g.setColour(juce::Colours::black.withAlpha(0.55f));
+                g.fillRect(block.withSizeKeepingCentre(block.getWidth() * 0.7f, 2.0f));
+            }
 
             if (isSelected((int) i))
             {

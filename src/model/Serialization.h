@@ -71,7 +71,7 @@ namespace looper::model
           the tolerant way, and every default is the behaviour that existed
           before them. Appended rather than grouped with the other drive
           fields because the line is positional. */
-inline constexpr int kFormatVersion = 30;
+inline constexpr int kFormatVersion = 31;
 namespace detail
 {
     inline std::string num(double v)
@@ -99,7 +99,8 @@ namespace detail
 
         for (const auto& note : clip.pattern.notes)
             out << "NOTE " << num(note.startBeats) << " " << num(note.lengthBeats)
-                << " " << note.noteNumber << " " << num((double) note.velocity) << "\n";
+                << " " << note.noteNumber << " " << num((double) note.velocity)
+                << " " << (int) note.articulation << "\n";
     }
 
     inline std::string trimLeadingSpace(std::string s)
@@ -229,7 +230,9 @@ inline std::string serialize(const Song& song)
             << " " << detail::num((double) guitar.pickHardness)
             << " " << detail::num((double) guitar.muteOnNoteOff)
             << " " << detail::num((double) guitar.pickupResonanceHz)
-            << " " << detail::num((double) guitar.pickupQ) << "\n";
+            << " " << detail::num((double) guitar.pickupQ)
+            << " " << detail::num((double) guitar.palmMuteDecaySeconds)
+            << " " << detail::num((double) guitar.palmMuteBrightness) << "\n";
 
         // The effect chain, in order. A slot carries every built-in's settings
         // regardless of its kind, so switching kind doesn't lose the others.
@@ -395,8 +398,25 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             std::istringstream ns(rest);
             engine::Note note;
             double velocity = 0.0;
-            ns >> note.startBeats >> note.lengthBeats >> note.noteNumber >> velocity;
+
+            // Seeded with the default: a file written before v31 stops after
+            // the velocity, the extraction fails, and every note keeps the
+            // articulation it always had.
+            int articulation = (int) engine::Articulation::Normal;
+
+            ns >> note.startBeats >> note.lengthBeats >> note.noteNumber >> velocity
+               >> articulation;
+
             note.velocity = (float) velocity;
+
+            // Clamped rather than cast blindly: a newer file could carry an
+            // articulation this build has never heard of, and playing such a
+            // note normally is better than playing it as whatever that integer
+            // happens to alias to.
+            note.articulation = articulation == (int) engine::Articulation::PalmMute
+                                    ? engine::Articulation::PalmMute
+                                    : engine::Articulation::Normal;
+
             clip.pattern.notes.push_back(note);
         }
         return true;
@@ -727,9 +747,11 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             const GuitarSettings fallback;
             double resonanceHz = (double) fallback.pickupResonanceHz;
             double pickupQ     = (double) fallback.pickupQ;
+            double palmDecay   = (double) fallback.palmMuteDecaySeconds;
+            double palmBright  = (double) fallback.palmMuteBrightness;
 
             gs >> decay >> brightness >> position >> hardness >> mute
-               >> resonanceHz >> pickupQ;
+               >> resonanceHz >> pickupQ >> palmDecay >> palmBright;
             track.guitarSettings.decaySeconds      = (float) decay;
             track.guitarSettings.brightness        = (float) brightness;
             track.guitarSettings.pickPosition      = (float) position;
@@ -737,6 +759,8 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             track.guitarSettings.muteOnNoteOff     = (float) mute;
             track.guitarSettings.pickupResonanceHz = (float) resonanceHz;
             track.guitarSettings.pickupQ           = (float) pickupQ;
+            track.guitarSettings.palmMuteDecaySeconds = (float) palmDecay;
+            track.guitarSettings.palmMuteBrightness   = (float) palmBright;
         }
 
         // v14..v17 stored a fixed filter/delay/reverb trio. Migrate it into

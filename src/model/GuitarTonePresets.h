@@ -55,7 +55,16 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             // rather than just sit there being loud.
             p.guitar.pickupResonanceHz = 2800.0f;
             p.guitar.pickupQ           = 2.0f;
-            p.guitar.muteOnNoteOff = 0.55f; // palm-mute-style choke, not fully dead
+            // Was 0.55: a blunt stand-in for chugging that choked *every* note
+            // on release, back when there was no way to mute one note and let
+            // the next ring. With a real per-note articulation doing that work
+            // the strings can behave like a guitar's and ring until replucked.
+            p.guitar.muteOnNoteOff = 0.0f;
+
+            // Tight and dark - a drop-tuned chug is short and has almost no
+            // top, which is what makes the open accents around it cut.
+            p.guitar.palmMuteDecaySeconds = 0.14f;
+            p.guitar.palmMuteBrightness   = 0.18f;
 
             EffectSlot compressor;
             compressor.kind                   = EffectKind::Compressor;
@@ -290,6 +299,11 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             p.guitar.pickPosition  = 0.1f;  // hard at the bridge - thin and glassy
             p.guitar.pickHardness  = 0.95f;
             p.guitar.muteOnNoteOff = 0.9f;  // notes stop dead, machine-like
+
+            // Shorter and less dark than Modern Metal's: this tone is brittle
+            // rather than heavy, so a mute here is a click more than a thud.
+            p.guitar.palmMuteDecaySeconds = 0.09f;
+            p.guitar.palmMuteBrightness   = 0.35f;
 
             // Single-coil territory: the resonance is high and sharp, which
             // is what makes this read as brittle and glassy rather than

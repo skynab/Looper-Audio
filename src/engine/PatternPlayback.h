@@ -59,7 +59,8 @@ struct PatternPlayback
             if (edgeInBlock(onSample, blockStart, length, numSamples, offset))
             {
                 const auto velocity = (juce::uint8) juce::jlimit(1, 127, (int) (note.velocity * 127.0f));
-                midi.addEvent(juce::MidiMessage::noteOn(1, noteNumber, velocity), offset);
+                midi.addEvent(juce::MidiMessage::noteOn(channelFor(note.articulation), noteNumber, velocity),
+                              offset);
                 activeNotes[(size_t) noteNumber] = true;
             }
 
@@ -71,8 +72,30 @@ struct PatternPlayback
         }
     }
 
+    /** Which MIDI channel a note is sent on.
+
+        The articulation rides the channel because nothing else uses it: every
+        note-on here was hardcoded to channel 1, and no engine node reads
+        getChannel() at all - so this carries the flag to GuitarNode with no
+        side-channel and no change to how notes are scheduled. It also means an
+        external sequencer or controller can drive the articulation.
+
+        Safe for the other instruments because SynthVoice's and DrumKitNode's
+        sounds both return true from appliesToChannel for every channel, so a
+        note on 2 still sounds on a synth or drum track - it simply means
+        nothing there. */
+    static int channelFor(Articulation articulation) noexcept
+    {
+        return articulation == Articulation::PalmMute ? 2 : 1;
+    }
+
     /** Releases everything currently sounding. Called when playback stops, or
-        when a player switches material, so notes can't hang. */
+        when a player switches material, so notes can't hang.
+
+        Note-offs stay on channel 1 whatever the note-on used: GuitarNode
+        matches them by note number and ignores the channel, and ActiveNotes is
+        indexed by note number alone - so a second channel here would be state
+        nothing reads. */
     static void flush(juce::MidiBuffer& midi, ActiveNotes& activeNotes)
     {
         for (int n = 0; n < 128; ++n)

@@ -42,6 +42,14 @@ struct GuitarSettings
     float pickupResonanceHz = 3000.0f;
     float pickupQ           = 1.4f;
 
+    // What a palm-muted note is, rather than how it differs from an open one -
+    // absolute values so a preset states the sound directly. A palm mute is
+    // short *and* dark: the picking hand resting at the bridge kills the tail
+    // and rolls off the top, and a note that was only shortened reads as cut
+    // off rather than chugged. See engine::Articulation.
+    float palmMuteDecaySeconds = 0.18f;
+    float palmMuteBrightness   = 0.25f;
+
     bool operator==(const GuitarSettings&) const = default;
 };
 
