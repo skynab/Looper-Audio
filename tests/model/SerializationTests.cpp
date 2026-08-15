@@ -838,3 +838,49 @@ TEST_CASE("A tempo change with a nonsense value is dropped, not loaded", "[model
     CHECK(song.tempoChanges[0].beat == 16.0);
     CHECK(song.tempoChanges[0].bpm == 90.0);
 }
+
+TEST_CASE("The song's tempo map joins its starting tempo to its changes", "[model][tempo]")
+{
+    // Two fields, one map. Anything assembling its own would be the second
+    // definition of how they combine, which is how the two drift.
+    Song song;
+    song.bpm = 100.0;
+    song.tempoChanges = { { 8.0, 140.0 }, { 24.0, 70.0 } };
+
+    const auto map = tempoMapFor(song);
+
+    REQUIRE(map.size() == 3);
+    CHECK(map[0].beat == 0.0);
+    CHECK(map[0].bpm == 100.0);
+    CHECK(map[1].beat == 8.0);
+    CHECK(map[2].beat == 24.0);
+}
+
+TEST_CASE("The tempo at a beat is the last change at or before it", "[model][tempo]")
+{
+    Song song;
+    song.bpm = 100.0;
+    song.tempoChanges = { { 8.0, 140.0 }, { 24.0, 70.0 } };
+
+    CHECK(tempoAtBeat(song, 0.0) == 100.0);
+    CHECK(tempoAtBeat(song, 7.99) == 100.0);
+    CHECK(tempoAtBeat(song, 8.0) == 140.0);   // a change owns its own instant
+    CHECK(tempoAtBeat(song, 23.9) == 140.0);
+    CHECK(tempoAtBeat(song, 24.0) == 70.0);
+    CHECK(tempoAtBeat(song, 1000.0) == 70.0);
+
+    // Before the start reads as the starting tempo rather than as nothing.
+    CHECK(tempoAtBeat(song, -5.0) == 100.0);
+}
+
+TEST_CASE("A song with no changes has a one-entry map", "[model][tempo]")
+{
+    Song song;
+    song.bpm = 118.0;
+
+    const auto map = tempoMapFor(song);
+    REQUIRE(map.size() == 1);
+    CHECK(map[0].beat == 0.0);
+    CHECK(map[0].bpm == 118.0);
+    CHECK(tempoAtBeat(song, 999.0) == 118.0);
+}

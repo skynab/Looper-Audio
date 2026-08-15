@@ -197,6 +197,17 @@ public:
     void setTrackMuted(int index, bool muted);
     void setTrackSolo(int index, bool solo);
 
+    /** Hands the audio thread a new tempo map.
+
+        The scalar tempo goes through the command queue like every other
+        parameter, but a map is a vector — so it uses the same pointer swap the
+        rest of the engine's variable-sized state uses (see
+        Sequencer::submitClips): built here, applied on the audio thread, and
+        the old one handed back to be freed in pump().
+
+        Message thread. */
+    void setTempoChanges(const std::vector<TempoChange>& changes);
+
     /** Whether track @p index currently produces sound in the mix: active, not
         muted, and either soloed or with nothing else soloed.
 
@@ -537,6 +548,13 @@ private:
     std::atomic<float>       sendReturnGain_    { 0.0f };
 
     std::atomic<double> sampleRate_ { 0.0 };
+
+    // The tempo map, handed over whole rather than a field at a time. Sized
+    // small: a map is submitted when a project loads or a change is edited,
+    // never per block.
+    using TempoChangeList = std::vector<TempoChange>;
+    rt::SpscRingBuffer<TempoChangeList*> tempoInbox_   { 8 };
+    rt::SpscRingBuffer<TempoChangeList*> tempoReclaim_ { 16 };
 
     AudioRecorder recorder_;
 

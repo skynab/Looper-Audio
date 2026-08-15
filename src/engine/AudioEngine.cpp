@@ -268,6 +268,13 @@ bool AudioEngine::trackContributesToMix(int index) const noexcept
     return ! anySolo || track.solo.load(std::memory_order_relaxed);
 }
 
+void AudioEngine::setTempoChanges(const std::vector<TempoChange>& changes)
+{
+    auto* copy = new TempoChangeList(changes);
+    if (! tempoInbox_.push(copy))
+        delete copy; // the queue is full; the next edit will carry the same map
+}
+
 void AudioEngine::setTrackGainDb(int index, float gainDb)
 {
     if (index >= 0 && index < kMaxTracks)
@@ -566,10 +573,27 @@ void AudioEngine::pump() noexcept
     }
 
     filePlayer_.collectRetiredClips();
+
+    TempoChangeList* retiredTempo = nullptr;
+    while (tempoReclaim_.pop(retiredTempo))
+        delete retiredTempo;
 }
 
 void AudioEngine::drainCommandQueue() noexcept
 {
+    // The tempo map, if a new one has arrived. Ahead of the commands below so
+    // a tempo change and a SetTempo submitted together land in that order —
+    // SetTempo edits beat 0 of whatever map is current.
+    TempoChangeList* incomingTempo = nullptr;
+    while (tempoInbox_.pop(incomingTempo))
+    {
+        if (incomingTempo != nullptr)
+        {
+            transport_.tempoMap().setTempoChanges(*incomingTempo);
+            tempoReclaim_.push(incomingTempo);
+        }
+    }
+
     EngineCommand command;
     while (commandQueue_.pop(command))
     {

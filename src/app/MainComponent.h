@@ -113,6 +113,13 @@ private:
     void seekToBeat(double beat);
     void stepByBars(int bars);
     double songEndBeats() const;
+    double playheadBeat() const;
+    void   setTempoAtPlayhead(double bpm);
+    void   editTempoChangeAt(double beat);
+    void   applyTempoChange(double beat, double bpm);
+    void   moveTempoChange(double fromBeat, double toBeat);
+    void   removeTempoChangeAt(double beat);
+    void   pushTempoMap();
     void chooseFile();
     void showStatus(const juce::String& message);
     void showError(const juce::String& message);

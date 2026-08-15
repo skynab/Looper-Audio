@@ -361,9 +361,11 @@ MainComponent::MainComponent()
 
     tempoSlider.onValueChange = [this]
     {
-        uiTempoMap_.setTempo(tempoSlider.getValue());
-        post(Cmd::SetTempo, tempoSlider.getValue());
-        updateLoopRegion();
+        // Edits whichever tempo is in force at the playhead, not always the
+        // one at beat 0 — with a tempo map, "the tempo" is a position-dependent
+        // question, and a slider that always wrote beat 0 would silently edit
+        // a different part of the song from the one being listened to.
+        setTempoAtPlayhead(tempoSlider.getValue());
     };
     leftPane_.addAndMakeVisible(tempoSlider);
     tempoLabel.attachToComponent(&tempoSlider, true);
@@ -1116,6 +1118,13 @@ MainComponent::MainComponent()
         setClipLength(trackIndex, clipIndex, newLengthBeats);
     };
 
+    arrangementView_.onTempoChangeRequested = [this](double beat) { editTempoChangeAt(beat); };
+    arrangementView_.onTempoChangeRemoved    = [this](double beat) { removeTempoChangeAt(beat); };
+    arrangementView_.onTempoChangeMoved      = [this](double from, double to)
+    {
+        moveTempoChange(from, to);
+    };
+
     arrangementView_.onFileDropped = [this](const juce::File& file, double dropBeat, int trackIndex)
     {
         importAudioFileAtBeat(file, dropBeat, trackIndex);
@@ -1414,7 +1423,13 @@ void MainComponent::createEmptyProject()
     history_.reset(song);
     selectedTrackIndex_ = 0;
     tempoSlider.setValue(song.bpm, juce::dontSendNotification);
-    uiTempoMap_.setTempo(song.bpm);
+
+    // The whole map, not just the starting tempo: a project that carries tempo
+    // changes has to arrive in the engine with them, or it plays back at one
+    // tempo while the document says otherwise.
+    const auto tempoMap = model::tempoMapFor(song);
+    uiTempoMap_.setTempoChanges(tempoMap);
+    engine_.setTempoChanges(tempoMap);
     post(Cmd::SetTempo, song.bpm);
     refreshFromModel();
     clipLabel.setText("No clip loaded", juce::dontSendNotification);
@@ -6738,6 +6753,177 @@ void MainComponent::startExport(const std::vector<ExportTask>& tasks, const juce
                                                std::move(onFinished));
 }
 
+/** The beat the playhead is on, for the tempo controls. */
+double MainComponent::playheadBeat() const
+{
+    return juce::jmax(0.0, uiTempoMap_.ppqFromSamples(engine_.playheadSamples()));
+}
+
+/** Applies @p bpm to whichever tempo is in force at the playhead.
+
+    At the start of the song that is the song's tempo; inside a section with a
+    tempo change it is that change. Both go through history_, so a tempo edit
+    undoes like any other. */
+void MainComponent::setTempoAtPlayhead(double bpm)
+{
+    const double beat = playheadBeat();
+
+    history_.edit("Tempo", [beat, bpm](model::Song& s)
+    {
+        // Which entry the playhead is inside: the last change at or before it,
+        // or the song's own tempo when it is before them all.
+        int index = -1;
+        for (int i = 0; i < (int) s.tempoChanges.size(); ++i)
+            if (beat >= s.tempoChanges[(size_t) i].beat)
+                index = i;
+
+        if (index >= 0)
+            s.tempoChanges[(size_t) index].bpm = bpm;
+        else
+            s.bpm = bpm;
+    });
+
+    pushTempoMap();
+}
+
+/** Adds a tempo change at @p beat, or edits the one already there. */
+void MainComponent::editTempoChangeAt(double beat)
+{
+    const auto& song = history_.current();
+    double      current = model::tempoAtBeat(song, beat);
+
+    for (const auto& change : song.tempoChanges)
+        if (std::abs(change.beat - beat) < 1.0e-9)
+            current = change.bpm;
+
+    auto* window = new juce::AlertWindow("Tempo change", {},
+                                         juce::MessageBoxIconType::NoIcon, this);
+
+    const double qpb = juce::jmax(1.0, uiTempoMap_.quartersPerBar());
+    window->addTextEditor("bpm", juce::String(current, 2),
+                          "Tempo at bar " + juce::String((int) std::round(beat / qpb) + 1) + ":");
+    window->addButton("OK", 1, juce::KeyPress(juce::KeyPress::returnKey));
+    window->addButton("Cancel", 0, juce::KeyPress(juce::KeyPress::escapeKey));
+
+    window->enterModalState(true, juce::ModalCallbackFunction::create(
+        [self = juce::Component::SafePointer<MainComponent>(this), window, beat](int result)
+        {
+            std::unique_ptr<juce::AlertWindow> owned(window);
+            if (self == nullptr || result != 1)
+                return;
+
+            const double bpm = window->getTextEditorContents("bpm").getDoubleValue();
+
+            // Refused rather than clamped: a tempo someone mistyped is worth
+            // saying no to, and a silently corrected 0 would be a mystery.
+            if (bpm < 20.0 || bpm > 400.0)
+            {
+                self->showError("Tempo must be between 20 and 400 bpm");
+                return;
+            }
+
+            self->applyTempoChange(beat, bpm);
+        }));
+}
+
+void MainComponent::applyTempoChange(double beat, double bpm)
+{
+    history_.edit("Tempo change", [beat, bpm](model::Song& s)
+    {
+        // Beat 0 is the song's own tempo rather than an entry in the list —
+        // see model::tempoMapFor for why the two are kept apart.
+        if (beat <= 0.0)
+        {
+            s.bpm = bpm;
+            return;
+        }
+
+        for (auto& change : s.tempoChanges)
+        {
+            if (std::abs(change.beat - beat) < 1.0e-9)
+            {
+                change.bpm = bpm;
+                return;
+            }
+        }
+
+        s.tempoChanges.push_back({ beat, bpm });
+        std::sort(s.tempoChanges.begin(), s.tempoChanges.end(),
+                  [](const engine::TempoChange& a, const engine::TempoChange& b)
+                  { return a.beat < b.beat; });
+    });
+
+    pushTempoMap();
+}
+
+/** Moves the tempo change at @p fromBeat to @p toBeat.
+
+    Dropping one onto another merges rather than leaving two changes at the
+    same position: only one of them could ever be in force, and a hidden
+    duplicate is worse than a visible replacement. */
+void MainComponent::moveTempoChange(double fromBeat, double toBeat)
+{
+    if (toBeat <= 0.0)
+        return; // beat 0 is the song's own tempo, not a change — see model::tempoMapFor
+
+    history_.edit("Move tempo change", [fromBeat, toBeat](model::Song& s)
+    {
+        double bpm = 0.0;
+        for (const auto& change : s.tempoChanges)
+            if (std::abs(change.beat - fromBeat) < 1.0e-9)
+                bpm = change.bpm;
+
+        if (bpm <= 0.0)
+            return; // it went away underneath the drag
+
+        s.tempoChanges.erase(std::remove_if(s.tempoChanges.begin(), s.tempoChanges.end(),
+                                            [fromBeat, toBeat](const engine::TempoChange& c)
+                                            {
+                                                return std::abs(c.beat - fromBeat) < 1.0e-9
+                                                    || std::abs(c.beat - toBeat) < 1.0e-9;
+                                            }),
+                             s.tempoChanges.end());
+
+        s.tempoChanges.push_back({ toBeat, bpm });
+        std::sort(s.tempoChanges.begin(), s.tempoChanges.end(),
+                  [](const engine::TempoChange& a, const engine::TempoChange& b)
+                  { return a.beat < b.beat; });
+    });
+
+    pushTempoMap();
+}
+
+void MainComponent::removeTempoChangeAt(double beat)
+{
+    history_.edit("Remove tempo change", [beat](model::Song& s)
+    {
+        s.tempoChanges.erase(std::remove_if(s.tempoChanges.begin(), s.tempoChanges.end(),
+                                            [beat](const engine::TempoChange& c)
+                                            { return std::abs(c.beat - beat) < 1.0e-9; }),
+                             s.tempoChanges.end());
+    });
+
+    pushTempoMap();
+}
+
+/** Hands the current map to the engine and the UI's own copy, and refreshes
+    everything that depends on where beats fall. */
+void MainComponent::pushTempoMap()
+{
+    const auto& song = history_.current();
+    const auto  map  = model::tempoMapFor(song);
+
+    uiTempoMap_.setTempoChanges(map);
+    engine_.setTempoChanges(map);
+
+    // The loop region is a musical position, so where it lands in samples
+    // changed with the map.
+    updateLoopRegion();
+
+    arrangementView_.setSong(song);
+    updateEditingLabel();
+}
+
 /** Moves the playhead to @p beat, clamped at zero. */
 void MainComponent::seekToBeat(double beat)
 {
@@ -6870,6 +7056,17 @@ void MainComponent::timerCallback()
     positionLabel.setText(juce::String::formatted("Bar %d  Beat %d   |   %.2f s   |   %s",
                                                   bb.bar, bb.beat, seconds, transportState),
                           juce::dontSendNotification);
+
+    // The slider follows the playhead through the tempo map, so playing into a
+    // section with a different tempo shows that tempo rather than the song's
+    // first one. Skipped while it is being dragged, or it would fight the
+    // hand that is moving it.
+    if (! tempoSlider.isMouseButtonDown())
+    {
+        const double atPlayhead = model::tempoAtBeat(history_.current(), playheadBeat());
+        if (std::abs(tempoSlider.getValue() - atPlayhead) > 1.0e-6)
+            tempoSlider.setValue(atPlayhead, juce::dontSendNotification);
+    }
 
     meter_.setLevel(0, engine_.masterPeak(0));
     meter_.setLevel(1, engine_.masterPeak(1));
