@@ -133,14 +133,21 @@ public:
         if (! slot.hasClip)
             return isEngaged();
 
-        const double samplesPerBeat = context.sampleRate * 60.0 / context.transport.bpm;
-        if (samplesPerBeat <= 0.0)
+        const double blockLengthBeats = context.transport.blockLengthBeats();
+        if (blockLengthBeats <= 0.0)
             return true;
 
         // The clip loops from where it was launched, not from the song's
-        // start — that's the whole difference from an arrangement clip.
-        const double localStart = (double) (context.transport.playheadSamples - slotStartSample_);
-        PatternPlayback::emitBlock(midi, slot.pattern, localStart, samplesPerBeat,
+        // start — that's the whole difference from an arrangement clip. The
+        // launch point is remembered in samples, so it is converted here
+        // rather than being assumed to sit at a fixed number of beats.
+        const double launchedAtBeats = context.transport.ppqPosition
+                                     - (double) (context.transport.playheadSamples - slotStartSample_)
+                                           / (double) juce::jmax(1, context.numSamples)
+                                           * blockLengthBeats;
+
+        const double localStart = context.transport.ppqPosition - launchedAtBeats;
+        PatternPlayback::emitBlock(midi, slot.pattern, localStart, blockLengthBeats,
                                    context.numSamples, activeNotes_);
         return true;
     }

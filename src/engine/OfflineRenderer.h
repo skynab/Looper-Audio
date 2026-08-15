@@ -30,6 +30,33 @@ namespace looper::engine
 class OfflineRenderer
 {
 public:
+    /**
+        Fills a block's transport snapshot at a constant tempo.
+
+        Shared by every render loop in this class. They each filled it by hand
+        before, and they did not agree — only one of the five set ppqPosition
+        at all, which went unnoticed while nodes derived their own timing from
+        `bpm`. Now that scheduling reads the block's musical span, a snapshot
+        missing it renders silence, so there is one place that fills it.
+
+        Constant tempo is correct here: this is the offline harness the tests
+        and the bounce tool drive, and it renders at a single BPM by
+        construction. AudioEngine::renderOffline is what renders a project's
+        real tempo map.
+    */
+    static void fillTransport(ProcessContext& ctx, int64_t playhead, int numSamples,
+                              double bpm, double sampleRate)
+    {
+        const double samplesPerBeat = bpm > 0.0 ? sampleRate * 60.0 / bpm : 0.0;
+
+        ctx.transport.playing         = true;
+        ctx.transport.playheadSamples = playhead;
+        ctx.transport.bpm             = bpm;
+        ctx.transport.ppqPosition     = samplesPerBeat > 0.0 ? (double) playhead / samplesPerBeat : 0.0;
+        ctx.transport.ppqAtBlockEnd   = samplesPerBeat > 0.0
+                                          ? (double) (playhead + numSamples) / samplesPerBeat : 0.0;
+    }
+
     /** Given a track index and a beat position, returns that track's gain in dB
         at that beat (the last argument is the track's static gainDb, to return
         as a fallback for tracks with no automation of their own). Deliberately
@@ -139,8 +166,6 @@ public:
         juce::AudioBuffer<float> sendBus(2, blockSize);
         juce::MidiBuffer         noLiveMidi;
 
-        const double samplesPerBeat = bpm > 0.0 ? sampleRate * 60.0 / bpm : 0.0;
-
         int64_t playhead = 0;
         for (int pos = 0; pos < totalSamples; pos += blockSize)
         {
@@ -153,11 +178,9 @@ public:
             ProcessContext ctx;
             ctx.sampleRate                = sampleRate;
             ctx.numSamples                = n;
-            ctx.transport.playing         = true;
-            ctx.transport.playheadSamples = playhead;
-            ctx.transport.bpm             = bpm;
-            // Tracks read this to place themselves on their automation curves.
-            ctx.transport.ppqPosition     = samplesPerBeat > 0.0 ? (double) playhead / samplesPerBeat : 0.0;
+            // Tracks read ppqPosition to place themselves on their automation
+            // curves, and the sequencers read the block's span to schedule.
+            fillTransport(ctx, playhead, n, bpm, sampleRate);
 
             for (auto& track : tracks)
                 track->render(block, sendBus, noLiveMidi, ctx, false, anySolo);
@@ -257,9 +280,7 @@ public:
             ProcessContext ctx;
             ctx.sampleRate                = sampleRate;
             ctx.numSamples                = n;
-            ctx.transport.playing         = true;
-            ctx.transport.playheadSamples = playhead;
-            ctx.transport.bpm             = bpm;
+            fillTransport(ctx, playhead, n, bpm, sampleRate);
 
             track.render(block, sendBus, noLiveMidi, ctx, false, false);
 
@@ -305,9 +326,7 @@ public:
             ProcessContext ctx;
             ctx.sampleRate                = sampleRate;
             ctx.numSamples                = n;
-            ctx.transport.playing         = true;
-            ctx.transport.playheadSamples = playhead;
-            ctx.transport.bpm             = bpm;
+            fillTransport(ctx, playhead, n, bpm, sampleRate);
 
             track.render(block, sendBus, noLiveMidi, ctx, false, false);
 
@@ -355,9 +374,7 @@ public:
             ProcessContext ctx;
             ctx.sampleRate                = sampleRate;
             ctx.numSamples                = n;
-            ctx.transport.playing         = true;
-            ctx.transport.playheadSamples = playhead;
-            ctx.transport.bpm             = bpm;
+            fillTransport(ctx, playhead, n, bpm, sampleRate);
 
             track.render(block, sendBus, noLiveMidi, ctx, false, false);
 
@@ -411,9 +428,7 @@ public:
             ProcessContext ctx;
             ctx.sampleRate                = sampleRate;
             ctx.numSamples                = n;
-            ctx.transport.playing         = true;
-            ctx.transport.playheadSamples = playhead;
-            ctx.transport.bpm             = bpm;
+            fillTransport(ctx, playhead, n, bpm, sampleRate);
 
             track.render(block, sendBus, noLiveMidi, ctx, false, false);
 

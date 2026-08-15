@@ -608,7 +608,7 @@ void AudioEngine::audioDeviceIOCallbackWithContext(const float* const* inputChan
     ProcessContext context;
     context.sampleRate = sampleRate_.load(std::memory_order_relaxed);
     context.numSamples = numSamples;
-    context.transport  = transport_.snapshot();
+    context.transport  = transport_.snapshot(context.numSamples);
 
     recorder_.process(inputChannelData, numInputChannels, numSamples,
                       context.transport.playing, context.transport.playheadSamples);
@@ -689,8 +689,12 @@ void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffe
 
     // Launch quantization is expressed in beats and converted here, once per
     // block, from the tempo actually in force.
-    const double samplesPerBeat       = context.transport.bpm > 0.0
-                                          ? context.sampleRate * 60.0 / context.transport.bpm : 0.0;
+    // From the block's own musical span rather than from a global tempo:
+    // launch quantisation waits for the next N-beat boundary, and where that
+    // falls depends on the tempo in force there.
+    const double blockBeats           = context.transport.blockLengthBeats();
+    const double samplesPerBeat       = blockBeats > 0.0
+                                          ? (double) numSamples / blockBeats : 0.0;
     const double launchQuantumSamples = samplesPerBeat * launchQuantumBeats_.load(std::memory_order_relaxed);
 
     const int armed = armedTrack_.load(std::memory_order_relaxed);
@@ -754,9 +758,11 @@ juce::AudioBuffer<float> AudioEngine::renderOffline(const OfflineRenderOptions& 
 
     const int blockSize = juce::jmax(1, options.blockSize);
 
-    const double  samplesPerBeat = sampleRate * 60.0 / bpm;
-    const int64_t startSample    = (int64_t) std::llround(startBeats * samplesPerBeat);
-    const int     totalSamples   = (int) std::llround(lengthBeats * samplesPerBeat);
+    // Through the map: a render's length in samples is the distance between
+    // two musical positions, not a beat count times one tempo.
+    const auto&   tempoMap     = transport_.tempoMap();
+    const int64_t startSample  = tempoMap.samplesFromPpq(startBeats);
+    const int     totalSamples = (int) (tempoMap.samplesFromPpq(startBeats + lengthBeats) - startSample);
     if (totalSamples <= 0)
         return output;
 
@@ -807,7 +813,7 @@ juce::AudioBuffer<float> AudioEngine::renderOffline(const OfflineRenderOptions& 
         ProcessContext context;
         context.sampleRate = sampleRate;
         context.numSamples = n;
-        context.transport  = transport_.snapshot();
+        context.transport  = transport_.snapshot(context.numSamples);
 
         juce::AudioBuffer<float> view(output.getArrayOfWritePointers(), 2, pos, n);
         noLiveMidi.clear();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 
 namespace looper::engine
@@ -102,6 +103,35 @@ inline bool edgeInBlock(double edgeSample, double blockStartInPattern, double le
         offset = (int) delta;
         return true;
     }
+    return false;
+}
+
+/**
+    As edgeInBlock, but in **beats**.
+
+    Scheduling moved to beats because a block's length in samples is fixed
+    while its length in beats is not - once tempo can change, "how many samples
+    is a beat" has no answer without a position, so the modulo that wraps a
+    looping pattern has to happen in musical time. The single conversion back
+    to samples is here, at the edge.
+
+    @p blockLengthBeats is how much musical time this block covers, and
+    @p numSamples how many samples that is.
+*/
+inline bool edgeInBlockBeats(double edgeBeat, double blockStartBeat, double patternLengthBeats,
+                             double blockLengthBeats, int numSamples, int& offset) noexcept
+{
+    if (blockLengthBeats <= 0.0 || numSamples <= 0 || patternLengthBeats <= 0.0)
+        return false;
+
+    const double delta = wrapPositive(edgeBeat - blockStartBeat, patternLengthBeats);
+    if (delta < blockLengthBeats)
+    {
+        const double position = delta / blockLengthBeats * (double) numSamples;
+        offset = (int) std::clamp(position, 0.0, (double) (numSamples - 1));
+        return true;
+    }
+
     return false;
 }
 

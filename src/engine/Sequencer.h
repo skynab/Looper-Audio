@@ -84,12 +84,12 @@ public:
         wasPlaying_ = true;
 
         if (current_ == nullptr || current_->empty()
-            || context.transport.bpm <= 0.0 || context.sampleRate <= 0.0)
+            || context.transport.blockLengthBeats() <= 0.0 || context.sampleRate <= 0.0)
             return;
 
-        const double  samplesPerBeat = context.sampleRate * 60.0 / context.transport.bpm;
-        const int     numSamples     = context.numSamples;
-        const int64_t playhead       = context.transport.playheadSamples;
+        const int    numSamples      = context.numSamples;
+        const double blockStartBeats = context.transport.ppqPosition;
+        const double blockEndBeats   = context.transport.ppqAtBlockEnd;
 
         // Find the clip whose window overlaps this block (block-granularity: a
         // block straddling a clip boundary can place a note up to one block
@@ -100,12 +100,14 @@ public:
 
         for (int i = 0; i < (int) current_->size(); ++i)
         {
-            const auto& slot              = (*current_)[(size_t) i];
-            const double clipStartSample  = slot.startBeats * samplesPerBeat;
-            const double clipLengthSample = slot.lengthBeats * samplesPerBeat;
-            const double local            = (double) playhead - clipStartSample;
+            const auto&  slot  = (*current_)[(size_t) i];
+            const double local = blockStartBeats - slot.startBeats;
 
-            if (local + (double) numSamples > 0.0 && local < clipLengthSample)
+            // Compared in beats, where a clip's window is actually defined.
+            // Doing it in samples meant converting the clip's position through
+            // one tempo, which stops meaning anything the moment there is more
+            // than one.
+            if (blockEndBeats > slot.startBeats && local < slot.lengthBeats)
             {
                 foundIndex = i;
                 localStart = local;
@@ -125,7 +127,8 @@ public:
             return; // between clips, or before/after every clip's window
 
         const auto& slot = (*current_)[(size_t) foundIndex];
-        PatternPlayback::emitBlock(midi, slot.pattern, localStart, samplesPerBeat, numSamples, activeNotes_);
+        PatternPlayback::emitBlock(midi, slot.pattern, localStart,
+                                   context.transport.blockLengthBeats(), numSamples, activeNotes_);
     }
 
     /** Releases anything this sequencer has sounding and forgets which clip it

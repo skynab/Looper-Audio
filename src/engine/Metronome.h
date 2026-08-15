@@ -59,18 +59,28 @@ public:
         // allowed to ring out rather than being cut off mid-tick.
         if (context.transport.playing)
         {
-            const double samplesPerBeat = sampleRate_ * 60.0 / context.transport.bpm;
             const double quartersPerBar = context.transport.timeSigNumerator * 4.0
                                         / juce::jmax(1, context.transport.timeSigDenominator);
-            const int64_t playhead      = context.transport.playheadSamples;
 
-            for (int64_t beat = MetronomeMath::firstBeatAtOrAfter(playhead, samplesPerBeat);; ++beat)
+            // Walked in beats rather than by stepping a fixed samples-per-beat.
+            // Beats are no longer evenly spaced in samples once tempo can
+            // change, so the click has to follow musical positions and convert
+            // each one — otherwise it drifts away from the music it exists to
+            // count.
+            const double startBeats = context.transport.ppqPosition;
+            const double endBeats   = context.transport.ppqAtBlockEnd;
+
+            if (endBeats > startBeats)
             {
-                const int64_t offset = MetronomeMath::offsetOfBeat(beat, playhead, samplesPerBeat);
-                if (offset >= numSamples)
-                    break;
-                if (offset >= 0)
-                    trigger(MetronomeMath::isDownbeat(beat, quartersPerBar), (int) offset);
+                for (int64_t beat = (int64_t) std::ceil(startBeats - 1.0e-9); ; ++beat)
+                {
+                    if ((double) beat >= endBeats)
+                        break;
+
+                    const int offset = (int) context.transport.sampleOffsetForPpq((double) beat, numSamples);
+                    if (offset >= 0 && offset < numSamples)
+                        trigger(MetronomeMath::isDownbeat(beat, quartersPerBar), offset);
+                }
             }
         }
 

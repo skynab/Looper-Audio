@@ -815,8 +815,7 @@ int main(int argc, char** argv)
                         context.sampleRate                   = sampleRate;
                         context.numSamples                   = n;
                         context.transport.playing            = true;
-                        context.transport.playheadSamples    = pos;
-                        context.transport.bpm                = bpm;
+                        OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                         context.transport.timeSigNumerator   = 4;
                         context.transport.timeSigDenominator = 4;
 
@@ -921,8 +920,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -1185,8 +1183,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -1276,8 +1273,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -1398,8 +1394,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -1494,8 +1489,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -1748,8 +1742,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -1834,8 +1827,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpmForRender;
+                OfflineRenderer::fillTransport(context, pos, n, bpmForRender, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -1919,8 +1911,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpmForRender;
+                OfflineRenderer::fillTransport(context, pos, n, bpmForRender, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -1987,8 +1978,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -2103,8 +2093,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -2192,8 +2181,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -2260,8 +2248,7 @@ int main(int argc, char** argv)
                 context.sampleRate                   = sampleRate;
                 context.numSamples                   = n;
                 context.transport.playing            = true;
-                context.transport.playheadSamples    = pos;
-                context.transport.bpm                = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -2329,8 +2316,7 @@ int main(int argc, char** argv)
                 context.sampleRate                = sampleRate;
                 context.numSamples                = n;
                 context.transport.playing         = true;
-                context.transport.playheadSamples = pos;
-                context.transport.bpm             = bpm;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
                 context.transport.timeSigNumerator   = 4;
                 context.transport.timeSigDenominator = 4;
 
@@ -2373,8 +2359,7 @@ int main(int argc, char** argv)
             context.sampleRate                 = sampleRate;
             context.numSamples                 = n;
             context.transport.playing          = true;
-            context.transport.playheadSamples  = pos;
-            context.transport.bpm              = bpm;
+            OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
             context.transport.timeSigNumerator = 4;
             context.transport.timeSigDenominator = 4;
 

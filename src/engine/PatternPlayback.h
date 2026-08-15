@@ -26,37 +26,47 @@ struct PatternPlayback
 {
     /** Emits the note edges falling inside this block.
 
-        @p localStartSamples is where the block begins relative to the
-        pattern's own start — the sequencer measures it from a clip's position
-        on the timeline, the session player from wherever the clip was
-        launched. It's wrapped to the pattern length here, so either caller can
-        hand over a raw distance. */
+        @p localStartBeats is where the block begins relative to the pattern's
+        own start — the sequencer measures it from a clip's position on the
+        timeline, the session player from wherever the clip was launched. It's
+        wrapped to the pattern length here, so either caller can hand over a
+        raw distance.
+
+        @p blockLengthBeats is how much musical time the block covers. In beats
+        rather than samples because a beat's length is no longer a constant:
+        the modulo that wraps a looping pattern has to happen in musical time,
+        and the one conversion back to samples is edgeInBlockBeats. */
     static void emitBlock(juce::MidiBuffer& midi, const Pattern& pattern,
-                          double localStartSamples, double samplesPerBeat,
+                          double localStartBeats, double blockLengthBeats,
                           int numSamples, ActiveNotes& activeNotes)
     {
-        const double length = pattern.lengthBeats * samplesPerBeat;
-        if (length <= 1.0)
+        const double length = pattern.lengthBeats;
+        if (length <= 0.0 || blockLengthBeats <= 0.0 || numSamples <= 0)
             return;
 
-        const double blockStart = wrapPositive(localStartSamples, length);
+        const double blockStart = wrapPositive(localStartBeats, length);
+
+        // The musical length of one sample in this block — what the old code's
+        // "one sample" nudges below were, expressed in the units this now
+        // works in.
+        const double oneSample = blockLengthBeats / (double) numSamples;
 
         for (const auto& note : pattern.notes)
         {
-            double onSample  = note.startBeats * samplesPerBeat;
-            double offSample = (note.startBeats + note.lengthBeats) * samplesPerBeat;
+            double onBeat  = note.startBeats;
+            double offBeat = note.startBeats + note.lengthBeats;
 
-            if (onSample >= length)
+            if (onBeat >= length)
                 continue; // starts past the loop's end, so it never sounds
-            if (offSample >= length)
-                offSample = length - 1.0;
-            if (offSample <= onSample)
-                offSample = onSample + 1.0;
+            if (offBeat >= length)
+                offBeat = length - oneSample;
+            if (offBeat <= onBeat)
+                offBeat = onBeat + oneSample;
 
             const int noteNumber = juce::jlimit(0, 127, note.noteNumber);
             int offset = 0;
 
-            if (edgeInBlock(onSample, blockStart, length, numSamples, offset))
+            if (edgeInBlockBeats(onBeat, blockStart, length, blockLengthBeats, numSamples, offset))
             {
                 const auto velocity = (juce::uint8) juce::jlimit(1, 127, (int) (note.velocity * 127.0f));
                 midi.addEvent(juce::MidiMessage::noteOn(channelFor(note.articulation), noteNumber, velocity),
@@ -64,7 +74,7 @@ struct PatternPlayback
                 activeNotes[(size_t) noteNumber] = true;
             }
 
-            if (edgeInBlock(offSample, blockStart, length, numSamples, offset))
+            if (edgeInBlockBeats(offBeat, blockStart, length, blockLengthBeats, numSamples, offset))
             {
                 midi.addEvent(juce::MidiMessage::noteOff(1, noteNumber), offset);
                 activeNotes[(size_t) noteNumber] = false;

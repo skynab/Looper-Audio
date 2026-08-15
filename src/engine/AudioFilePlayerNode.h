@@ -88,9 +88,19 @@ public:
             || deviceSampleRate_ <= 0.0 || context.transport.bpm <= 0.0)
             return;
 
-        const double  samplesPerBeat = context.sampleRate * 60.0 / context.transport.bpm;
-        const int     numSamples     = context.numSamples;
-        const int64_t playhead       = context.transport.playheadSamples;
+        const int    numSamples      = context.numSamples;
+        const double blockStartBeats = context.transport.ppqPosition;
+        const double blockEndBeats   = context.transport.ppqAtBlockEnd;
+
+        if (blockEndBeats <= blockStartBeats)
+            return;
+
+        // Samples per beat *for this block*, taken from the block's own musical
+        // span. An audio clip is anchored at a musical start but its audio
+        // advances in real time, so this is only used to place the start — the
+        // read position below stays in samples, which is what stops a tempo
+        // change from stretching the audio.
+        const double samplesPerBeat = (double) numSamples / (blockEndBeats - blockStartBeats);
 
         // Find the clip whose window overlaps this block — same
         // block-granularity selection rule as Sequencer::renderBlock (clips
@@ -100,12 +110,14 @@ public:
 
         for (int i = 0; i < (int) current_->size(); ++i)
         {
-            const auto& slot              = (*current_)[(size_t) i];
-            const double clipStartSample  = slot.startBeats * samplesPerBeat;
-            const double clipLengthSample = slot.lengthBeats * samplesPerBeat;
-            const double local            = (double) playhead - clipStartSample;
+            const auto&  slot  = (*current_)[(size_t) i];
+            const double startedBeatsAgo = blockStartBeats - slot.startBeats;
 
-            if (local + (double) numSamples > 0.0 && local < clipLengthSample)
+            // Window tested in beats, where the clip is actually placed; the
+            // offset into the file is then a real-time distance in samples.
+            const double local = startedBeatsAgo * samplesPerBeat;
+
+            if (blockEndBeats > slot.startBeats && startedBeatsAgo < slot.lengthBeats)
             {
                 foundIndex = i;
                 localStart = local;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 
@@ -42,16 +43,25 @@ public:
     TempoMap&       tempoMap() noexcept        { return tempoMap_; }
     const TempoMap& tempoMap() const noexcept  { return tempoMap_; }
 
-    /** Build the block-start snapshot handed to nodes. */
-    TransportSnapshot snapshot() const noexcept
+    /** Build the snapshot handed to nodes for a block of @p numSamples.
+
+        Takes the block length because the musical span of a block is not a
+        constant once the tempo map can hold more than one tempo - the map is
+        evaluated at both edges here, once, rather than by every node. */
+    TransportSnapshot snapshot(int numSamples) const noexcept
     {
         TransportSnapshot s;
         s.playing            = playing_;
         s.playheadSamples    = playhead_;
-        s.bpm                = tempoMap_.tempo();
         s.timeSigNumerator   = tempoMap_.timeSigNumerator();
         s.timeSigDenominator = tempoMap_.timeSigDenominator();
         s.ppqPosition        = tempoMap_.ppqFromSamples(playhead_);
+        s.ppqAtBlockEnd      = tempoMap_.ppqFromSamples(playhead_ + (int64_t) std::max(0, numSamples));
+
+        // The tempo *in force at this block*, not "the" tempo — what the
+        // things that legitimately want a scalar (tempo-synced effects,
+        // automation stepping) should be following.
+        s.bpm = tempoMap_.tempoAtBeat(s.ppqPosition);
         return s;
     }
 
