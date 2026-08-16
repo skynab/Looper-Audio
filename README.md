@@ -327,6 +327,33 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > signal path. See [`docs/PLAN.md`](docs/PLAN.md) §27. **What can't be verified
 > headlessly: whether a real hardware controller reaches the callback and records in
 > time — try it live.**
+>
+> **Loops now follow the project tempo.** An imported loop used to play at whatever
+> tempo it was recorded at, against everything else — `AudioFilePlayerNode` deliberately
+> kept its read position in samples, and the only fix was `applySpeedAndPitch`, which
+> destructively rewrote the samples at a ratio you worked out yourself. Now importing a
+> file **detects its tempo** (`engine::TempoDetect` — spectral-flux onsets,
+> autocorrelation, explicit octave resolution) and warps it to the project, reporting
+> what it did: *"Imported: break.wav (174.0 BPM, warped to 120.0)"*. **Edit** gains
+> *Warp Clip to Project Tempo*, *Detect Clip Tempo...* and *Set Project Tempo from Clip*.
+> Warping is non-destructive and pitch-preserving, and the stretch is **pre-rendered on
+> the message thread** — which meant `AudioFilePlayerNode` needed no changes at all: a
+> warped clip arrives as an ordinary buffer that is simply the right length. Recorded
+> takes are never analysed or warped (a take is at the project tempo by definition).
+> Detection is only acted on when confident *and* the tempo differs; anything less is
+> stored and offered rather than silently applied. See [`docs/PLAN.md`](docs/PLAN.md) §29.
+>
+> **Sidechain compression works** — a compressor can now take its detector from another
+> track, so a bass can duck to a kick. `Compressor::gainFor` already took an explicit
+> detector and returned a gain rather than applying it, so no DSP changed; what was
+> missing was routing, and every track already rendered into its own scratch buffer, so
+> a track's isolated signal only had to be made readable. Pick the source from the
+> **Sidechain** box on a compressor slot in the Track FX pane. The document stores a
+> track *id*, not an index, so deleting or reordering tracks can't silently re-point it;
+> render order only changes when a sidechain exists, so a project without one still
+> renders bit-identically (`rmsDry=0.149266` unchanged); and because `processBlock` is
+> shared by playback and export, bounces duck exactly as playback does. See
+> [`docs/PLAN.md`](docs/PLAN.md) §30.
 
 ## Tech stack
 

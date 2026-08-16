@@ -17,6 +17,8 @@
 #include "engine/DrumKitNode.h"
 #include "engine/AudioRecorder.h"
 #include "engine/MidiRecorder.h"
+#include "engine/TempoDetect.h"
+#include "engine/TimeStretch.h"
 #include "engine/ClipSlot.h"
 #include "engine/DelayEffect.h"
 #include "engine/EqEffect.h"
@@ -47,6 +49,23 @@ struct AudioClipSpec
     double     startBeats  = 0.0;
     double     lengthBeats = 0.0;
     float      gainDb      = 0.0f;
+
+    /**
+        Time-stretch applied before playback, in timeStretch()'s terms: 2.0 is
+        twice as long, 0.5 half, 1.0 (the default) no stretching at all.
+
+        A *ratio*, not a pair of tempos, deliberately — the engine has no idea
+        what a BPM is and does not need one, exactly as it has no idea what
+        automation is and takes a curve callback instead. The caller knows the
+        project tempo and the clip's own; the engine only has to render.
+
+        The stretch is applied to the decoded audio on the message thread, so
+        a warped clip reaches the audio thread as an ordinary buffer that is
+        simply the right length. That is why nothing in AudioFilePlayerNode
+        changes for this: a phase vocoder is not a real-time operation, and
+        pre-rendering means it never has to be one.
+    */
+    double stretchFactor = 1.0;
 };
 
 /** One drum pad to load onto a track: a note number, the file to play when
@@ -94,6 +113,12 @@ public:
         (used by the File > Import Audio quick-preview). Message thread. */
     bool loadAudioFile(const juce::File& file);
 
+    /** Estimates @p file's tempo (see engine::detectTempo), decoding it
+        through the same cache setTrackAudioClips uses so a file already
+        loaded isn't read twice. Message thread — analysis is not instant on a
+        long file. Returns an unusable estimate if the file can't be read. */
+    TempoEstimate detectFileTempo(const juce::File& file);
+
     /** Reads just @p file's header to get its duration — cheap (no sample
         decode), unlike loadAudioFile/setTrackAudioClips. Returns 0.0 if the
         file can't be read. Used to size a new clip to its actual duration
@@ -110,6 +135,18 @@ public:
         other gating" behaviour. Message thread. Returns false if any clip's
         file couldn't be read (the others still load). */
     bool setTrackAudioClips(int index, const std::vector<AudioClipSpec>& clips);
+
+    /**
+        Routes @p sourceTrackIndex's signal into @p index's compressor as its
+        detector — sidechain ducking. -1 (the default) means the compressor
+        listens to its own input, i.e. an ordinary compressor.
+
+        Takes indices because that is what the engine's fixed pool is addressed
+        by; the document stores a track *id* and MainComponent resolves it, so
+        deleting or reordering a track can't silently re-point a sidechain at a
+        different instrument. Message thread.
+    */
+    void setTrackSidechainSource(int index, int sourceTrackIndex);
 
     /** Chooses which instrument a track's notes drive. Explicit rather than
         inferred: unlike audio clips, every note-driven instrument produces
@@ -596,6 +633,12 @@ private:
         from the audio thread. */
     std::shared_ptr<ClipData> decodeOrGetCached(const juce::File& file);
 
+    /** The decoded audio of @p file, time-stretched by @p stretchFactor (see
+        AudioClipSpec). Returns the unstretched cache entry when the factor is
+        1. Message thread — this runs a phase vocoder, which is emphatically
+        not something to do in a callback. */
+    std::shared_ptr<ClipData> warpedOrGetCached(const juce::File& file, double stretchFactor);
+
     juce::AudioDeviceManager          deviceManager_;
     juce::AudioFormatManager          formatManager_;
     juce::MidiMessageCollector        midiCollector_;
@@ -700,7 +743,39 @@ private:
 
     // Decoded-audio cache, keyed by absolute path (message thread only) — see
     // decodeOrGetCached.
+    /** Per-track sidechain source index, or -1. Message thread writes, audio
+        thread reads — hence atomic, like every other per-track control. */
+    std::array<std::atomic<int>, kMaxTracks> sidechainSource_;
+
+    /** This block's rendered audio per track, filled in as each renders.
+        Audio thread only, and rebuilt every block — a track that produced
+        nothing stays null. */
+    std::array<const juce::AudioBuffer<float>*, kMaxTracks> trackOutputs_ {};
+
+    /** Handed to a compressor whose source track produced no audio this block.
+        Silence is the correct detector reading there — a muted kick should
+        stop ducking the bass, not leave it ducking to a stale signal or fall
+        back to compressing itself. Sized in prepare, never on the audio
+        thread. */
+    juce::AudioBuffer<float> silentDetector_;
+
     std::map<juce::String, std::shared_ptr<ClipData>> audioDecodeCache_;
+
+    /** Warped renderings, at most one per file — keyed by path, holding the
+        factor it was rendered at.
+
+        One per path rather than one per (path, factor) on purpose: keying by
+        both would grow without bound as someone drags the tempo around, and
+        every superseded entry is a whole decoded file's worth of RAM held for
+        a tempo nobody is at any more. Changing the tempo re-renders; sitting
+        at one tempo costs a single rendering, which is the case that matters.
+        Message thread only. */
+    struct WarpedClip
+    {
+        double                    stretchFactor = 1.0;
+        std::shared_ptr<ClipData> data;
+    };
+    std::map<juce::String, WarpedClip> audioWarpCache_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AudioEngine)
 };

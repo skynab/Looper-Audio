@@ -263,6 +263,16 @@ struct CompressorSettings
     float releaseMs   = 120.0f;
     float makeUpDb    = 0.0f;
 
+    /** The track whose signal drives the detector, by track id, or -1 for
+        "this one" — an ordinary compressor.
+
+        A track *id* rather than an index, because indices move when a track is
+        deleted or reordered and a sidechain silently re-pointing at a
+        different instrument is the kind of bug nobody would think to look for.
+        -1 by default, so every existing compressor keeps behaving exactly as
+        it did. */
+    int   sidechainTrackId = -1;
+
     bool operator==(const CompressorSettings&) const = default;
 };
 

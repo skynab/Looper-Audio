@@ -70,8 +70,17 @@ namespace looper::model
           (asymmetry, oversampling) and seven for the new EQ pedal. All read
           the tolerant way, and every default is the behaviour that existed
           before them. Appended rather than grouped with the other drive
-          fields because the line is positional. */
-inline constexpr int kFormatVersion = 33;
+          fields because the line is positional.
+      34  + CLIPWARP, a clip's source tempo and whether it follows the
+          project's. Its own optional record for exactly the reason CLIPGAIN
+          is one - CLIP ends in a rest-of-line audioFile, so nothing can
+          follow it there. Absent in older files, where "not warped, tempo
+          unknown" is the behaviour those files already had.
+      35  FXSLOT gains one more field at the end of its line: a compressor's
+          sidechain source track id. Appended, like v30's, because the line is
+          positional. -1 in older files, which is "no sidechain" - exactly how
+          every compressor written before this behaved. */
+inline constexpr int kFormatVersion = 35;
 namespace detail
 {
     inline std::string num(double v)
@@ -95,6 +104,7 @@ namespace detail
         // makes an older file readable unchanged — readTagged leaves the
         // cursor alone when the tag isn't there, and the default stands.
         out << "CLIPGAIN " << num((double) clip.gainDb) << "\n";
+        out << "CLIPWARP " << (clip.warpEnabled ? 1 : 0) << " " << num(clip.sourceBpm) << "\n";
         out << "NOTES " << clip.pattern.notes.size() << "\n";
 
         for (const auto& note : clip.pattern.notes)
@@ -292,7 +302,11 @@ inline std::string serialize(const Song& song)
                 << detail::num((double) slot.eqPedal.midDb) << " "
                 << detail::num((double) slot.eqPedal.midQ) << " "
                 << detail::num((double) slot.eqPedal.highShelfHz) << " "
-                << detail::num((double) slot.eqPedal.highShelfDb) << "\n";
+                << detail::num((double) slot.eqPedal.highShelfDb) << " "
+                // Appended for the same reason v30's fields were: the line is
+                // positional, so anything inserted mid-line would make every
+                // older file read its values into the wrong slots.
+                << slot.compressor.sidechainTrackId << "\n";
 
             if (slot.kind == EffectKind::Plugin)
             {
@@ -393,6 +407,16 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
         // Optional: absent in files written before v28, where 0 dB is right.
         if (readTagged("CLIPGAIN", rest))
             clip.gainDb = (float) std::strtod(rest.c_str(), nullptr);
+
+        // Optional: absent before v34, where "not warped, tempo unknown" is
+        // exactly how those files already played.
+        if (readTagged("CLIPWARP", rest))
+        {
+            std::istringstream ws(rest);
+            int warp = 0;
+            ws >> warp >> clip.sourceBpm;
+            clip.warpEnabled = warp != 0;
+        }
 
         if (! readTagged("NOTES", rest))
             return false;
@@ -869,6 +893,7 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 double eqLowHz = 100.0, eqLowDb = 0.0;
                 double eqMidHz = 800.0, eqMidDb = 0.0, eqMidQ = 1.0;
                 double eqHighHz = 4000.0, eqHighDb = 0.0;
+                int    compSidechainTrackId = -1; // absent before v35: no sidechain
 
                 ss >> kind >> enabled >> filterMode >> cutoff >> resonance
                    >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix
@@ -879,7 +904,8 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                    >> wobbleRateBeats >> wobbleDepth >> wobbleBaseCutoffHz >> wobbleResonance >> wobbleMix
                    >> gateThreshold >> gateRange >> gateAttack >> gateHold >> gateRelease
                    >> driveAsymmetry >> driveOversample
-                   >> eqLowHz >> eqLowDb >> eqMidHz >> eqMidDb >> eqMidQ >> eqHighHz >> eqHighDb;
+                   >> eqLowHz >> eqLowDb >> eqMidHz >> eqMidDb >> eqMidQ >> eqHighHz >> eqHighDb
+                   >> compSidechainTrackId;
 
                 EffectSlot slot;
                 slot.kind              = (EffectKind) kind;
@@ -910,6 +936,7 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 slot.compressor.attackMs    = (float) compAttack;
                 slot.compressor.releaseMs   = (float) compRelease;
                 slot.compressor.makeUpDb    = (float) compMakeUp;
+                slot.compressor.sidechainTrackId = compSidechainTrackId;
                 slot.tremolo.enabled        = slot.enabled && slot.kind == EffectKind::Tremolo;
                 slot.tremolo.rateHz         = (float) tremRate;
                 slot.tremolo.depth          = (float) tremDepth;

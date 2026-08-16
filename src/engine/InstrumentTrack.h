@@ -74,6 +74,9 @@ struct InstrumentTrack
     std::atomic<float>       sendLevel   { 0.0f }; // 0..1, pre-fader
     juce::MidiBuffer         trackMidi;
     juce::AudioBuffer<float> scratch;
+
+    /** Whether `scratch` holds this block's audio. Audio thread only. */
+    bool hasBlockOutput_ = false;
     std::atomic<float>       channelPeak_[2] {};
 
     TrackAutomation*                     automation_ = nullptr; // audio-thread owned
@@ -188,11 +191,28 @@ public:
 
     /** Audio thread: render this track (post-gain) additively into @p mix, and
         its pre-fader send additively into @p sendBus. */
+    /** @p sidechainInput is the detector signal for any compressor in this
+        track's chain, or nullptr for "each compressor listens to its own
+        input". Borrowed for this block only. */
+    /** This block's rendered audio (post-inserts, pre-fader), or nullptr if
+        the track produced none — inactive, muted, or soloed out. Valid only
+        until the next render(). */
+    const juce::AudioBuffer<float>* blockOutput() const noexcept
+    {
+        return hasBlockOutput_ ? &scratch : nullptr;
+    }
+
     void render(juce::AudioBuffer<float>& mix, juce::AudioBuffer<float>& sendBus,
                 const juce::MidiBuffer& liveMidi,
                 const ProcessContext& context, bool receivesLiveMidi, bool anySoloActive,
-                double launchQuantumSamples = 0.0)
+                double launchQuantumSamples = 0.0,
+                const juce::AudioBuffer<float>* sidechainInput = nullptr)
     {
+        // Cleared up front so an early return below cannot leave last block's
+        // audio readable as if it were this block's — a stale detector signal
+        // would duck another track to a kick that isn't playing any more.
+        hasBlockOutput_ = false;
+
         TrackAutomation* incoming = nullptr;
         while (automationInbox_.pop(incoming))
         {
@@ -257,8 +277,16 @@ public:
             // reaches a wobble immediately instead of waiting for the next
             // structural rebuild.
             effectChain_->setBpm(context.transport.bpm);
+            effectChain_->setSidechainInput(sidechainInput);
             effectChain_->process(scratch);
         }
+
+        // Readable by other tracks as a sidechain source from here on: the
+        // track's own sound, after its inserts but before its fader — the same
+        // point the send is taken from, and for the same reason. Pulling a
+        // fader down should change how loud a track is, not how hard it ducks
+        // something else.
+        hasBlockOutput_ = true;
 
         const float staticGainDb = gainDb.load(std::memory_order_relaxed);
         const float staticPan    = pan.load(std::memory_order_relaxed);

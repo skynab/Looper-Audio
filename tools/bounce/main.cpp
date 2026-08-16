@@ -23,6 +23,8 @@
 #include "engine/SessionPlayer.h"
 #include "engine/MidiFileIO.h"
 #include "engine/MidiRecorder.h"
+#include "engine/TempoDetect.h"
+#include "engine/TimeStretch.h"
 #include "engine/MasteringProcessor.h"
 #include "engine/OfflineRenderer.h"
 #include "engine/ReverbEffect.h"
@@ -632,6 +634,56 @@ int main(int argc, char** argv)
 
         generativeLoopWorks = rmsGenKick > 0.01f && rmsGenSnare1 > 0.01f && rmsGenSnare2 > 0.01f
                            && rmsGenMelodicStart > 0.001f && rmsGenMelodicWhole > 0.001f;
+    }
+
+    // Warp check (see engine/TempoDetect.h): a loop recorded at one tempo has
+    // to *end up* the right musical length when stretched to another. The
+    // detector's accuracy is covered by headless tests against synthetic click
+    // trains; what those cannot cover is the part that matters here — that
+    // detect -> warpStretchFactor -> timeStretch composes into audio which
+    // actually lines up with the grid, rather than three individually correct
+    // steps that disagree about which direction "faster" is.
+    bool warpFitsTheGrid = false;
+    {
+        // Four beats at 160 BPM: a loop faster than the 120 BPM project.
+        constexpr double kLoopBpm = 160.0;
+        const double     loopSeconds = 4.0 * 60.0 / kLoopBpm;
+
+        std::vector<float> loop((size_t) (loopSeconds * sampleRate), 0.0f);
+        const double samplesPerLoopBeat = sampleRate * 60.0 / kLoopBpm;
+
+        // A click on each of its four beats, so it has a detectable tempo.
+        for (int beat = 0; beat < 4; ++beat)
+        {
+            const auto at = (size_t) ((double) beat * samplesPerLoopBeat);
+            for (int i = 0; i < (int) (0.02 * sampleRate); ++i)
+            {
+                const size_t index = at + (size_t) i;
+                if (index >= loop.size())
+                    break;
+                const double decay = std::exp(-40.0 * i / sampleRate);
+                loop[index] += (float) (0.5 * decay
+                    * (std::sin(2.0 * juce::MathConstants<double>::pi * 200.0 * i / sampleRate)
+                     + 0.6 * std::sin(2.0 * juce::MathConstants<double>::pi * 1700.0 * i / sampleRate)));
+            }
+        }
+
+        const auto estimate = detectTempo(loop, sampleRate);
+
+        // Warped to the project's 120 BPM, the same call the app makes.
+        const double factor  = warpStretchFactor(estimate.bpm, bpm, true);
+        const auto   warped  = timestretch::timeStretch(loop, factor);
+
+        // Four beats at 120 BPM is exactly 2 seconds. The vocoder pads its
+        // output by a frame, so this checks the *musical* length is right to
+        // within a small tolerance rather than demanding sample equality.
+        const double warpedSeconds   = (double) warped.size() / sampleRate;
+        const double expectedSeconds = 4.0 * 60.0 / bpm;
+
+        warpFitsTheGrid = estimate.isUsable()
+                       && std::abs(estimate.bpm - kLoopBpm) < 4.0
+                       && factor > 1.0 // slower project => longer, not shorter
+                       && std::abs(warpedSeconds - expectedSeconds) < 0.1;
     }
 
     // MIDI-recording check (see engine/MidiRecorder.h, engine/MidiCapture.h):
@@ -1526,6 +1578,105 @@ int main(int argc, char** argv)
         // The cabinet is the difference between distortion and fizz, so it
         // has to actually be in the path rather than merely stored.
         driveCabinetWorks = worstDifference(withCab, noCab) > 1.0e-3f;
+    }
+
+    // Sidechain ducking: a steady tone compressed by a *separate* pulsing
+    // signal, which is the whole feature — the bass has to dip where the kick
+    // hits, not where the bass itself is loud.
+    //
+    // Measured here rather than headless because it is a claim about audio,
+    // and it is the check that would catch the plumbing being wrong in the way
+    // that matters: a compressor that quietly falls back to its own input
+    // still compresses, still passes every "does it reduce gain" test, and is
+    // completely useless. A steady tone can only dip *periodically* if the
+    // detector really is the other signal.
+    bool sidechainDucks = false;
+    {
+        const int totalSamples = (int) (sampleRate * 1.0);
+
+        // The thing being ducked: a constant-amplitude tone, so any variation
+        // in its output came from the sidechain and nothing else.
+        juce::AudioBuffer<float> duckedTone(2, totalSamples);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < totalSamples; ++i)
+                duckedTone.setSample(ch, i, 0.4f * (float) std::sin(
+                    2.0 * juce::MathConstants<double>::pi * 110.0 * i / sampleRate));
+
+        // The detector: four short loud pulses a quarter-second apart.
+        juce::AudioBuffer<float> kick(2, totalSamples);
+        kick.clear();
+        for (int pulse = 0; pulse < 4; ++pulse)
+        {
+            const int at = (int) (pulse * 0.25 * sampleRate);
+            for (int i = 0; i < (int) (0.05 * sampleRate); ++i)
+            {
+                const int index = at + i;
+                if (index >= totalSamples)
+                    break;
+                const double decay = std::exp(-20.0 * i / sampleRate);
+                for (int ch = 0; ch < 2; ++ch)
+                    kick.setSample(ch, index, (float) (0.9 * decay));
+            }
+        }
+
+        CompressorEffect ducker;
+        ducker.prepare(sampleRate, 512);
+        ducker.setEnabled(true);
+        ducker.setThresholdDb(-30.0f);
+        ducker.setRatio(10.0f);
+        ducker.setAttackMs(2.0f);
+        ducker.setReleaseMs(120.0f);
+        ducker.setSidechainInput(&kick);
+        ducker.process(duckedTone);
+
+        // At each pulse the tone must be pushed well down; between pulses it
+        // must come back. Both halves matter: something permanently quieter is
+        // not ducking, it is just a gain change.
+        const int   window   = (int) (0.02 * sampleRate);
+        float       atPulses = 0.0f;
+        float       between  = 1.0f;
+
+        for (int pulse = 0; pulse < 4; ++pulse)
+        {
+            const int hit = (int) (pulse * 0.25 * sampleRate) + (int) (0.005 * sampleRate);
+            atPulses = juce::jmax(atPulses, duckedTone.getRMSLevel(0, hit, window));
+
+            // Just before the next pulse, i.e. as released as it ever gets.
+            const int recovered = (int) ((pulse + 1) * 0.25 * sampleRate) - window - 1;
+            if (recovered > 0 && recovered + window < totalSamples)
+                between = juce::jmin(between, duckedTone.getRMSLevel(0, recovered, window));
+        }
+
+        sidechainDucks = atPulses > 0.0f && between > 0.05f
+                      && atPulses < between * 0.5f; // at least 6dB of duck
+
+        // And with no sidechain routed, the same steady tone must come out
+        // steady: proof the dip above is the routing and not the compressor
+        // reacting to the tone itself.
+        juce::AudioBuffer<float> unrouted(2, totalSamples);
+        for (int ch = 0; ch < 2; ++ch)
+            unrouted.copyFrom(ch, 0, duckedTone, ch, 0, totalSamples);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 0; i < totalSamples; ++i)
+                unrouted.setSample(ch, i, 0.4f * (float) std::sin(
+                    2.0 * juce::MathConstants<double>::pi * 110.0 * i / sampleRate));
+
+        CompressorEffect plain;
+        plain.prepare(sampleRate, 512);
+        plain.setEnabled(true);
+        plain.setThresholdDb(-30.0f);
+        plain.setRatio(10.0f);
+        plain.setAttackMs(2.0f);
+        plain.setReleaseMs(120.0f);
+        plain.setSidechainInput(nullptr);
+        plain.process(unrouted);
+
+        const float plainEarly = unrouted.getRMSLevel(0, (int) (0.30 * sampleRate), window);
+        const float plainLate  = unrouted.getRMSLevel(0, (int) (0.72 * sampleRate), window);
+        const bool  plainSteady = plainEarly > 0.0f
+                               && std::abs(plainLate - plainEarly) < plainEarly * 0.2f;
+
+        sidechainDucks = sidechainDucks && plainSteady;
     }
 
     // Compressor and tremolo in a real chain. Both are claims about what comes
@@ -2858,6 +3009,7 @@ int main(int argc, char** argv)
               << "  multiClipAudioGates=" << (multiClipAudioGates ? 1 : 0)
               << "  midiRoundTripWorks=" << (midiRoundTripWorks ? 1 : 0)
               << "  midiRecordingWorks=" << (midiRecordingWorks ? 1 : 0)
+              << "  warpFitsTheGrid=" << (warpFitsTheGrid ? 1 : 0)
               << "  drumKitWorks=" << (drumKitWorks ? 1 : 0)
               << "  generativeLoopWorks=" << (generativeLoopWorks ? 1 : 0)
               << "  drumPadMixWorks=" << (drumPadMixWorks ? 1 : 0)
@@ -2882,6 +3034,7 @@ int main(int argc, char** argv)
               << "  subOscChangesSound=" << (subOscChangesSound ? 1 : 0)
               << "  unisonChangesSound=" << (unisonChangesSound ? 1 : 0)
               << "  compressorSquashes=" << (compressorSquashes ? 1 : 0)
+              << "  sidechainDucks=" << (sidechainDucks ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  gateClosesQuiet=" << (gateClosesQuiet ? 1 : 0)
               << "  metalToneHasBody=" << (metalToneHasBody ? 1 : 0)
@@ -2923,7 +3076,7 @@ int main(int argc, char** argv)
                  && perTrackAutomationWorks
                  && soloMatchesArpOnly && stemsSumToMix && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
-                 && midiRecordingWorks
+                 && midiRecordingWorks && warpFitsTheGrid && sidechainDucks
                  && generativeLoopWorks
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks

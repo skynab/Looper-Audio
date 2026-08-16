@@ -163,12 +163,32 @@ private:
                                        const juce::File& masterFile);
     void                   showAudioSettings();
     void                   importAudioToNewTrack();
-    void                   importAudioFileAtBeat(const juce::File& file, double startBeats, int targetTrackIndex = -1);
+    /** @p isRecordedTake suppresses tempo detection: a take was just played
+        against this project's own click, so it is at the project tempo by
+        definition. Detecting a tempo for it could only ever agree (pointless)
+        or disagree (wrong, and on a confident mis-detection it would stretch
+        the performance the user just gave). */
+    void                   importAudioFileAtBeat(const juce::File& file, double startBeats,
+                                                 int targetTrackIndex = -1,
+                                                 bool isRecordedTake = false);
     void                   previewAudioFile(const juce::File& file);
     void                   importMidiFileDialog();
     void                   exportMidiFileDialog();
     void                   setProjectRootFolderDialog();
     void                   repairRecordedClipLengths();
+
+    // --- Tempo-aware audio clips (see docs/PLAN.md §29).
+    /** The time-stretch factor a clip needs to sit at the project tempo, or
+        1.0 when it isn't warped or its own tempo isn't known. */
+    /** The engine-pool index of the track with @p trackId, or -1. The bridge
+        between the document's stable ids and the engine's positional pool. */
+    int                    trackIndexForId(int trackId) const;
+
+    double                 warpFactorFor(const model::Clip& clip) const;
+    engine::TempoEstimate  detectTempoForClip(const model::Clip& clip);
+    void                   toggleClipWarp();
+    void                   detectSelectedClipTempo();
+    void                   setProjectTempoFromClip();
     void                   toggleRecording();
     void                   finishRecordingIfReady();
 

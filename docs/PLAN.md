@@ -42,6 +42,8 @@ This is a living document. As sections mature they should graduate into their ow
 26. [New synth sounds: filter envelope, sub-oscillator, unison](#26-new-synth-sounds-filter-envelope-sub-oscillator-unison-implemented)
 27. [MIDI recording](#27-midi-recording-implemented)
 28. [A starter song worth listening to](#28-a-starter-song-worth-listening-to-implemented)
+29. [Tempo-aware audio clips](#29-tempo-aware-audio-clips-implemented)
+30. [Sidechain compression](#30-sidechain-compression-implemented)
 
 ---
 
@@ -2126,3 +2128,234 @@ The bounce suite is untouched (`rmsDry=0.149266`), since none of this is signal 
 clip staircase reads well on the timeline — `makeStarterSong` assembles the arrangement
 inside `MainComponent`, so only launching the app confirms the placement. Worth
 listening to end to end, and worth soloing each track.
+
+---
+
+## 29. Tempo-aware audio clips (implemented)
+
+`§1` calls this a **loop-centric** DAW. It is not one yet, in the specific sense that
+matters most: an imported loop does not follow the project's tempo. Drop a 174 BPM
+break into a 120 BPM song and it plays at 174, against everything else.
+
+That is not an oversight so much as a deliberate decision that has outlived its
+context. `AudioFilePlayerNode` keeps its read position in samples and says why:
+"the read position below stays in samples, which is what stops a tempo change from
+stretching the audio." That was right when the alternative was a *bug* — audio
+accidentally warping when someone edited the tempo map. It is wrong as a permanent
+answer, because following the tempo is exactly what a loop should do.
+
+The only tool for it today is `applySpeedAndPitch`: the user works out the ratio
+themselves, and it **destructively rewrites the samples**. Change the project tempo
+afterwards and you do it again, from already-degraded audio.
+
+### Why this is mostly connection, not invention
+
+Every hard piece already exists:
+
+- `engine/TimeStretch.h` has a real phase vocoder (`timeStretch`, `pitchShift`) —
+  pitch-preserving, already unit-tested.
+- `engine/Fft.h` and `engine/Spectrum.h` give the analysis machinery for onset
+  detection, with no new dependency.
+- `TempoMap` already expresses musical time properly.
+- `ClipData` is fully decoded in RAM and handed to the audio thread as a
+  `shared_ptr` swapped under the existing lock-free discipline, and
+  `AudioEngine::setTrackAudioClips` already caches decoded audio per file path.
+
+### What gets built
+
+**1. `engine::TempoDetect` — JUCE-free BPM estimation.**
+Spectral-flux onset envelope, autocorrelation across a plausible tempo range, then
+explicit octave-error resolution — the classic failure of every naive tempo detector is
+reporting 87 for a 174 BPM loop (or vice versa), and it has to be handled deliberately
+rather than hoped away. Returns a BPM *and a confidence*, so a weak result can be
+offered as a suggestion instead of silently applied as a wrong answer.
+
+This module is where the testing story is unusually good for DSP: synthetic click
+trains at known tempos have an exact expected answer, so detection accuracy is a
+headless Catch2 assertion rather than something only checkable by ear. The octave cases
+get tests of their own.
+
+**2. `model::Clip` gains `sourceBpm` and `warpEnabled`** (format bump to `LOOPER 12`).
+Both default to "off / unknown", so every existing project plays back byte-identically
+— the same fast-path discipline `SynthVoice` used for the new synth DSP.
+
+**3. Playback follows the tempo, without the audio thread ever stretching anything.**
+The stretch is **pre-rendered on the message thread** whenever the ratio changes and
+swapped in as a new `ClipData`, cached per file+ratio. Phase vocoding is emphatically
+not a real-time operation, and doing it in the callback would violate the engine's
+first rule. This is the same "prepare on the message thread, publish a pointer" pattern
+every other node here already uses.
+
+**4. UI.** Import reports what it found ("Detected 174 BPM - warped to 120"); a per-clip
+**Warp** toggle; and a "Set project tempo from this clip" action for when the loop
+should lead rather than follow.
+
+### Deliberate v1 boundaries
+
+- **Warp against a single constant project tempo.** With a tempo map the ratio becomes
+  time-varying, which means a different (and much larger) rendering strategy. Deferred
+  explicitly, and a clip in a project with tempo changes will warp against the tempo in
+  force at its start rather than silently doing something wrong.
+- **No per-transient warp markers.** Ableton-grade scope; a single ratio per clip is
+  what makes a loop usable, and it is the 90% case.
+- **Detection is a suggestion, never a silent rewrite.** Nothing is applied
+  destructively, and warp can always be switched off to hear the original.
+
+### Build order
+
+1. `engine/TempoDetect.h` + tests — self-contained, and worth stopping to check the
+   detection accuracy before anything depends on it.
+2. `model::Clip` fields + serialization round-trip test (`LOOPER 12`).
+3. Warp rendering + the cache, and the playback ratio.
+4. UI: import reporting, the Warp toggle, "set tempo from clip".
+5. A bounce-tool check that a warped clip really does line up with the grid.
+
+### What landed, and the two things worth recording
+
+Built as designed, in the stated order. Two decisions turned out to matter more than
+expected.
+
+**Pre-rendering the stretch meant `AudioFilePlayerNode` needed no changes at all.**
+This was the design's real payoff and it is worth being explicit about why: a clip
+warped on the message thread arrives at the audio thread as an ordinary buffer that is
+simply the right length. The player already plays a buffer at its native rate, so a
+4-beat loop stretched from 174 to 120 BPM lasts exactly 2 seconds and lands on the grid
+without the player knowing warping exists. The alternative — a playback ratio the
+player applies itself — would have put resampling in the callback and changed pitch,
+and phase vocoding there is not an option at all.
+
+**Octave errors could not be fixed by folding the result into a preferred range**, which
+is what the plan implicitly assumed. The first implementation reported a 174 BPM loop as
+87, and 87 is a perfectly ordinary tempo — there is nothing out of range to notice.
+Whichever of the two wins is decided by noise. The fix is to prefer the *fastest*
+interpretation the envelope genuinely supports: if half the winning lag correlates
+nearly as well (≥ 0.8), there really are onsets at that rate. A 76 BPM loop has almost
+no correlation at half its lag, so its slower reading survives — both cases now have
+tests. The range fold stays, but only for what the subdivision step deliberately
+overshoots (hats on sixteenths support a reading four times the pulse).
+
+A third, smaller correction: **confidence saturated at 1.0 for audio with no onsets at
+all.** Measuring only "how far does the peak stand above the mean" is meaningless once
+bias removal has left an essentially zero envelope — the ratio is numerical noise, and
+can be arbitrarily large. Confidence is now periodicity *times* peakiness, where
+peakiness is the raw envelope's crest factor measured before bias removal. A drum loop
+is mostly silence with spikes; a held chord is flat.
+
+### Decisions made while building
+
+- **Recorded takes are never analysed or warped.** A take was just played against this
+  project's own click, so it is at the project tempo by definition; detection could only
+  agree (pointless) or disagree (wrong — and a confident mis-detection would stretch the
+  performance the user just gave). Its `sourceBpm` is still recorded as the project
+  tempo, which keeps it useful if the tempo later changes.
+- **Auto-warp on import requires confidence ≥ 0.5 *and* a tempo that actually differs.**
+  A low-confidence result is still stored — it costs nothing and makes the menu item
+  available to accept by hand — but is not acted on, so a sustained pad that happens to
+  correlate at 91 BPM is never silently stretched. Either way the status line says what
+  happened.
+- **The warp cache holds one rendering per file path, not per (path, factor).** Keying
+  by both grows without bound as someone drags the tempo around, and every superseded
+  entry is a whole decoded file held for a tempo nobody is at. Changing tempo re-renders;
+  sitting at one costs a single rendering.
+- **Warping is a tick, not an action.** Unlike the existing "Speed and pitch", it never
+  rewrites samples — switching it off returns the original audio exactly.
+
+### Verification
+
+602 headless tests pass (23 new). The detector is tested against synthetic click trains
+with exact expected answers, including both octave-error directions, a backbeat pattern
+whose *pattern* repeats at half its beat rate, silence, too-short input, and the
+confidence ordering. `warpStretchFactor` has its own tests, including the inversion —
+source-over-project, the easiest mistake here and the hardest to notice, since the wrong
+answer is still "in time". Serialization round-trips the new fields, and a file written
+without the `CLIPWARP` record still reads as unwarped.
+
+The bounce tool's new `warpFitsTheGrid` covers what none of those can: that
+detect → factor → stretch *composes* into audio of the right musical length, rather than
+three individually correct steps that disagree about which direction "faster" is. Every
+existing check is unchanged, `rmsDry=0.149266` included — the audio thread is untouched
+by this work.
+
+**What cannot be checked headlessly:** how warped audio actually *sounds*. The phase
+vocoder is not transparent, and a loop stretched a long way will smear — worth dragging
+a real loop in at a few different project tempos and listening, especially something
+percussive where smearing is most audible.
+
+---
+
+## 30. Sidechain compression (implemented)
+
+Routing was flat: every track to the master, plus one shared send bus. No track could
+listen to another, which made the pumping compressor — the sound underneath most house,
+techno and hip-hop, i.e. the audience `§1` names first — impossible to build here.
+
+### The DSP was already right; only the routing was missing
+
+`Compressor::gainFor(detectorInput)` (`engine/PedalDsp.h`) already takes its detector as
+an explicit argument and *returns* a gain rather than applying one. That was written so a
+stereo pair could share one detector, but it is exactly the shape a sidechain needs: the
+detector was never assumed to be the signal being compressed. Nothing in the DSP changed.
+
+What was missing was getting another track's audio to it, and that turned out to be
+cheap for a reason already in the design: **every track already renders into its own
+`scratch` buffer** before summing into the mix. A track's isolated signal exists during
+its own render; it simply wasn't readable by anyone else.
+
+### How it is wired
+
+- `EffectProcessor::setSidechainInput()` — a virtual with a no-op default, pushed once
+  per block, following `setBpm`'s stated precedent exactly ("a default here rather than
+  widening `process()`'s signature, so the other seven nodes' call sites don't have to
+  thread through a value none of them read"). Only `CompressorNode` overrides it.
+- `InstrumentTrack::blockOutput()` publishes this block's rendered audio, taken **after
+  its inserts but before its fader** — the same point the send is taken from, and for
+  the same reason: pulling a fader down should change how loud a track is, not how hard
+  it ducks something else.
+- `AudioEngine` routes source → target and orders the render so sources come first.
+- The document stores a **track id**, not an index (`CompressorSettings::sidechainTrackId`,
+  format v35). Indices move when a track is deleted or reordered, and a sidechain
+  silently re-pointing at a different instrument is the kind of bug nobody would think to
+  look for. `MainComponent::trackIndexForId` is the only place that bridges the two.
+
+### The decisions worth recording
+
+**Render order is only rearranged when a sidechain actually exists.** Float addition is
+not associative, so summing the same tracks in a different order changes the mix in the
+last bits — and a project with no sidechain must render bit-identically to how it always
+has. The `rmsDry=0.149266` sentinel would have caught it, which is precisely why the
+guard is there rather than reordering unconditionally.
+
+**Two passes, not a topological sort.** Sources first, then everyone else, each in index
+order. A full sort is the general answer, but with one detector per track the only case
+it buys is a chain of sidechains (A ducks B ducks C), and against that it would have to
+define what a cycle means. Anything deeper than one level reads the silence fallback
+below rather than misbehaving.
+
+**A source that produced nothing yields silence, not self-detection.** Muted, soloed
+out, or not yet rendered — the compressor gets a permanently-empty buffer. Falling back
+to compressing its own input would be worse than doing nothing: the track would change
+character for a reason the user never asked for, exactly when they muted the thing that
+was supposed to be ducking it.
+
+**Export parity came free.** `processBlock` is shared by live playback and
+`renderOffline`, so a bounce ducks exactly as playback does — none of the deferral that
+per-track automation needed.
+
+### Verification
+
+The new `sidechainDucks` bounce check is the one that matters, and it is written to fail
+the way this feature would actually break. A compressor that quietly falls back to its
+own input still compresses and still passes every "does it reduce gain" test while being
+completely useless — so the check compresses a **constant-amplitude tone** with a
+separate pulsing detector: a steady tone can only dip periodically if the detector really
+is the other signal. It asserts at least 6 dB of duck at each pulse, recovery between
+them, and — as a control — that the same tone with no sidechain routed comes out steady.
+
+605 headless tests pass (3 new): the routing round-trips as an id, an unrouted compressor
+stays unrouted, and a file written before v35 reads as unrouted. Every existing bounce
+check is unchanged, `rmsDry=0.149266` included.
+
+**Not verified:** how it sounds musically, and the combo box itself — set a bass track's
+compressor to duck from the drum track and listen. **Group buses are still absent** and
+remain the next routing gap: this adds one detector per track, not a bus you can
+compress as a unit.

@@ -933,3 +933,146 @@ TEST_CASE("A v32 tempo change is a step, not a ramp", "[model][io]")
     CHECK(song.tempoChanges[0].bpm == 80.0);
     CHECK_FALSE(song.tempoChanges[0].ramp);
 }
+
+TEST_CASE("Clip warp settings round-trip", "[model][io]")
+{
+    Song s;
+    const int trackId = addTrack(s, TrackType::Audio, "Loop").id;
+
+    Clip clip;
+    clip.type        = ClipType::Audio;
+    clip.audioFile   = "/loops/break 174.wav"; // a space, since CLIP's path is rest-of-line
+    clip.startBeats  = 8.0;
+    clip.lengthBeats = 16.0;
+    clip.sourceBpm   = 174.0;
+    clip.warpEnabled = true;
+    addClip(s, trackId, clip);
+
+    Song restored;
+    REQUIRE(deserialize(serialize(s), restored));
+    REQUIRE(restored.tracks.size() == 1);
+    REQUIRE(restored.tracks[0].clips.size() == 1);
+
+    const auto& out = restored.tracks[0].clips[0];
+    REQUIRE(out.warpEnabled);
+    REQUIRE(out.sourceBpm == 174.0);
+    // The record sits between CLIPGAIN and NOTES, so the path either side of
+    // it has to survive intact too.
+    REQUIRE(out.audioFile == "/loops/break 174.wav");
+}
+
+TEST_CASE("A clip with a known tempo need not be warped", "[model][io]")
+{
+    // The two fields are independent on purpose: "set the project tempo from
+    // this clip" wants the tempo without the stretching.
+    Song s;
+    const int trackId = addTrack(s, TrackType::Audio, "Loop").id;
+
+    Clip clip;
+    clip.type        = ClipType::Audio;
+    clip.sourceBpm   = 92.5;
+    clip.warpEnabled = false;
+    addClip(s, trackId, clip);
+
+    Song restored;
+    REQUIRE(deserialize(serialize(s), restored));
+
+    const auto& out = restored.tracks[0].clips[0];
+    REQUIRE_FALSE(out.warpEnabled);
+    REQUIRE(out.sourceBpm == 92.5);
+}
+
+TEST_CASE("A file written before warping existed reads as unwarped", "[model][io]")
+{
+    // The compatibility claim in the format notes: no CLIPWARP record means
+    // the clip plays at its own rate, which is how those files always played.
+    Song s;
+    const int trackId = addTrack(s, TrackType::Audio, "Loop").id;
+
+    Clip clip;
+    clip.type      = ClipType::Audio;
+    clip.audioFile = "/loops/old.wav";
+    addClip(s, trackId, clip);
+
+    // Strip the record the way an older writer would simply never have emitted.
+    std::string text = serialize(s);
+    const auto  start = text.find("CLIPWARP");
+    REQUIRE(start != std::string::npos);
+    text.erase(start, text.find('\n', start) - start + 1);
+    REQUIRE(text.find("CLIPWARP") == std::string::npos);
+
+    Song restored;
+    REQUIRE(deserialize(text, restored));
+
+    const auto& out = restored.tracks[0].clips[0];
+    REQUIRE_FALSE(out.warpEnabled);
+    REQUIRE(out.sourceBpm == 0.0);
+    REQUIRE(out.audioFile == "/loops/old.wav");
+}
+
+TEST_CASE("A compressor's sidechain routing round-trips", "[model][io]")
+{
+    Song s;
+    const int kickId = addTrack(s, TrackType::Drum, "Kick").id;
+    const int bassId = addTrack(s, TrackType::Instrument, "Bass").id;
+
+    EffectSlot ducker;
+    ducker.kind                          = EffectKind::Compressor;
+    ducker.enabled                       = true;
+    ducker.compressor.enabled            = true;
+    ducker.compressor.sidechainTrackId   = kickId;
+    findTrack(s, bassId)->effectChain.push_back(ducker);
+
+    Song restored;
+    REQUIRE(deserialize(serialize(s), restored));
+
+    const auto* bass = findTrack(restored, bassId);
+    REQUIRE(bass != nullptr);
+    REQUIRE(bass->effectChain.size() == 1);
+    // The *id*, not an index — which is the whole point: it has to survive
+    // the track order changing.
+    REQUIRE(bass->effectChain[0].compressor.sidechainTrackId == kickId);
+}
+
+TEST_CASE("A compressor with no sidechain round-trips as unrouted", "[model][io]")
+{
+    Song s;
+    const int trackId = addTrack(s, TrackType::Instrument, "Lead").id;
+
+    EffectSlot plain;
+    plain.kind               = EffectKind::Compressor;
+    plain.enabled            = true;
+    plain.compressor.enabled = true;
+    findTrack(s, trackId)->effectChain.push_back(plain);
+
+    Song restored;
+    REQUIRE(deserialize(serialize(s), restored));
+    REQUIRE(findTrack(restored, trackId)->effectChain[0].compressor.sidechainTrackId == -1);
+}
+
+TEST_CASE("A file written before sidechains reads as unrouted", "[model][io]")
+{
+    // v35 appended the field to FXSLOT's positional line; an older file simply
+    // ends sooner, and the extraction leaves the default in place.
+    Song s;
+    const int trackId = addTrack(s, TrackType::Instrument, "Lead").id;
+
+    EffectSlot ducker;
+    ducker.kind                        = EffectKind::Compressor;
+    ducker.enabled                     = true;
+    ducker.compressor.enabled          = true;
+    ducker.compressor.sidechainTrackId = 7;
+    findTrack(s, trackId)->effectChain.push_back(ducker);
+
+    // Drop the trailing field the way an older writer never would have emitted.
+    std::string text  = serialize(s);
+    const auto  start = text.find("FXSLOT");
+    REQUIRE(start != std::string::npos);
+    const auto lineEnd = text.find('\n', start);
+    const auto lastSpace = text.rfind(' ', lineEnd);
+    text.erase(lastSpace, lineEnd - lastSpace);
+
+    Song restored;
+    REQUIRE(deserialize(text, restored));
+    REQUIRE(findTrack(restored, trackId)->effectChain[0].compressor.sidechainTrackId == -1);
+}

@@ -1262,6 +1262,23 @@ juce::PopupMenu MainComponent::getMenuForIndex(int topLevelMenuIndex, const juce
             menu.addItem(57, "Fade In",        hasSelection, false);
             menu.addItem(58, "Fade Out",       hasSelection, false);
             menu.addItem(59, "Reverse Audio",  hasSelection, false);
+
+            // Warping, unlike everything above it, acts on the whole clip
+            // rather than a selection — and is non-destructive, which is why
+            // it is a tick rather than an action that rewrites samples the way
+            // "Speed and pitch" does.
+            menu.addSeparator();
+
+            const auto* audioClip = selectedAudioClip();
+            const bool  knowsTempo = audioClip != nullptr && audioClip->sourceBpm > 0.0;
+
+            menu.addItem(60, knowsTempo
+                                 ? "Warp Clip to Project Tempo   (clip is "
+                                       + juce::String(audioClip->sourceBpm, 1) + " BPM)"
+                                 : juce::String("Warp Clip to Project Tempo"),
+                         knowsTempo, audioClip != nullptr && audioClip->warpEnabled);
+            menu.addItem(61, "Detect Clip Tempo...", hasAudio, false);
+            menu.addItem(62, "Set Project Tempo from Clip", knowsTempo, false);
         }
         menu.addSeparator();
         addItem(menu, 17, "Copy Clip", keys::copyClip);
@@ -1350,6 +1367,10 @@ void MainComponent::menuItemSelected(int menuItemID, int)
         case 57: fadeInAudioSelection(); break;
         case 58: fadeOutAudioSelection(); break;
         case 59: reverseAudioSelection(); break;
+
+        case 60: toggleClipWarp(); break;
+        case 61: detectSelectedClipTempo(); break;
+        case 62: setProjectTempoFromClip(); break;
 
         case 33:
         {
@@ -2205,7 +2226,22 @@ void MainComponent::refreshEffectChainForSelected()
         return;
     }
 
-    effectChain_.setChain(history_.current().tracks[(size_t) selectedTrackIndex_].effectChain);
+    // Populated before setChain, so that when setChain selects the stored
+    // routing the item it names is already in the list — the other order
+    // silently resets every sidechain to "this track" on load.
+    const auto& tracks = history_.current().tracks;
+    std::vector<std::pair<int, juce::String>> sources;
+    sources.reserve(tracks.size());
+
+    for (int i = 0; i < (int) tracks.size(); ++i)
+    {
+        if (i == selectedTrackIndex_)
+            continue; // a track ducking itself is just an ordinary compressor
+        sources.emplace_back(tracks[(size_t) i].id, juce::String(tracks[(size_t) i].name));
+    }
+
+    effectChain_.setSidechainSources(sources);
+    effectChain_.setChain(tracks[(size_t) selectedTrackIndex_].effectChain);
 }
 
 /** Live tweak from the Track FX pane — updates the document in place (not a
@@ -3302,6 +3338,7 @@ void MainComponent::syncEngineTracks()
             spec.startBeats  = clip.startBeats;
             spec.lengthBeats = clip.lengthBeats;
             spec.gainDb      = clip.gainDb;
+            spec.stretchFactor = warpFactorFor(clip);
             audioSpecs.push_back(spec);
         }
         // Submitted even when empty, which the guard here used to skip: the
@@ -3394,6 +3431,27 @@ void MainComponent::syncEngineTracks()
         engine_.setTrackSynthSubOscLevel(i, synth.subOscLevel);
         engine_.setTrackSynthUnisonVoices(i, synth.unisonVoices);
         engine_.setTrackSynthUnisonDetuneCents(i, synth.unisonDetuneCents);
+
+        // Sidechain routing: the document names the source by track *id*, the
+        // engine addresses its pool by index, and this is the only place that
+        // knows both. Resolving here (rather than storing an index) is what
+        // stops deleting or reordering a track from silently re-pointing a
+        // sidechain at whatever instrument inherited that slot.
+        //
+        // The last compressor with a source set wins if a chain somehow holds
+        // two: the engine routes one detector per track, and picking the last
+        // is at least a rule rather than an accident of iteration order.
+        int sidechainSourceIndex = -1;
+        for (const auto& slot : track.effectChain)
+        {
+            if (slot.kind != model::EffectKind::Compressor || slot.compressor.sidechainTrackId < 0)
+                continue;
+
+            const int sourceIndex = trackIndexForId(slot.compressor.sidechainTrackId);
+            if (sourceIndex >= 0 && sourceIndex != i)
+                sidechainSourceIndex = sourceIndex;
+        }
+        engine_.setTrackSidechainSource(i, sidechainSourceIndex);
 
         // The chain's shape, in order. Only pushed when it actually changed —
         // rebuilding resets every tail in the chain, so an unrelated edit must
@@ -3492,6 +3550,143 @@ void MainComponent::refreshDrumsPaneForSelected()
 /** The selected clip if it's an Audio clip that actually references a file,
     or nullptr. Everything the audio editor does needs all three of those to
     hold, so they're checked once here rather than at each call site. */
+/** The time-stretch this clip needs to sit at the project's tempo.
+
+    The tempo is taken *at the clip's start* rather than as one project-wide
+    number, because with a tempo map there is no such single number. That is
+    also this feature's honest v1 limit: a clip spanning a tempo change warps
+    to the tempo it begins at and then drifts, which is a deliberate deferral
+    (see docs/PLAN.md §29) rather than an oversight — warping across a ramp
+    means a time-varying ratio and a different rendering strategy entirely. */
+int MainComponent::trackIndexForId(int trackId) const
+{
+    if (trackId < 0)
+        return -1;
+
+    const auto& tracks = history_.current().tracks;
+    for (int i = 0; i < (int) tracks.size(); ++i)
+        if (tracks[(size_t) i].id == trackId)
+            return i;
+
+    // A source track that has since been deleted. Reported as "no sidechain"
+    // rather than clamped to some other track — the routing is gone, and the
+    // compressor falling back to its own input is the least surprising thing
+    // that can happen.
+    return -1;
+}
+
+double MainComponent::warpFactorFor(const model::Clip& clip) const
+{
+    return engine::warpStretchFactor(clip.sourceBpm,
+                                     model::tempoAtBeat(history_.current(), clip.startBeats),
+                                     clip.warpEnabled);
+}
+
+/** Runs tempo detection over a clip's decoded audio. Message thread, and not
+    instant on a long file — the caller shows a busy message. */
+engine::TempoEstimate MainComponent::detectTempoForClip(const model::Clip& clip)
+{
+    if (clip.type != model::ClipType::Audio || clip.audioFile.empty())
+        return {};
+
+    return engine_.detectFileTempo(juce::File(clip.audioFile));
+}
+
+/** Switches warping on or off for the selected audio clip. */
+void MainComponent::toggleClipWarp()
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return;
+
+    if (clip->sourceBpm <= 0.0)
+    {
+        // Nothing to warp *to*. Reachable only if the menu item's enablement
+        // and the model disagree, but saying so beats silently doing nothing.
+        showError("This clip's tempo isn't known - use Detect Clip Tempo first");
+        return;
+    }
+
+    const int  trackIndex = selectedTrackIndex_;
+    const int  clipIndex  = selectedClipIndex_;
+    const bool turningOn  = ! clip->warpEnabled;
+
+    history_.edit(turningOn ? "Warp clip" : "Unwarp clip", [trackIndex, clipIndex, turningOn](model::Song& s)
+    {
+        if (trackIndex < 0 || trackIndex >= (int) s.tracks.size())
+            return;
+        auto& clips = s.tracks[(size_t) trackIndex].clips;
+        if (clipIndex < 0 || clipIndex >= (int) clips.size())
+            return;
+        clips[(size_t) clipIndex].warpEnabled = turningOn;
+    });
+
+    // Rendering the stretch happens inside this call, on the message thread,
+    // so a long clip pauses briefly here rather than glitching the audio
+    // thread — the whole reason warping is pre-rendered.
+    if (turningOn)
+        showBusy("Warping clip...");
+
+    syncEngineTracks();
+
+    const double projectBpm = model::tempoAtBeat(history_.current(), clip->startBeats);
+    showStatus(turningOn
+        ? "Warped " + juce::String(clip->sourceBpm, 1) + " BPM clip to "
+              + juce::String(projectBpm, 1) + " BPM"
+        : juce::String("Warping off - clip plays at its own rate"));
+}
+
+/** Detects (or re-detects) the selected clip's tempo and stores it. */
+void MainComponent::detectSelectedClipTempo()
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr)
+        return;
+
+    showBusy("Detecting tempo...");
+
+    const auto estimate = detectTempoForClip(*clip);
+    if (! estimate.isUsable())
+    {
+        showError("Could not detect a tempo in this clip");
+        return;
+    }
+
+    const int trackIndex = selectedTrackIndex_;
+    const int clipIndex  = selectedClipIndex_;
+    const double detected = estimate.bpm;
+
+    history_.edit("Detect clip tempo", [trackIndex, clipIndex, detected](model::Song& s)
+    {
+        if (trackIndex < 0 || trackIndex >= (int) s.tracks.size())
+            return;
+        auto& clips = s.tracks[(size_t) trackIndex].clips;
+        if (clipIndex < 0 || clipIndex >= (int) clips.size())
+            return;
+        clips[(size_t) clipIndex].sourceBpm = detected;
+    });
+
+    syncEngineTracks();
+
+    // The confidence is reported rather than hidden: a detector that always
+    // answers, with no way to tell a sure 128 from a coin-flip 91, is one that
+    // will eventually warp something to a tempo it invented.
+    showStatus("Detected " + juce::String(estimate.bpm, 1) + " BPM"
+               + (estimate.confidence < 0.5 ? "  (low confidence - check it)" : ""));
+}
+
+/** Makes the project follow the clip rather than the other way round. */
+void MainComponent::setProjectTempoFromClip()
+{
+    const auto* clip = selectedAudioClip();
+    if (clip == nullptr || clip->sourceBpm <= 0.0)
+        return;
+
+    const double bpm = clip->sourceBpm;
+    setTempoAtPlayhead(bpm);
+    showStatus("Project tempo set to " + juce::String(bpm, 1) + " BPM from the clip");
+}
+
 const model::Clip* MainComponent::selectedAudioClip() const
 {
     const auto& song = history_.current();
@@ -5579,7 +5774,8 @@ void MainComponent::importAudioToNewTrack()
     AudioFilePlayerNode) the moment it has more than one, exactly like
     instrument clips. Any other drop target (empty space, or a non-Audio
     track) creates a brand-new Audio track instead, as it always has. */
-void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBeats, int targetTrackIndex)
+void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBeats,
+                                          int targetTrackIndex, bool isRecordedTake)
 {
     const auto& song = history_.current();
     const bool  addToExistingTrack = targetTrackIndex >= 0 && targetTrackIndex < (int) song.tracks.size()
@@ -5603,10 +5799,106 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
     const double lengthBeats     = measured > 0.0 ? measured : 4.0;
     const auto   path            = file.getFullPathName().toStdString();
 
+    // Tempo detection, which is what makes a dropped loop actually usable:
+    // without it every import plays at whatever tempo it was recorded at,
+    // against everything else in the project.
+    //
+    // Warping is switched on only when the detector is confident *and* the
+    // tempo genuinely differs. A low-confidence result is still stored - it
+    // costs nothing, and it means "Warp Clip to Project Tempo" is available to
+    // accept by hand - but it is not acted on, because a sustained pad that
+    // happens to correlate at 91 BPM must not be silently stretched. Either
+    // way the status line says what happened, so warping is never a mystery.
+    const double projectBpm = model::tempoAtBeat(song, juce::jmax(0.0, startBeats));
+
+    // A recorded take is at the project tempo by definition — it was just
+    // played against this project's click. Its tempo is recorded as such
+    // (which makes it usable later, e.g. if the project tempo changes) but it
+    // is never analysed and never warped on arrival.
+    if (isRecordedTake)
+    {
+        const double takeBpm = projectBpm;
+
+        if (addToExistingTrack)
+        {
+            int newClipIndex = -1;
+            history_.edit("Add audio clip", [targetTrackIndex, &path, startBeats, lengthBeats,
+                                             takeBpm, &newClipIndex](model::Song& s)
+            {
+                auto& track = s.tracks[(size_t) targetTrackIndex];
+
+                model::Clip clip;
+                clip.id          = model::allocateId(s);
+                clip.type        = model::ClipType::Audio;
+                clip.startBeats  = juce::jmax(0.0, startBeats);
+                clip.lengthBeats = lengthBeats;
+                clip.audioFile   = path;
+                clip.sourceBpm   = takeBpm;
+                track.clips.push_back(clip);
+
+                newClipIndex = (int) track.clips.size() - 1;
+            });
+
+            syncEngineTracks();
+            selectTrackAndClip(targetTrackIndex, newClipIndex);
+            arrangementView_.setSong(history_.current());
+            return;
+        }
+
+        if (trackCount() >= engine_.maxTracks())
+        {
+            showError("Track limit reached");
+            return;
+        }
+
+        int newTrackIndex = -1;
+        history_.edit("Import audio track", [&path, &newTrackIndex, startBeats, lengthBeats,
+                                             takeBpm](model::Song& s)
+        {
+            const auto name = "Audio " + juce::String((int) s.tracks.size() + 1);
+            model::addTrack(s, model::TrackType::Audio, name.toStdString());
+
+            model::Clip clip;
+            clip.id          = model::allocateId(s);
+            clip.type        = model::ClipType::Audio;
+            clip.startBeats  = juce::jmax(0.0, startBeats);
+            clip.lengthBeats = lengthBeats;
+            clip.audioFile   = path;
+            clip.sourceBpm   = takeBpm;
+            s.tracks.back().clips.push_back(clip);
+
+            newTrackIndex = (int) s.tracks.size() - 1;
+        });
+
+        selectTrackAndRefreshAll(newTrackIndex);
+        return;
+    }
+
+    // Decoding the whole file to analyse it is not instant, and this is
+    // reached by a drag-and-drop, where an unexplained pause reads as a hang.
+    showBusy("Analysing tempo...");
+    const auto estimate = engine_.detectFileTempo(file);
+
+    const bool tempoDiffers = estimate.isUsable() && projectBpm > 0.0
+                           && std::abs(estimate.bpm - projectBpm) > 0.5;
+    const bool autoWarp     = tempoDiffers && estimate.confidence >= 0.5;
+
+    const double detectedBpm = estimate.isUsable() ? estimate.bpm : 0.0;
+
+    juce::String tempoNote;
+    if (autoWarp)
+        tempoNote = "  (" + juce::String(detectedBpm, 1) + " BPM, warped to "
+                  + juce::String(projectBpm, 1) + ")";
+    else if (estimate.isUsable() && tempoDiffers)
+        tempoNote = "  (" + juce::String(detectedBpm, 1) + " BPM? - low confidence, not warped)";
+    else if (estimate.isUsable())
+        tempoNote = "  (" + juce::String(detectedBpm, 1) + " BPM)";
+
     if (addToExistingTrack)
     {
         int newClipIndex = -1;
-        history_.edit("Add audio clip", [targetTrackIndex, &path, startBeats, lengthBeats, &newClipIndex](model::Song& s)
+        history_.edit("Add audio clip", [targetTrackIndex, &path, startBeats, lengthBeats,
+                                         detectedBpm, autoWarp, &newClipIndex](model::Song& s)
         {
             auto& track = s.tracks[(size_t) targetTrackIndex];
 
@@ -5616,6 +5908,8 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
             clip.startBeats  = juce::jmax(0.0, startBeats);
             clip.lengthBeats = lengthBeats;
             clip.audioFile   = path;
+            clip.sourceBpm   = detectedBpm;
+            clip.warpEnabled = autoWarp;
             track.clips.push_back(clip);
 
             newClipIndex = (int) track.clips.size() - 1;
@@ -5624,7 +5918,7 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
         syncEngineTracks();
         selectTrackAndClip(targetTrackIndex, newClipIndex);
         arrangementView_.setSong(history_.current());
-        showStatus("Imported: " + file.getFileName() + "  (added clip)");
+        showStatus("Imported: " + file.getFileName() + "  (added clip)" + tempoNote);
         return;
     }
 
@@ -5635,7 +5929,8 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
     }
 
     int newTrackIndex = -1;
-    history_.edit("Import audio track", [&path, &newTrackIndex, startBeats, lengthBeats](model::Song& s)
+    history_.edit("Import audio track", [&path, &newTrackIndex, startBeats, lengthBeats,
+                                        detectedBpm, autoWarp](model::Song& s)
     {
         const auto name = "Audio " + juce::String((int) s.tracks.size() + 1);
         model::addTrack(s, model::TrackType::Audio, name.toStdString());
@@ -5646,13 +5941,15 @@ void MainComponent::importAudioFileAtBeat(const juce::File& file, double startBe
         clip.startBeats  = juce::jmax(0.0, startBeats);
         clip.lengthBeats = lengthBeats;
         clip.audioFile   = path;
+        clip.sourceBpm   = detectedBpm;
+        clip.warpEnabled = autoWarp;
         s.tracks.back().clips.push_back(clip);
 
         newTrackIndex = (int) s.tracks.size() - 1;
     });
 
     selectTrackAndRefreshAll(newTrackIndex);
-    showStatus("Imported: " + file.getFileName() + "  (new track)");
+    showStatus("Imported: " + file.getFileName() + "  (new track)" + tempoNote);
 }
 
 /** Points the whole UI at a track: every pane that shows per-track state is
@@ -5960,7 +6257,7 @@ void MainComponent::finishRecordingIfReady()
     // path — which measures the file's real duration rather than guessing, and
     // appends to the target track rather than always making a new one. This
     // used to be a second, hand-written copy of that logic here.
-    importAudioFileAtBeat(file, startBeats, recordingTargetTrack_);
+    importAudioFileAtBeat(file, startBeats, recordingTargetTrack_, /*isRecordedTake=*/true);
 
     recordingFile_        = juce::File{};
     recordingTargetTrack_ = -1;
