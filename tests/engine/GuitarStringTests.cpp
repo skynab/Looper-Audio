@@ -271,3 +271,187 @@ TEST_CASE("Pick position changes the tone without changing the pitch", "[engine]
     const int from = (int) (0.02 * kSampleRate), count = (int) (0.3 * kSampleRate);
     REQUIRE(magnitudeAt(atMiddle, 392.0, from, count) < magnitudeAt(nearBridge, 392.0, from, count));
 }
+
+// --- Phase 1: dynamics and coupling (see docs/PLAN.md §33) ----------------
+
+namespace
+{
+    /** Energy above @p frequency relative to the fundamental — a crude but
+        sufficient brightness figure. Normalised by the fundamental so a louder
+        note isn't mistaken for a brighter one, which is the entire distinction
+        being measured here. */
+    double brightnessRatio(const std::vector<float>& signal, double /*fundamental*/)
+    {
+        // Measured across the *attack*, not the tail. The excitation's
+        // spectrum is what velocity shapes, and the loop's damping filter
+        // washes that difference out within a few hundred milliseconds — so a
+        // window starting at 10ms and running for 250ms measures the loop
+        // filter, not the pick, and reports almost no difference at all.
+        const int count = (int) (0.03 * kSampleRate);
+
+        // High-frequency content as the energy of the first difference,
+        // normalised by the signal's own energy: a first difference is a
+        // 6dB/oct highpass, so this rises with brightness and is blind to how
+        // loud the note is — which is the whole distinction under test.
+        double high  = 0.0;
+        double total = 0.0;
+
+        for (int i = 1; i < count; ++i)
+        {
+            const double difference = (double) signal[(size_t) i] - (double) signal[(size_t) (i - 1)];
+            high  += difference * difference;
+            total += (double) signal[(size_t) i] * (double) signal[(size_t) i];
+        }
+
+        return total > 0.0 ? high / total : 0.0;
+    }
+
+    std::vector<float> pluckAtVelocity(float velocity, float sensitivity)
+    {
+        GuitarString string;
+        string.prepare(kSampleRate);
+        string.setFrequency(146.832);
+        string.setDecaySeconds(3.0);
+        string.setVelocitySensitivity(sensitivity);
+        string.pluck(velocity);
+        return render(string, 0.4);
+    }
+}
+
+TEST_CASE("Picking harder is brighter, not just louder", "[engine][guitar]")
+{
+    // Velocity used to scale amplitude and nothing else, so every note in a
+    // part had an identical spectrum — most of why a programmed guitar sounds
+    // machine-gunned.
+    const double soft = brightnessRatio(pluckAtVelocity(0.35f, 0.5f), 146.832);
+    const double hard = brightnessRatio(pluckAtVelocity(1.0f,  0.5f), 146.832);
+
+    INFO("soft " << soft << " hard " << hard);
+    REQUIRE(hard > soft * 1.1);
+}
+
+TEST_CASE("Velocity sensitivity of zero restores the old behaviour",
+          "[engine][guitar]")
+{
+    // The escape hatch, and the reason this could be added without retuning
+    // every part already written.
+    const double soft = brightnessRatio(pluckAtVelocity(0.35f, 0.0f), 146.832);
+    const double hard = brightnessRatio(pluckAtVelocity(1.0f,  0.0f), 146.832);
+
+    REQUIRE(std::abs(hard - soft) < soft * 0.02);
+}
+
+TEST_CASE("A note at the reference velocity is unaffected by sensitivity",
+          "[engine][guitar]")
+{
+    // The mapping is a deviation from kReferenceVelocity, so a note there is
+    // excited exactly as it was before velocity affected timbre at all —
+    // which is what keeps existing parts sounding as written.
+    const auto without = pluckAtVelocity(GuitarString::kReferenceVelocity, 0.0f);
+    const auto with    = pluckAtVelocity(GuitarString::kReferenceVelocity, 1.0f);
+
+    REQUIRE(without.size() == with.size());
+    for (size_t i = 0; i < without.size(); ++i)
+        REQUIRE(without[i] == with[i]);
+}
+
+TEST_CASE("Bridge coupling makes an untouched string ring", "[engine][guitar]")
+{
+    // Sympathetic resonance: the point of coupling, and what makes a chord
+    // bloom rather than stack up as six independent notes.
+    GuitarString struck;
+    struck.prepare(kSampleRate);
+    struck.setFrequency(146.832);
+    struck.setDecaySeconds(3.0);
+
+    GuitarString neighbour;
+    neighbour.prepare(kSampleRate);
+    neighbour.setFrequency(195.998);
+    neighbour.setDecaySeconds(3.0);
+
+    REQUIRE_FALSE(neighbour.isRinging());
+
+    struck.pluck(1.0f);
+
+    double neighbourEnergy = 0.0;
+    for (int i = 0; i < (int) (0.5 * kSampleRate); ++i)
+    {
+        const float bridge = struck.process();
+        const float voice  = neighbour.process();
+
+        neighbour.couple(bridge * 0.03f);
+        neighbourEnergy += (double) voice * (double) voice;
+    }
+
+    REQUIRE(neighbourEnergy > 0.0);
+    REQUIRE(neighbour.isRinging());
+}
+
+TEST_CASE("With no coupling the neighbour stays silent", "[engine][guitar]")
+{
+    // The control for the test above: without the injection there is no path
+    // between two strings at all, so any energy would be a bug elsewhere.
+    GuitarString struck;
+    struck.prepare(kSampleRate);
+    struck.setFrequency(146.832);
+    struck.pluck(1.0f);
+
+    GuitarString neighbour;
+    neighbour.prepare(kSampleRate);
+    neighbour.setFrequency(195.998);
+
+    double neighbourEnergy = 0.0;
+    for (int i = 0; i < (int) (0.5 * kSampleRate); ++i)
+    {
+        struck.process();
+        const float voice = neighbour.process();
+        neighbourEnergy += (double) voice * (double) voice;
+    }
+
+    REQUIRE(neighbourEnergy == 0.0);
+}
+
+TEST_CASE("A coupled pair cannot grow without bound", "[engine][guitar]")
+{
+    // Coupling is a feedback path between strings, so the existing "no string
+    // may grow" guarantee has to hold at the coupled setting too — this is the
+    // property that would fail catastrophically rather than subtly.
+    GuitarString a, b;
+    for (auto* string : { &a, &b })
+    {
+        string->prepare(kSampleRate);
+        string->setDecaySeconds(30.0); // the least damped setting available
+        string->setBrightness(1.0f);   // and the least lossy loop filter
+    }
+    a.setFrequency(82.4069);
+    b.setFrequency(110.0);
+
+    a.pluck(1.0f);
+    b.pluck(1.0f);
+
+    float peakEarly = 0.0f;
+    float peakLate  = 0.0f;
+    const int total = (int) (20.0 * kSampleRate);
+
+    for (int i = 0; i < total; ++i)
+    {
+        const float va = a.process();
+        const float vb = b.process();
+
+        // Well above what GuitarNode ever applies (kMaxCoupling = 0.03), so
+        // this is a margin check rather than a check of the exact setting.
+        const float bridge = (va + vb) * 0.05f;
+        a.couple(bridge);
+        b.couple(bridge);
+
+        const float magnitude = std::max(std::abs(va), std::abs(vb));
+        if (i < (int) (0.5 * kSampleRate))
+            peakEarly = std::max(peakEarly, magnitude);
+        if (i > total - (int) (0.5 * kSampleRate))
+            peakLate = std::max(peakLate, magnitude);
+    }
+
+    INFO("early " << peakEarly << " late " << peakLate);
+    REQUIRE(std::isfinite(peakLate));
+    REQUIRE(peakLate < peakEarly);
+}

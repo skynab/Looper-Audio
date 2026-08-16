@@ -47,6 +47,20 @@ struct GuitarSettings
     // short *and* dark: the picking hand resting at the bridge kills the tail
     // and rolls off the top, and a note that was only shortened reads as cut
     // off rather than chugged. See engine::Articulation.
+    /** How much a note's velocity brightens it, on top of its loudness — see
+        engine::GuitarString::setVelocitySensitivity. Non-zero by default:
+        every note sounding timbrally identical was the loudest complaint the
+        instrument had, and 0 restores exactly the old behaviour. */
+    float velocitySensitivity = 0.5f;
+
+    /** Energy crossing between strings at the bridge, 0..1 — sympathetic
+        ringing, and most of what makes a chord bloom. */
+    float stringCoupling = 0.35f;
+
+    /** How far the strings are spread across the stereo field, 0..1.
+        Mono-compatible at any setting (see engine::GuitarNode::setWidth). */
+    float stereoWidth = 0.3f;
+
     float palmMuteDecaySeconds = 0.18f;
     float palmMuteBrightness   = 0.25f;
 

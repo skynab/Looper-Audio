@@ -1580,6 +1580,101 @@ int main(int argc, char** argv)
         driveCabinetWorks = worstDifference(withCab, noCab) > 1.0e-3f;
     }
 
+    // Guitar phase 1 (docs/PLAN.md §33): stereo width and bridge coupling,
+    // driven through the real GuitarNode rather than a bare string, because
+    // both are properties of how the six strings are *combined*.
+    bool guitarHasWidth = false;
+    bool guitarStringsCouple = false;
+    {
+        auto renderGuitar = [&](float coupling, float width, bool strum)
+        {
+            const int totalSamples = (int) (sampleRate * 2.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            GuitarNode guitar;
+            guitar.prepare(sampleRate, 512);
+            guitar.setDecaySeconds(4.0f);
+            guitar.setCoupling(coupling);
+            guitar.setWidth(width);
+
+            juce::MidiBuffer midi;
+            if (strum)
+            {
+                // An open E chord: several strings at once, which is where
+                // coupling and width both actually show.
+                for (int note : { 40, 47, 52, 56, 59, 64 })
+                    midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.9f), 0);
+            }
+            else
+            {
+                midi.addEvent(juce::MidiMessage::noteOn(1, 40, 0.9f), 0);
+            }
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate        = sampleRate;
+                context.numSamples        = n;
+                context.transport.playing = true;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
+
+                juce::AudioBuffer<float> block(mix.getArrayOfWritePointers(), 2, pos, n);
+                juce::MidiBuffer         blockMidi = pos == 0 ? midi : juce::MidiBuffer {};
+
+                guitar.process(block, blockMidi, context);
+            }
+
+            return mix;
+        };
+
+        // --- Width. Panning the strings is the mechanism, so this needs more
+        // than one string sounding: a single note is centred whatever the
+        // width, because there is nothing to spread it against.
+        const auto wide   = renderGuitar(0.0f, 0.6f, true);
+        const auto narrow = renderGuitar(0.0f, 0.0f, true);
+
+        double channelDifference = 0.0;
+        for (int i = 0; i < wide.getNumSamples(); ++i)
+            channelDifference += std::abs(wide.getSample(0, i) - wide.getSample(1, i));
+
+        double narrowDifference = 0.0;
+        for (int i = 0; i < narrow.getNumSamples(); ++i)
+            narrowDifference += std::abs(narrow.getSample(0, i) - narrow.getSample(1, i));
+
+        // Mono-compatibility, which is the reason this is panning rather than
+        // a delay: folding to mono must not cancel anything, so the summed
+        // level has to survive.
+        double wideMono = 0.0, narrowMono = 0.0;
+        for (int i = 0; i < wide.getNumSamples(); ++i)
+        {
+            const double w = 0.5 * (wide.getSample(0, i)   + wide.getSample(1, i));
+            const double n = 0.5 * (narrow.getSample(0, i) + narrow.getSample(1, i));
+            wideMono   += w * w;
+            narrowMono += n * n;
+        }
+
+        guitarHasWidth = narrowDifference < 1.0e-6            // dead centre at width 0
+                      && channelDifference > 1.0              // genuinely different channels
+                      && wideMono > narrowMono * 0.6;         // and mono survives the fold
+
+        // --- Coupling. A struck chord leaves energy circulating between the
+        // strings, so the tail carries more than it does uncoupled.
+        const auto coupled   = renderGuitar(1.0f, 0.0f, true);
+        const auto uncoupled = renderGuitar(0.0f, 0.0f, true);
+
+        const int tailFrom  = (int) (1.2 * sampleRate);
+        const int tailCount = (int) (0.6 * sampleRate);
+
+        const float coupledTail   = coupled.getRMSLevel(0, tailFrom, tailCount);
+        const float uncoupledTail = uncoupled.getRMSLevel(0, tailFrom, tailCount);
+
+        guitarStringsCouple = uncoupledTail > 1.0e-6f
+                           && coupledTail > uncoupledTail * 1.02f;
+    }
+
     // Group bus: a track that receives instead of generating (TrackType::Bus).
     // The risky part of that change is InstrumentTrack::render — a bus must
     // *not* clear the buffer its members already summed into, must still apply
@@ -3129,6 +3224,8 @@ int main(int argc, char** argv)
               << "  compressorSquashes=" << (compressorSquashes ? 1 : 0)
               << "  sidechainDucks=" << (sidechainDucks ? 1 : 0)
               << "  groupBusWorks=" << (groupBusWorks ? 1 : 0)
+              << "  guitarHasWidth=" << (guitarHasWidth ? 1 : 0)
+              << "  guitarStringsCouple=" << (guitarStringsCouple ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  gateClosesQuiet=" << (gateClosesQuiet ? 1 : 0)
               << "  metalToneHasBody=" << (metalToneHasBody ? 1 : 0)
@@ -3171,6 +3268,7 @@ int main(int argc, char** argv)
                  && soloMatchesArpOnly && stemsSumToMix && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && midiRecordingWorks && warpFitsTheGrid && sidechainDucks && groupBusWorks
+                 && guitarHasWidth && guitarStringsCouple
                  && generativeLoopWorks
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks

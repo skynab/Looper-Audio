@@ -60,6 +60,7 @@ public:
         for (auto& string : strings_)
             string.prepare(sampleRate);
         pickup_.prepare(sampleRate);
+        pickupRight_.prepare(sampleRate);
         applySettings();
     }
 
@@ -69,6 +70,26 @@ public:
     void setPickPosition(float value)   { pickPosition_.store(value, std::memory_order_relaxed); }
     void setPickHardness(float value)   { pickHardness_.store(value, std::memory_order_relaxed); }
     void setMuteOnNoteOff(float value)  { muteOnNoteOff_.store(value, std::memory_order_relaxed); }
+
+    /** How much a note's velocity brightens it - see
+        GuitarString::setVelocitySensitivity. */
+    void setVelocitySensitivity(float value) { velocitySensitivity_.store(value, std::memory_order_relaxed); }
+
+    /**
+        How much energy crosses between strings at the bridge, 0..1.
+
+        Scaled hard on the way to the strings: this is a feedback path, and the
+        string-to-string-and-back gain goes as the square of the coefficient
+        times the string count. kMaxCoupling keeps that a couple of orders of
+        magnitude below unity even at 1.0, so the "no string may grow" property
+        holds at every setting rather than up to some threshold nobody checks.
+    */
+    void setCoupling(float value) { couplingAmount_.store(value, std::memory_order_relaxed); }
+
+    /** How far the strings are spread across the stereo field, 0..1. Mono at
+        0, and mono-compatible at any setting: the strings are distinct
+        signals, not delayed copies, so folding down cannot comb-filter. */
+    void setWidth(float value) { widthAmount_.store(value, std::memory_order_relaxed); }
 
     /** The pickup's resonant peak - see engine::Pickup. */
     void setPickupResonanceHz(float hz) { pickupResonanceHz_.store(hz, std::memory_order_relaxed); }
@@ -151,26 +172,75 @@ private:
         if (count <= 0)
             return;
 
-        const int channels = buffer.getNumChannels();
+        const int   channels = buffer.getNumChannels();
+        const float coupling = coupling_;
+        const float width    = width_;
+
         for (int i = 0; i < count; ++i)
         {
-            float sum = 0.0f;
+            // Panned sums rather than one. Because a linear filter distributes
+            // over a weighted sum, filtering these two with identical pickups
+            // is *exactly* equivalent to filtering each string and then
+            // panning - so width costs one extra filter instance and no
+            // correctness.
+            float left  = 0.0f;
+            float right = 0.0f;
+            float bridge = 0.0f;
+
             for (int s = 0; s < kNumGuitarStrings; ++s)
-                if (strings_[(size_t) s].isRinging())
-                    sum += strings_[(size_t) s].process();
+            {
+                // With coupling on, a silent string still has to run: it can
+                // only start ringing sympathetically if its loop is turning.
+                // That is the entire effect, so the skip-silent-strings
+                // optimisation is conditional rather than removed.
+                if (coupling <= 0.0f && ! strings_[(size_t) s].isRinging())
+                    continue;
+
+                const float value = strings_[(size_t) s].process();
+
+                bridge += value;
+                left   += value * stringGainLeft_[(size_t) s];
+                right  += value * stringGainRight_[(size_t) s];
+            }
+
+            // What the bridge passes back to every string. Applied after all
+            // six have been read, so each sees the same bridge state for this
+            // sample rather than a different one depending on its index.
+            if (coupling > 0.0f)
+            {
+                const float injected = bridge * coupling;
+                for (auto& string : strings_)
+                    string.couple(injected);
+            }
 
             // Six strings can sum well past unity, so scale to keep a full
             // strum inside range without needing a limiter downstream.
-            sum *= 0.4f;
+            left  *= 0.4f;
+            right *= 0.4f;
 
             // One pickup senses the whole instrument, so this is on the sum
             // rather than per string - and it is the last thing in the
             // instrument, so whatever the track's chain does to the guitar it
             // is working on a signal that already has a pickup's shape.
-            sum = pickup_.processSample(sum);
+            left  = pickup_.processSample(left);
+            right = pickupRight_.processSample(right);
 
-            for (int ch = 0; ch < channels; ++ch)
-                buffer.addSample(ch, start + i, sum);
+            if (channels <= 1 || width <= 0.0f)
+            {
+                // Mono output, or no width asked for: the two sums are equal
+                // by construction at width 0, so either one is the answer.
+                const float mono = width <= 0.0f ? left : 0.5f * (left + right);
+                for (int ch = 0; ch < channels; ++ch)
+                    buffer.addSample(ch, start + i, mono);
+            }
+            else
+            {
+                buffer.addSample(0, start + i, left);
+                buffer.addSample(1, start + i, right);
+
+                for (int ch = 2; ch < channels; ++ch)
+                    buffer.addSample(ch, start + i, 0.5f * (left + right));
+            }
         }
     }
 
@@ -311,6 +381,20 @@ private:
     {
         pickup_.setResonanceHz(pickupResonanceHz_.load(std::memory_order_relaxed));
         pickup_.setQ(pickupQ_.load(std::memory_order_relaxed));
+        pickupRight_.setResonanceHz(pickupResonanceHz_.load(std::memory_order_relaxed));
+        pickupRight_.setQ(pickupQ_.load(std::memory_order_relaxed));
+
+        const float velocitySensitivity = velocitySensitivity_.load(std::memory_order_relaxed);
+        for (auto& string : strings_)
+            string.setVelocitySensitivity(velocitySensitivity);
+
+        // Resolved once per block into plain audio-thread floats: the render
+        // loop reads them per sample, and re-loading an atomic six times a
+        // sample buys nothing when the value cannot change mid-block anyway.
+        coupling_ = kMaxCoupling * std::clamp(couplingAmount_.load(std::memory_order_relaxed), 0.0f, 1.0f);
+        width_    = std::clamp(widthAmount_.load(std::memory_order_relaxed), 0.0f, 1.0f);
+
+        updateStringPans();
 
         // Per string rather than uniform, because a palm-muted string wants a
         // different decay and brightness from an open one and this is the
@@ -361,6 +445,40 @@ private:
     std::array<GuitarString, kNumGuitarStrings> strings_;
     Pickup                                     pickup_;
 
+    /** The right channel's pickup. Identical settings to pickup_ — see the
+        render loop for why two instances are exactly equivalent to one. */
+    Pickup                                     pickupRight_;
+
+    /** The largest fraction of the bridge signal a single string ever receives.
+        Deliberately small: six strings each feeding back through the bridge is
+        a loop, and this is what keeps its gain far below one. */
+    static constexpr float kMaxCoupling = 0.03f;
+
+    std::array<float, kNumGuitarStrings> stringGainLeft_  { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+    std::array<float, kNumGuitarStrings> stringGainRight_ { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+
+    /** Spreads the strings across the field, low to high.
+
+        A linear pan law with a unity centre, the same one tracks and drum pads
+        use — so at width 0 both gains are exactly 1 and the two sums are
+        bit-identical, which is what lets the render loop treat width 0 as
+        plain mono rather than as a special case that merely sounds like it. */
+    void updateStringPans() noexcept
+    {
+        for (int i = 0; i < kNumGuitarStrings; ++i)
+        {
+            // -1 for the lowest string, +1 for the highest.
+            const float position = kNumGuitarStrings > 1
+                ? (2.0f * (float) i / (float) (kNumGuitarStrings - 1) - 1.0f)
+                : 0.0f;
+
+            const float pan = position * width_;
+
+            stringGainLeft_[(size_t) i]  = pan <= 0.0f ? 1.0f : 1.0f - pan;
+            stringGainRight_[(size_t) i] = pan >= 0.0f ? 1.0f : 1.0f + pan;
+        }
+    }
+
     // Audio-thread state: which note each string holds, and when it was struck.
     std::array<std::atomic<int>, kNumGuitarStrings> sounding_ { -1, -1, -1, -1, -1, -1 };
     std::array<int, kNumGuitarStrings> pluckedAt_ {};
@@ -387,6 +505,14 @@ private:
 
     std::atomic<float> pickupResonanceHz_ { 3000.0f };
     std::atomic<float> pickupQ_           { 1.4f };
+    std::atomic<float> velocitySensitivity_ { 0.0f };
+    std::atomic<float> couplingAmount_       { 0.0f };
+    std::atomic<float> widthAmount_          { 0.0f };
+
+    // Resolved from the atomics above once per block; audio thread only.
+    float coupling_ = 0.0f;
+    float width_    = 0.0f;
+
     std::atomic<float> palmMuteDecay_      { 0.18f };
     std::atomic<float> palmMuteBrightness_ { 0.25f };
 };

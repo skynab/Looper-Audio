@@ -46,6 +46,7 @@ This is a living document. As sections mature they should graduate into their ow
 30. [Sidechain compression](#30-sidechain-compression-implemented)
 31. [Group buses](#31-group-buses-implemented)
 32. [Automation you can see and draw](#32-automation-you-can-see-and-draw-implemented)
+33. [Making the guitar sound better](#33-making-the-guitar-sound-better-phase-1-implemented)
 
 ---
 
@@ -2542,3 +2543,152 @@ play it.
 **Still deferred:** automation for effect and hosted-plugin parameters — `TrackParam`
 was designed for exactly that extension ("a new enumerator plus the code that applies
 it"), and the pane's parameter picker is where they would appear.
+
+---
+
+## 33. Making the guitar sound better (phase 1 implemented)
+
+The guitar is already well past a naive Karplus-Strong: a fractional-delay waveguide
+with pitch-compensated decay (§21), a pickup RLC resonance, a cabinet with a
+cone-breakup peak and notch, ADAA oversampled shaping (§23), palm mutes and hammer-ons.
+So what is left is specific rather than vague, and reading the code says exactly what.
+
+Three things are missing that a listener hears immediately, and three that are deeper
+work. Phase 1 is the first three.
+
+### The gaps, in order of audible payoff per unit of work
+
+1. **Every note is timbrally identical.** `GuitarString::pluck` scales *amplitude* by
+   velocity and nothing else — `pickHardness_` is a static setting. On a real
+   instrument, picking harder is *brighter*, not merely louder. This is the single
+   biggest reason a programmed part sounds machine-gunned.
+2. **The six strings are completely independent.** `GuitarNode` sums them and nothing
+   more. There is no bridge coupling, so struck strings never excite the others and
+   nothing rings sympathetically — most of why a modelled chord sounds like six separate
+   notes rather than one instrument.
+3. **It is mono.** One sum is copied to both channels, so the guitar has literally zero
+   width.
+4. **No inharmonicity.** A waveguide is perfectly harmonic; real strings are stiff and
+   their partials stretch progressively sharp. Most audible low and under distortion —
+   a real component of "growl".
+5. **The cabinet still is not an impulse response**, as `CabinetSim` says of itself. Two
+   of the three reasons it gives have since expired: `engine/Fft.h` now exists, and an
+   IR can be *synthesised* rather than shipped, so nothing has to be licensed.
+6. **One waveshaper is not an amp.** Real amps cascade gain stages with filtering
+   between them; each stage shapes what the next one distorts.
+
+### Phase 1: dynamics, coupling, width
+
+**Velocity to timbre.** The excitation's lowpass smoothing becomes a function of the
+velocity as well as the static hardness, plus a small per-pluck jitter of the pick
+position so no two plucks comb identically.
+
+Expressed as a *deviation from a reference velocity* rather than as a new absolute
+mapping: at the reference (0.8, which is `engine::Note`'s default and what every
+generated pattern uses) the excitation is bit-identical to today's. That keeps this an
+addition rather than a retune of everything already written, the same discipline
+`SynthVoice`'s fast path follows.
+
+**Bridge coupling.** Strings meet at the bridge, which is not perfectly rigid: energy
+crosses between them there. Modelled as a fraction of the summed bridge signal injected
+back into every string's loop each sample.
+
+Two consequences worth planning for rather than discovering:
+- A string that is not ringing has to be *processed anyway* once coupling is on, or it
+  can never start ringing sympathetically — which is the entire effect. The existing
+  "skip silent strings" optimisation is therefore conditional on coupling being off.
+- The feedback path must not be able to grow. With a coupling coefficient *k*, the
+  worst-case string-to-string-and-back loop gain is on the order of *k²* times the
+  string count, so a conservative *k* keeps the existing "no string may grow over 30
+  seconds" guarantee intact — and that guarantee gets a test at the coupled setting.
+
+**Stereo width, by panning the strings.** Not a delay, not a chorus: each string is
+spread slightly across the field and the two sums are filtered by identical pickups.
+Because a linear filter distributes over a weighted sum, that is *exactly* equivalent to
+filtering each string and then panning, so it costs one extra filter instance and no
+correctness. It is also **mono-compatible by construction** — the strings are distinct
+signals, not copies of one, so folding to mono cannot comb-filter, which is precisely
+what a Haas delay would do.
+
+### What this deliberately changes
+
+Existing guitar tracks **will** sound different — coupled, wider, and more dynamic. That
+is the request rather than a regression, and it is called out here because this
+codebase's usual rule is the opposite. The velocity mapping is the one part held
+identical at its reference point, so already-written parts keep their balance.
+
+### Verification
+
+- Headless: spectral centroid must rise with velocity; a struck string must put
+  measurable energy into an untouched neighbour, and none when coupling is off; no
+  string may grow over 30 seconds at the coupled setting; the mono sum of the widened
+  output must not lose level (the mono-compatibility claim, measured).
+- Bounce tool: the guitar's two channels must differ once width is up, and be identical
+  at zero width.
+- `rmsDry` and every other sentinel must not move: none of this is on the non-guitar
+  path.
+
+### Phase 1 as built, and the three things measurement changed
+
+Built as planned — velocity to timbre, bridge coupling, string panning — with new
+`velocitySensitivity`, `stringCoupling` and `stereoWidth` on `model::GuitarSettings`
+(format v37, seeded from the defaults so an older project loads the *improved*
+instrument rather than the old one), sliders on the fretboard pane, and the engine
+plumbing to match.
+
+Three things were wrong on the first attempt, and each was caught by a test rather than
+by listening. They are worth recording because all three are the same shape: a change
+that looked local turned out to be coupled to something already measured.
+
+**1. Coupling did nothing at all.** `couple()` added the injected signal into
+`buffer_[writeIndex_]` — which is the slot `process()` is about to *assign*, not add to.
+Every injected sample was silently discarded, and the neighbouring string received
+exactly zero energy. It now accumulates into a pending value that joins the loop's input
+where the string's own feedback enters. The test that caught it asserts an untouched
+string ends up ringing, which is the whole point of the feature and would have been
+impossible to notice by ear as "slightly less bloom".
+
+**2. Jittering the pick position was a tonal change, not a variation.** The intent was
+that no two plucks comb identically. But the comb's notches fall on real harmonics: it
+is what nulls the even ones when you pluck at the midpoint, and a large part of what
+makes a palm-muted note dark. Two independent checks moved — the pick-position test
+(which measures the midpoint null directly) and the bounce tool's palm-mute brightness
+ratio, which went from 0.82 to 0.96 against a 0.9 threshold. The jitter now varies the
+pick's *hardness* instead: that shapes how bright the burst is, which is exactly the
+"no two plucks alike" quality wanted, and leaves every comb property intact.
+
+**3. The jitter's random draw corrupted the excitation.** Taking one sample from
+`nextNoise()` to compute the jitter shifted every subsequent sample of the noise burst,
+changing the entire realisation of each note — enough to flip a controlled A/B
+comparison in the pick-position test. Pick variation now has its own generator. The
+lesson generalises: any new draw from a shared RNG silently re-rolls every measurement
+downstream of it.
+
+**And one measurement error of my own.** The first brightness test measured a 250ms
+window starting at 10ms and reported almost no difference between a soft and a hard
+pluck — not because velocity wasn't working, but because the loop's damping filter
+dominates the spectrum within a few hundred milliseconds. Velocity shapes the
+*excitation*, so it has to be measured across the attack; the test now uses a 30ms
+window and a first-difference energy ratio, which is blind to how loud the note is.
+
+### Verification
+
+630 headless tests (6 new): picking harder is measurably brighter; sensitivity 0
+restores the old behaviour exactly; a note at the reference velocity is
+*sample-identical* with sensitivity at any setting; a struck string makes an untouched
+neighbour ring; with coupling off it stays exactly silent; and a coupled pair at nearly
+twice the coupling the node ever applies still decays rather than growing.
+
+Two new bounce checks: `guitarHasWidth` (channels identical at width 0, genuinely
+different above it, **and** the mono fold keeps its level — the mono-compatibility claim
+that justifies panning over a delay) and `guitarStringsCouple` (a coupled chord's tail
+carries more than an uncoupled one). Every existing check passes unchanged, `rmsDry` and
+the palm-mute sentinel included.
+
+**Not verified: whether it actually sounds better.** That is the whole point of the pass
+and the one thing no test here can answer. Load a Guitar track and play a chord — the
+Dynamics, Coupling and Width sliders are on the fretboard pane, and setting all three to
+zero returns the instrument to exactly what it was before.
+
+Phases 2 and 3 (inharmonicity; then cascaded amp stages and a synthesised cabinet IR)
+remain as described above.

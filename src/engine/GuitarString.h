@@ -54,10 +54,11 @@ public:
     {
         std::fill(buffer_.begin(), buffer_.end(), 0.0f);
         writeIndex_     = 0;
-        lastFilterIn_   = 0.0f;
-        allpassLastIn_  = 0.0f;
-        allpassLastOut_ = 0.0f;
-        energy_         = 0.0f;
+        lastFilterIn_    = 0.0f;
+        allpassLastIn_   = 0.0f;
+        allpassLastOut_  = 0.0f;
+        energy_          = 0.0f;
+        pendingCoupling_ = 0.0f;
     }
 
     /** Sets the pitch. Changing this *without* plucking is exactly a hammer-on
@@ -106,6 +107,28 @@ public:
         pickHardness_ = std::clamp(hardness, 0.0f, 1.0f);
     }
 
+    /**
+        How much a note's velocity brightens it, on top of its loudness.
+
+        Until this existed, velocity scaled amplitude and nothing else: every
+        note had the same spectrum, which is most of why a programmed part
+        sounds machine-gunned. On a real instrument picking harder excites more
+        partials — it is a different attack, not a louder one.
+
+        Applied as a *deviation from kReferenceVelocity*, so a note at that
+        velocity excites exactly as it did before this parameter existed. That
+        keeps this an addition rather than a retune of every part already
+        written; 0 restores the old behaviour completely.
+    */
+    void setVelocitySensitivity(float amount) noexcept
+    {
+        velocitySensitivity_ = std::clamp(amount, 0.0f, 1.0f);
+    }
+
+    /** The velocity at which velocity-to-timbre does nothing — engine::Note's
+        default, and what every generated pattern uses. */
+    static constexpr float kReferenceVelocity = 0.8f;
+
     /** Excites the string. Replaces whatever was ringing, which is what a
         second pluck on the same string does in life. */
     void pluck(float velocity) noexcept
@@ -119,11 +142,39 @@ public:
         // longer than the current loop — filling from index 0 would put the
         // burst outside the span the read pointer visits and the string would
         // sound silence for its first pass.
-        const int length     = std::clamp(integerDelay_, 2, size - 2);
+        const int length = std::clamp(integerDelay_, 2, size - 2);
+
         const int combOffset = std::max(1, (int) std::lround(pickPosition_ * (float) length));
 
+        // Harder picking is brighter as well as louder — the deviation is from
+        // kReferenceVelocity, so a note at that velocity is excited exactly as
+        // it was before velocity affected timbre at all.
+        //
+        // The small random term stops every pluck being identical, which is
+        // audible as a mechanical sameness even when nothing else repeats.
+        //
+        // It varies the *pick's hardness*, not its position, and that choice
+        // was forced by measurement. Jittering the position moves the comb,
+        // and the comb's notches fall on real harmonics: it is what nulls the
+        // even ones when you pluck at the midpoint, and what gives a
+        // palm-muted note its darkness. Two existing checks — the
+        // pick-position test and the bounce tool's palm-mute brightness —
+        // both moved when the position was jittered, because a shifted comb
+        // is a tonal change rather than a variation. Hardness only shapes how
+        // bright the burst is, which is exactly the "no two plucks alike"
+        // quality wanted, and leaves every comb property intact.
+        //
+        // Drawn from its own generator, not nextNoise(): taking one sample
+        // from that stream would shift every sample of the burst that follows,
+        // changing the entire realisation of the note rather than nudging it.
+        const float dynamicHardness = std::clamp(
+            pickHardness_
+                + velocitySensitivity_ * (velocity - kReferenceVelocity)
+                + 0.03f * nextJitter(),
+            0.0f, 1.0f);
+
         // A soft pluck excites fewer partials: lowpass the noise more.
-        const float smoothing = 0.85f - 0.75f * pickHardness_;
+        const float smoothing = 0.85f - 0.75f * dynamicHardness;
 
         // Built into scratch first so the comb can read earlier samples of the
         // *excitation*, not of whatever the loop happened to contain. The
@@ -159,6 +210,40 @@ public:
         allpassLastIn_  = 0.0f;
         allpassLastOut_ = 0.0f;
         energy_         = velocity;
+    }
+
+    /**
+        Injects energy arriving through the bridge from the other strings.
+
+        A guitar's bridge is not perfectly rigid: a struck string moves it, and
+        that motion drives every other string attached to it. That is what
+        makes an open string ring sympathetically, and a large part of why a
+        real chord blooms while six independent waveguides just stack up.
+
+        Added at the write index, i.e. into the loop's input for this sample,
+        so it enters the string the same way its own feedback does. Kept small
+        by the caller: the string-to-string-and-back path is a feedback loop,
+        and its gain has to stay well under one (see GuitarNode::setCoupling).
+    */
+    void couple(float bridgeSignal) noexcept
+    {
+        const int size = (int) buffer_.size();
+        if (size < 4 || bridgeSignal == 0.0f)
+            return;
+
+        // Accumulated rather than written into the buffer directly. The slot
+        // at writeIndex_ is the one process() is about to *assign*, so writing
+        // there is silently discarded — which is exactly what happened when
+        // this was first written, and what the coupling test caught: the
+        // neighbouring string received precisely zero energy.
+        pendingCoupling_ += bridgeSignal;
+
+        // Energy is what isRinging() reports, and a string only sounding
+        // because of coupling still has to be processed next block or it will
+        // be skipped and never ring at all.
+        const float magnitude = std::abs(bridgeSignal);
+        if (magnitude > energy_)
+            energy_ = magnitude;
     }
 
     /** Damps the string — palm muting, or a hand laid across it. 0 = open,
@@ -197,7 +282,10 @@ public:
         const float filtered = loopGain_ * ((1.0f - damping_) * interpolated + damping_ * lastFilterIn_);
         lastFilterIn_ = interpolated;
 
-        buffer_[(size_t) writeIndex_] = filtered;
+        // Whatever arrived through the bridge since the last sample joins the
+        // loop's input here, the same place the string's own feedback enters.
+        buffer_[(size_t) writeIndex_] = filtered + pendingCoupling_;
+        pendingCoupling_ = 0.0f;
         writeIndex_ = (writeIndex_ + 1) % size;
 
         // Cheap envelope follower, only so isRinging() can retire the voice.
@@ -261,6 +349,13 @@ private:
 
     /** Deterministic noise: a plucked string wants a burst, and a fixed
         sequence makes the tests repeatable. */
+    /** Pick-position variation, on its own stream — see pluck(). */
+    float nextJitter() noexcept
+    {
+        jitterState_ = jitterState_ * 1664525u + 1013904223u;
+        return (float) ((int32_t) jitterState_) * (1.0f / 2147483648.0f);
+    }
+
     float nextNoise() noexcept
     {
         noiseState_ = noiseState_ * 1664525u + 1013904223u;
@@ -286,6 +381,9 @@ private:
     float muteFactor_   = 1.0f;
     float pickPosition_ = 0.25f;
     float pickHardness_ = 0.6f;
+    float velocitySensitivity_ = 0.0f; // 0 = the behaviour that predates this
+    uint32_t jitterState_ = 0x9e3779b9u; // seeded away from the noise stream
+    float    pendingCoupling_ = 0.0f;    // bridge energy awaiting the next sample
     float energy_       = 0.0f;
 
     uint32_t noiseState_ = 22222u;

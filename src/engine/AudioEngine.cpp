@@ -370,6 +370,9 @@ void AudioEngine::setTrackGuitarSettings(int index, const model::GuitarSettings&
     guitar.setPickPosition(settings.pickPosition);
     guitar.setPickHardness(settings.pickHardness);
     guitar.setMuteOnNoteOff(settings.muteOnNoteOff);
+    guitar.setVelocitySensitivity(settings.velocitySensitivity);
+    guitar.setCoupling(settings.stringCoupling);
+    guitar.setWidth(settings.stereoWidth);
     guitar.setPickupResonanceHz(settings.pickupResonanceHz);
     guitar.setPickupQ(settings.pickupQ);
     guitar.setPalmMuteDecaySeconds(settings.palmMuteDecaySeconds);

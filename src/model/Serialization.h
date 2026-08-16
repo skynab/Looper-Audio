@@ -84,8 +84,13 @@ namespace looper::model
           gains Bus. Its own optional record rather than another TRACK field,
           because TRACK ends in the rest-of-line name and nothing can follow
           it there - the same shape as CLIPGAIN and CLIPWARP. Absent in older
-          files, where "straight to the master" is what they already did. */
-inline constexpr int kFormatVersion = 36;
+          files, where "straight to the master" is what they already did.
+      37  GUITAR gains three more fields at the end of its line: velocity
+          sensitivity, string coupling and stereo width. Appended, like v30's,
+          because the line is positional - and seeded from the defaults on the
+          way in, so an older file gets the improved instrument rather than a
+          silent, mono, uncoupled one. */
+inline constexpr int kFormatVersion = 37;
 namespace detail
 {
     inline std::string num(double v)
@@ -258,7 +263,13 @@ inline std::string serialize(const Song& song)
             << " " << detail::num((double) guitar.pickupResonanceHz)
             << " " << detail::num((double) guitar.pickupQ)
             << " " << detail::num((double) guitar.palmMuteDecaySeconds)
-            << " " << detail::num((double) guitar.palmMuteBrightness) << "\n";
+            << " " << detail::num((double) guitar.palmMuteBrightness)
+            // Appended for the reason v30's fields were: the line is
+            // positional, so anything inserted mid-line would make every older
+            // file read its values into the wrong slots.
+            << " " << detail::num((double) guitar.velocitySensitivity)
+            << " " << detail::num((double) guitar.stringCoupling)
+            << " " << detail::num((double) guitar.stereoWidth) << "\n";
 
         // The effect chain, in order. A slot carries every built-in's settings
         // regardless of its kind, so switching kind doesn't lose the others.
@@ -820,8 +831,22 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             double palmDecay   = (double) fallback.palmMuteDecaySeconds;
             double palmBright  = (double) fallback.palmMuteBrightness;
 
+            // Seeded from the defaults for the same reason, and this time it
+            // decides something audible: a v36-or-older GUITAR line ends after
+            // palmBright, and reading 0 into these would give an older project
+            // the *old* instrument - identical notes, no sympathetic ringing,
+            // dead centre - rather than the improved one. Added in v37.
+            double velocitySense = (double) fallback.velocitySensitivity;
+            double coupling      = (double) fallback.stringCoupling;
+            double width         = (double) fallback.stereoWidth;
+
             gs >> decay >> brightness >> position >> hardness >> mute
-               >> resonanceHz >> pickupQ >> palmDecay >> palmBright;
+               >> resonanceHz >> pickupQ >> palmDecay >> palmBright
+               >> velocitySense >> coupling >> width;
+
+            track.guitarSettings.velocitySensitivity = (float) velocitySense;
+            track.guitarSettings.stringCoupling      = (float) coupling;
+            track.guitarSettings.stereoWidth         = (float) width;
             track.guitarSettings.decaySeconds      = (float) decay;
             track.guitarSettings.brightness        = (float) brightness;
             track.guitarSettings.pickPosition      = (float) position;
