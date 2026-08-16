@@ -68,6 +68,12 @@ struct InstrumentTrack
     std::atomic<bool>        active      { false };
     std::atomic<bool>        muted       { false };
     std::atomic<bool>        solo        { false };
+
+    /** A group bus: its scratch is filled by other tracks before it renders,
+        so it generates nothing of its own and must not clear what it was
+        given. See AudioEngine::processBlock, which does the clearing at the
+        top of the block instead. */
+    std::atomic<bool>        isBus       { false };
     std::atomic<TrackInstrument> instrument { TrackInstrument::Synth }; // which node gets the notes
     std::atomic<float>       gainDb      { 0.0f };
     std::atomic<float>       pan         { 0.0f }; // -1 = hard left, 0 = centre, +1 = hard right
@@ -194,6 +200,21 @@ public:
     /** @p sidechainInput is the detector signal for any compressor in this
         track's chain, or nullptr for "each compressor listens to its own
         input". Borrowed for this block only. */
+    /** Readies a bus to receive this block: sizes and clears the buffer its
+        members will sum into. Called by the engine before any member renders,
+        because the bus itself renders *after* them and so cannot do it. */
+    void prepareBusInput(int numSamples)
+    {
+        scratch.setSize(2, juce::jmax(1, numSamples), false, false, true);
+        scratch.clear();
+        hasBlockOutput_ = false;
+    }
+
+    /** The buffer a bus's members sum into — its scratch, before it renders.
+        Only meaningful on a bus track, and only between prepareBusInput() and
+        this track's own render(). */
+    juce::AudioBuffer<float>& busInput() noexcept { return scratch; }
+
     /** This block's rendered audio (post-inserts, pre-fader), or nullptr if
         the track produced none — inactive, muted, or soloed out. Valid only
         until the next render(). */
@@ -211,7 +232,9 @@ public:
         // Cleared up front so an early return below cannot leave last block's
         // audio readable as if it were this block's — a stale detector signal
         // would duck another track to a kick that isn't playing any more.
-        hasBlockOutput_ = false;
+        const bool bus = isBus.load(std::memory_order_relaxed);
+        if (! bus)
+            hasBlockOutput_ = false;
 
         TrackAutomation* incoming = nullptr;
         while (automationInbox_.pop(incoming))
@@ -236,8 +259,13 @@ public:
         if (receivesLiveMidi)
             trackMidi.addEvents(liveMidi, 0, context.numSamples, 0);
 
+        // A bus is not silenced by another track's solo: soloing a kick has to
+        // keep playing *through* the drum bus, and a bus that vanished when
+        // anyone hit solo would take its members' audio with it. Its own mute
+        // still works, and muting a bus mutes the whole group — which is one
+        // of the two reasons to have one.
         const bool audible = ! muted.load(std::memory_order_relaxed)
-                           && (! anySoloActive || solo.load(std::memory_order_relaxed));
+                           && (bus || ! anySoloActive || solo.load(std::memory_order_relaxed));
 
         if (! audible)
         {
@@ -248,16 +276,22 @@ public:
 
         const int numSamples = context.numSamples;
 
-        // No reallocation: scratch was prepared to the maximum block size.
-        scratch.setSize(2, juce::jmax(1, numSamples), false, false, true);
-        scratch.clear();
-        switch (instrument.load(std::memory_order_relaxed))
+        if (! bus)
         {
-            case TrackInstrument::Drum:   drumKit.process(scratch, trackMidi, context); break;
-            case TrackInstrument::Guitar: guitar.process(scratch, trackMidi, context);  break;
-            case TrackInstrument::Synth:  synth.process(scratch, trackMidi, context);   break;
+            // No reallocation: scratch was prepared to the maximum block size.
+            scratch.setSize(2, juce::jmax(1, numSamples), false, false, true);
+            scratch.clear();
+            switch (instrument.load(std::memory_order_relaxed))
+            {
+                case TrackInstrument::Drum:   drumKit.process(scratch, trackMidi, context); break;
+                case TrackInstrument::Guitar: guitar.process(scratch, trackMidi, context);  break;
+                case TrackInstrument::Synth:  synth.process(scratch, trackMidi, context);   break;
+            }
+            audioPlayer.process(scratch, trackMidi, context); // adds in; midi is ignored
         }
-        audioPlayer.process(scratch, trackMidi, context); // adds in; midi is ignored
+        // A bus's scratch already holds everything routed into it, summed
+        // there by its members' own render() calls. Clearing it here would
+        // throw away the entire group, which is precisely what it is for.
 
         // Inserts run on the summed track output, before gain and before the
         // send is taken — so lowering the fader doesn't change the effect, and

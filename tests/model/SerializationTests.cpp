@@ -1076,3 +1076,40 @@ TEST_CASE("A file written before sidechains reads as unrouted", "[model][io]")
     REQUIRE(deserialize(text, restored));
     REQUIRE(findTrack(restored, trackId)->effectChain[0].compressor.sidechainTrackId == -1);
 }
+
+TEST_CASE("Group bus routing round-trips", "[model][io]")
+{
+    Song s;
+    const int busId  = addTrack(s, TrackType::Bus, "Drum Bus").id;
+    const int kickId = addTrack(s, TrackType::Drum, "Kick").id;
+    findTrack(s, kickId)->outputBusId = busId;
+
+    Song restored;
+    REQUIRE(deserialize(serialize(s), restored));
+
+    const auto* bus = findTrack(restored, busId);
+    REQUIRE(bus != nullptr);
+    REQUIRE(bus->type == TrackType::Bus);
+
+    // The id, not an index — the whole reason it is stored that way.
+    REQUIRE(findTrack(restored, kickId)->outputBusId == busId);
+    // A bus itself goes to the master.
+    REQUIRE(bus->outputBusId == -1);
+}
+
+TEST_CASE("A file written before group buses reads as feeding the master", "[model][io]")
+{
+    Song s;
+    const int trackId = addTrack(s, TrackType::Instrument, "Lead").id;
+    findTrack(s, trackId)->outputBusId = 3;
+
+    std::string text  = serialize(s);
+    const auto  start = text.find("TRACKBUS");
+    REQUIRE(start != std::string::npos);
+    text.erase(start, text.find('\n', start) - start + 1);
+    REQUIRE(text.find("TRACKBUS") == std::string::npos);
+
+    Song restored;
+    REQUIRE(deserialize(text, restored));
+    REQUIRE(findTrack(restored, trackId)->outputBusId == -1);
+}

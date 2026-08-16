@@ -61,6 +61,7 @@ inline const char* trackTypeTag(model::TrackType type)
         case model::TrackType::Audio:      return "AUD";
         case model::TrackType::Drum:       return "DRM";
         case model::TrackType::Guitar:     return "GTR";
+        case model::TrackType::Bus:        return "BUS";
     }
     return "SYN";
 }

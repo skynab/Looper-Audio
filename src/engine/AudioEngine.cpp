@@ -53,6 +53,9 @@ AudioEngine::AudioEngine()
     for (auto& source : sidechainSource_)
         source.store(-1, std::memory_order_relaxed);
 
+    for (auto& bus : outputBus_)
+        bus.store(-1, std::memory_order_relaxed);
+
     refreshMidiInputs();
 }
 
@@ -327,6 +330,27 @@ void AudioEngine::setTrackSidechainSource(int index, int sourceTrackIndex)
                              ? sourceTrackIndex : -1;
 
     sidechainSource_[(size_t) index].store(resolved, std::memory_order_relaxed);
+}
+
+void AudioEngine::setTrackIsBus(int index, bool isBus)
+{
+    if (index >= 0 && index < kMaxTracks)
+        tracks_[(size_t) index].isBus.store(isBus, std::memory_order_relaxed);
+}
+
+void AudioEngine::setTrackOutputBus(int index, int busTrackIndex)
+{
+    if (index < 0 || index >= kMaxTracks)
+        return;
+
+    // A track cannot feed itself, and a bus feeding a bus is not supported in
+    // this pass — both resolve to the master rather than to a routing loop the
+    // audio thread would have to detect every block.
+    const bool valid = busTrackIndex >= 0 && busTrackIndex < kMaxTracks
+                    && busTrackIndex != index
+                    && ! tracks_[(size_t) index].isBus.load(std::memory_order_relaxed);
+
+    outputBus_[(size_t) index].store(valid ? busTrackIndex : -1, std::memory_order_relaxed);
 }
 
 void AudioEngine::setTrackInstrument(int index, TrackInstrument instrument)
@@ -968,9 +992,14 @@ void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffe
 {
     const int numSamples = context.numSamples;
 
+    // A bus's solo is not counted: buses are never silenced by solo (see
+    // InstrumentTrack::render), so letting one *arm* solo would mute every
+    // real track while the bus that carries them stayed open — silence with
+    // no obvious cause.
     bool anySolo = false;
     for (auto& track : tracks_)
-        anySolo |= track.solo.load(std::memory_order_relaxed);
+        if (! track.isBus.load(std::memory_order_relaxed))
+            anySolo |= track.solo.load(std::memory_order_relaxed);
 
     sendBus_.setSize(2, numSamples, false, false, true);
 
@@ -1008,15 +1037,44 @@ void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffe
     std::array<int, kMaxTracks> order {};
     int orderCount = 0;
     bool anySidechain = false;
+    bool anyBus       = false;
 
     for (int i = 0; i < kMaxTracks; ++i)
+    {
         if (sidechainSource_[(size_t) i].load(std::memory_order_relaxed) >= 0)
             anySidechain = true;
+        if (tracks_[(size_t) i].isBus.load(std::memory_order_relaxed))
+            anyBus = true;
+    }
 
-    if (! anySidechain)
+    // A bus receives what its members write, so its buffer has to be empty
+    // before any of them render — the bus itself renders last and cannot clear
+    // it without discarding the whole group.
+    if (anyBus)
+    {
+        for (int i = 0; i < kMaxTracks; ++i)
+            if (tracks_[(size_t) i].isBus.load(std::memory_order_relaxed)
+                && tracks_[(size_t) i].active.load(std::memory_order_relaxed))
+            {
+                tracks_[(size_t) i].prepareBusInput(numSamples);
+            }
+    }
+
+    if (! anySidechain && ! anyBus)
     {
         for (int i = 0; i < kMaxTracks; ++i)
             order[(size_t) orderCount++] = i;
+    }
+    else if (anyBus && ! anySidechain)
+    {
+        // Members first, buses last: a bus mixes what it was given, so
+        // everything routed into it must already have run.
+        for (int i = 0; i < kMaxTracks; ++i)
+            if (! tracks_[(size_t) i].isBus.load(std::memory_order_relaxed))
+                order[(size_t) orderCount++] = i;
+        for (int i = 0; i < kMaxTracks; ++i)
+            if (tracks_[(size_t) i].isBus.load(std::memory_order_relaxed))
+                order[(size_t) orderCount++] = i;
     }
     else
     {
@@ -1035,11 +1093,23 @@ void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffe
                 isSource[(size_t) source] = true;
         }
 
+        auto isBusTrack = [this](int i)
+        {
+            return tracks_[(size_t) i].isBus.load(std::memory_order_relaxed);
+        };
+
+        // Sidechain sources, then ordinary tracks, then buses. Buses stay last
+        // whatever else is true: a bus that rendered before its members would
+        // mix an empty buffer, which is a silent group rather than a subtly
+        // wrong one.
         for (int i = 0; i < kMaxTracks; ++i)
-            if (isSource[(size_t) i])
+            if (isSource[(size_t) i] && ! isBusTrack(i))
                 order[(size_t) orderCount++] = i;
         for (int i = 0; i < kMaxTracks; ++i)
-            if (! isSource[(size_t) i])
+            if (! isSource[(size_t) i] && ! isBusTrack(i))
+                order[(size_t) orderCount++] = i;
+        for (int i = 0; i < kMaxTracks; ++i)
+            if (isBusTrack(i))
                 order[(size_t) orderCount++] = i;
     }
 
@@ -1074,7 +1144,27 @@ void AudioEngine::processBlock(juce::AudioBuffer<float>& output, juce::MidiBuffe
                          : &silentDetector_;
         }
 
-        tracks_[(size_t) i].render(output, sendBus_, midi, context, i == armed, anySolo,
+        // Where this track's audio goes: its group bus if it has one and that
+        // bus is really a bus and really active, otherwise straight to the
+        // master. Checked here rather than trusted, because a stale routing
+        // (to a track that has since stopped being a bus) must degrade to the
+        // master rather than write into another instrument's scratch.
+        juce::AudioBuffer<float>* destination = &output;
+
+        if (! tracks_[(size_t) i].isBus.load(std::memory_order_relaxed))
+        {
+            const int busIndex = outputBus_[(size_t) i].load(std::memory_order_relaxed);
+
+            if (busIndex >= 0 && busIndex < kMaxTracks
+                && tracks_[(size_t) busIndex].isBus.load(std::memory_order_relaxed)
+                && tracks_[(size_t) busIndex].active.load(std::memory_order_relaxed)
+                && soloTrack < 0) // a stem renders one track in isolation, straight out
+            {
+                destination = &tracks_[(size_t) busIndex].busInput();
+            }
+        }
+
+        tracks_[(size_t) i].render(*destination, sendBus_, midi, context, i == armed, anySolo,
                                    launchQuantumSamples, detector);
 
         trackOutputs_[(size_t) i] = tracks_[(size_t) i].blockOutput();

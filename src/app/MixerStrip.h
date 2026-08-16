@@ -39,6 +39,9 @@ public:
     std::function<void(float)> onPanChange;
     std::function<void()>      onSelect;
 
+    /** The chosen output: a bus track's id, or -1 for the master. */
+    std::function<void(int)>   onOutputBusChange;
+
     MixerStrip()
     {
         nameLabel_.setJustificationType(juce::Justification::centred);
@@ -101,7 +104,47 @@ public:
         wireDrag(gainSlider_, Fader::Gain);
         addAndMakeVisible(gainSlider_);
 
+        // Item id 1 is the master; every other id is a track id + 2, so ids
+        // stay positive and distinct from JUCE's "nothing selected" 0 — the
+        // same encoding the sidechain picker uses.
+        outputBox_.onChange = [this]
+        {
+            if (onOutputBusChange)
+                onOutputBusChange(outputBox_.getSelectedId() > 1 ? outputBox_.getSelectedId() - 2 : -1);
+        };
+        addAndMakeVisible(outputBox_);
+
         addAndMakeVisible(meter_);
+    }
+
+    /**
+        Populates the output picker with the buses this track may feed, and
+        selects @p currentBusId.
+
+        Buses are listed by the owner rather than discovered here, because only
+        it knows which ones would be a loop: a bus cannot feed itself, and this
+        pass does not support a bus feeding another bus.
+    */
+    void setOutputOptions(const std::vector<std::pair<int, juce::String>>& buses, int currentBusId)
+    {
+        outputBox_.clear(juce::dontSendNotification);
+        outputBox_.addItem("Master", 1);
+
+        for (const auto& [id, name] : buses)
+            outputBox_.addItem(name, id + 2);
+
+        outputBox_.setSelectedId(currentBusId >= 0 ? currentBusId + 2 : 1,
+                                 juce::dontSendNotification);
+
+        // The stored bus is gone (deleted, or no longer a bus): fall back to
+        // the master rather than leaving the box blank over a routing that
+        // no longer exists.
+        if (outputBox_.getSelectedId() == 0)
+            outputBox_.setSelectedId(1, juce::dontSendNotification);
+
+        // Nothing to choose between with no buses in the project, and a strip
+        // is narrow enough that a permanently-"Master" box is just clutter.
+        outputBox_.setVisible(! buses.empty());
     }
 
     void setTrackName(const juce::String& name) { nameLabel_.setText(name, juce::dontSendNotification); }
@@ -153,6 +196,12 @@ public:
         layoutLabelledRow(area.removeFromTop(16), panLabel_, panSlider_, 30);
         area.removeFromTop(6);
 
+        if (outputBox_.isVisible())
+        {
+            outputBox_.setBounds(area.removeFromTop(18));
+            area.removeFromTop(6);
+        }
+
         auto meterArea = area.removeFromRight(20);
         setBoundsOrHide(meter_, meterArea);
         area.removeFromRight(4);
@@ -176,6 +225,7 @@ private:
     juce::Label      panLabel_;
     juce::Slider     panSlider_;
     juce::Slider     gainSlider_;
+    juce::ComboBox   outputBox_;
     LevelMeter       meter_;
     bool             selected_ = false;
 

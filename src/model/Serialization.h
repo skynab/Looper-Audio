@@ -79,8 +79,13 @@ namespace looper::model
       35  FXSLOT gains one more field at the end of its line: a compressor's
           sidechain source track id. Appended, like v30's, because the line is
           positional. -1 in older files, which is "no sidechain" - exactly how
-          every compressor written before this behaved. */
-inline constexpr int kFormatVersion = 35;
+          every compressor written before this behaved.
+      36  + TRACKBUS, a track's output bus id (-1 = master), and TrackType
+          gains Bus. Its own optional record rather than another TRACK field,
+          because TRACK ends in the rest-of-line name and nothing can follow
+          it there - the same shape as CLIPGAIN and CLIPWARP. Absent in older
+          files, where "straight to the master" is what they already did. */
+inline constexpr int kFormatVersion = 36;
 namespace detail
 {
     inline std::string num(double v)
@@ -190,6 +195,10 @@ inline std::string serialize(const Song& song)
             << " " << detail::num((double) track.pan)
             << " " << track.colour
             << " " << track.name << "\n";
+
+        // Its own record for the reason CLIPGAIN has one: TRACK's name takes
+        // the rest of its line, so nothing can follow it there.
+        out << "TRACKBUS " << track.outputBusId << "\n";
         // Only non-empty lanes are written, so an unautomated track costs one
         // "TAUTOS 0" line rather than one empty record per automatable
         // parameter (a list that will only grow).
@@ -676,6 +685,10 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             std::getline(ts, name);
             track.name = detail::trimLeadingSpace(std::move(name));
         }
+
+        // Optional: absent before v36, where every track fed the master.
+        if (readTagged("TRACKBUS", rest))
+            track.outputBusId = std::atoi(rest.c_str());
 
         // Before v16 a track had exactly one lane, always gain, written as a
         // bare TAUTO point list. Read it straight into the Gain lane so an

@@ -186,6 +186,8 @@ private:
 
     double                 warpFactorFor(const model::Clip& clip) const;
     engine::TempoEstimate  detectTempoForClip(const model::Clip& clip);
+    void                   addBusTrack();
+    void                   setTrackOutputBus(int index, int busTrackId);
     void                   toggleClipWarp();
     void                   detectSelectedClipTempo();
     void                   setProjectTempoFromClip();
@@ -558,6 +560,7 @@ private:
     juce::TextButton   addTrackButton { "Add Track" };
     juce::TextButton   addDrumTrackButton_ { "Add Drum" };
     juce::TextButton   addGuitarTrackButton_ { "Add Guitar" };
+    juce::TextButton   addBusTrackButton_ { "Add Bus" };
     juce::ToggleButton loopButton      { "Loop" };
     // Collapses the transport pane to its first row, so the pane can be
     // dragged down to a single strip when the readouts aren't wanted.

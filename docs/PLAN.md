@@ -44,6 +44,7 @@ This is a living document. As sections mature they should graduate into their ow
 28. [A starter song worth listening to](#28-a-starter-song-worth-listening-to-implemented)
 29. [Tempo-aware audio clips](#29-tempo-aware-audio-clips-implemented)
 30. [Sidechain compression](#30-sidechain-compression-implemented)
+31. [Group buses](#31-group-buses-implemented)
 
 ---
 
@@ -2359,3 +2360,94 @@ check is unchanged, `rmsDry=0.149266` included.
 compressor to duck from the drum track and listen. **Group buses are still absent** and
 remain the next routing gap: this adds one detector per track, not a bus you can
 compress as a unit.
+
+---
+
+## 31. Group buses (implemented)
+
+The routing gap §30 left open: a sidechain gives one track a detector, but there was
+still no way to treat several tracks as one — no drum bus to compress as a unit, no
+single fader for "all the drums", no shared reverb insert for a group.
+
+### The decision that made this small: a bus is a track
+
+The obvious design is a `Bus` entity alongside `Song::tracks`, with its own list, its own
+mixer strips, and its own selection. That was rejected after looking at what a bus
+actually needs: a fader, pan, mute, a meter, an insert chain, automation, a name, a
+colour, serialization, and a mixer strip. A `Track` already has every one of them.
+
+Worse, a parallel entity would need a parallel *selection model* — `selectedTrackIndex_`
+appears 174 times in `MainComponent.cpp`, and every pane keys off it. Teaching all of
+that to mean "a track or a bus" is a large, risky change with nothing musical to show
+for it.
+
+So a bus is `TrackType::Bus`: a track that **receives** other tracks' output instead of
+generating any. Everything downstream — the mixer strip, the Track FX pane, selection,
+undo, automation, serialization, metering — works unchanged, because from their point of
+view nothing new exists. What differs is one field on its members
+(`Track::outputBusId`) and one branch in `InstrumentTrack::render`.
+
+This is the same shape as the sidechain pass: the expensive-looking feature was cheap
+because the existing design already had the right pieces, and the work was noticing that.
+
+### How it renders
+
+- The engine **clears each bus's buffer at the top of the block**, before any member
+  runs. The bus cannot do it itself: it renders last, and clearing then would discard
+  the entire group. This is the one genuinely delicate part, and it is what the bounce
+  check below is aimed at.
+- Members render **into their bus's buffer** instead of the mix.
+- Buses render **last**, and skip content generation entirely: their buffer already
+  holds everything routed in. Inserts, gain, pan, mute and metering then apply exactly
+  as for any track — which is how the drum bus gets a compressor without a line of new
+  UI.
+- Ordering composes with §30's: sidechain sources, then ordinary tracks, then buses.
+  Buses stay last whatever else is true.
+
+### The decisions worth recording
+
+**A bus ignores other tracks' solo.** Soloing a kick has to keep playing *through* the
+drum bus; a bus silenced by the standard "solo overrides" rule would take its members
+with it. Correspondingly a bus's own solo is not counted when deciding whether anything
+is soloed — otherwise arming it would mute every real track while the bus carrying them
+stayed open, which is silence with no visible cause. A bus's **mute** does work, and
+mutes the whole group.
+
+**Routing is stored as a track id, not an index** — the same reasoning as the sidechain
+source, and the same single bridge (`trackIndexForId`) between the document's ids and
+the engine's positional pool.
+
+**Stale routing degrades to the master.** The engine re-checks every block that the
+target still exists, is still a bus, and is still active. A routing left pointing at a
+track that has stopped being a bus writes to the master rather than into another
+instrument's scratch buffer.
+
+**Buses cannot feed buses, and a stem ignores routing.** Both are rejected in
+`setTrackOutputBus`/`processBlock` rather than left to produce a loop the audio thread
+would have to detect every block. A stem is one track in isolation, so it goes straight
+out — routing it through a group would make a stem the group's sound, not the track's.
+
+### Verification
+
+The new `groupBusWorks` bounce check drives real `InstrumentTrack`s in exactly the order
+the engine uses, and targets the four ways this breaks — each of which is silence or a
+doubled signal rather than a subtle difference:
+
+- a unity bus passes the group through **intact** (within 2% of the same content routed
+  straight to the mix) — proving the bus neither cleared what it was given nor generated
+  on top of it,
+- the bus's fader at −6 dB halves the **whole group**,
+- muting the bus silences the group, not just the bus,
+- and the direct render is non-silent in the first place, so none of the above passes
+  vacuously.
+
+607 headless tests pass (2 new): routing round-trips as an id, and a file written before
+v36 reads as feeding the master. Every existing bounce check is unchanged,
+`rmsDry=0.149266` included — render order is only rearranged when a bus or sidechain
+actually exists, precisely so that stays true.
+
+**Not verified:** the mixer's new **Out** picker and **Add Bus** button, and how a
+compressed drum bus sounds. Add a bus, route the drum tracks into it, put a compressor
+on it from the Track FX pane, and listen.
+
+**Still deferred:** buses feeding other buses (one level only), and per-bus sends.

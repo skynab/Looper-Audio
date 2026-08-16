@@ -384,8 +384,10 @@ MainComponent::MainComponent()
 
     addDrumTrackButton_.onClick = [this] { addDrumTrack(); };
     addGuitarTrackButton_.onClick = [this] { addGuitarTrack(); };
+    addBusTrackButton_.onClick = [this] { addBusTrack(); };
     mixerView_.addAndMakeVisible(addDrumTrackButton_);
     mixerView_.addAndMakeVisible(addGuitarTrackButton_);
+    mixerView_.addAndMakeVisible(addBusTrackButton_);
 
     // ---- master panel: its own dock tab (see workspace_.registerPanel
     // below), not a pull-out inside Mixer — it applies to the whole song,
@@ -743,6 +745,7 @@ MainComponent::MainComponent()
         strip->onSendChange = [this, i](float lv) { setTrackSendLevel(i, lv); };
         strip->onPanChange  = [this, i](float p)  { setTrackPan(i, p); };
         strip->onSelect     = [this, i]           { selectTrack(i); };
+        strip->onOutputBusChange = [this, i](int busId) { setTrackOutputBus(i, busId); };
         trackStrips_.add(strip);
         mixerView_.addAndMakeVisible(strip);
     }
@@ -1792,6 +1795,40 @@ void MainComponent::playChordAtFret(engine::MovableShape shape, int rootString, 
 
 /** Same as addTrack(), but a Guitar-type track — six plucked strings in
     standard tuning (see model::GuitarSettings). */
+/** Adds a group bus: a track that receives other tracks' output rather than
+    generating any (see model::TrackType::Bus). No clip is created for it —
+    a bus has nothing to play, and an empty clip on one would show up in the
+    arrangement as something you could open and edit. */
+void MainComponent::addBusTrack()
+{
+    if (trackCount() >= engine_.maxTracks())
+    {
+        showError("Track limit reached");
+        return;
+    }
+
+    history_.edit("Add group bus", [](model::Song& s)
+    {
+        const auto name = "Bus " + juce::String((int) s.tracks.size() + 1);
+        model::addTrack(s, model::TrackType::Bus, name.toStdString());
+    });
+
+    selectedTrackIndex_ = trackCount() - 1;
+    selectedClipIndex_  = 0;
+    syncEngineTracks();
+    refreshPianoRollForSelected();
+    refreshSynthEditorForSelected();
+    refreshDrumsPaneForSelected();
+    refreshEffectChainForSelected();
+    refreshFretboardForSelected();
+    refreshAudioEditorForSelected();
+    refreshSessionView();
+    arrangementView_.setSong(history_.current());
+    updateMixerStrips();
+    updateEditingLabel();
+    showStatus("Added a group bus - route tracks into it from their mixer strip");
+}
+
 void MainComponent::addGuitarTrack()
 {
     if (trackCount() >= engine_.maxTracks())
@@ -3453,6 +3490,13 @@ void MainComponent::syncEngineTracks()
         }
         engine_.setTrackSidechainSource(i, sidechainSourceIndex);
 
+        // Group-bus routing. Both sides go through the id->index bridge for
+        // the same reason the sidechain does: the document names tracks by id
+        // so that deleting or reordering one cannot silently re-route audio
+        // into whatever inherited its slot.
+        engine_.setTrackIsBus(i, track.type == model::TrackType::Bus);
+        engine_.setTrackOutputBus(i, trackIndexForId(track.outputBusId));
+
         // The chain's shape, in order. Only pushed when it actually changed —
         // rebuilding resets every tail in the chain, so an unrelated edit must
         // not glitch a delay (see AudioEngine::setTrackEffectChain).
@@ -5000,6 +5044,14 @@ void MainComponent::updateMixerStrips()
 {
     const auto& song = history_.current();
 
+    // The buses anything may feed. Built once rather than per strip, and a bus
+    // is excluded from its own list below — a bus feeding itself is a loop,
+    // and a bus feeding another bus is not supported in this pass.
+    std::vector<std::pair<int, juce::String>> buses;
+    for (const auto& track : song.tracks)
+        if (track.type == model::TrackType::Bus)
+            buses.emplace_back(track.id, juce::String(track.name));
+
     for (int i = 0; i < engine_.maxTracks(); ++i)
     {
         auto* strip  = trackStrips_[i];
@@ -5015,6 +5067,17 @@ void MainComponent::updateMixerStrips()
             strip->setSoloed(track.solo);
             strip->setSendLevel(track.sendLevel);
             strip->setPan(track.pan);
+
+            if (track.type == model::TrackType::Bus)
+            {
+                // A bus always goes to the master here, so it gets no picker
+                // rather than one offering a routing it cannot take.
+                strip->setOutputOptions({}, -1);
+            }
+            else
+            {
+                strip->setOutputOptions(buses, track.outputBusId);
+            }
         }
         strip->setSelected(i == selectedTrackIndex_);
     }
@@ -5405,6 +5468,29 @@ void MainComponent::setTrackSolo(int index, bool solo)
     });
 
     engine_.setTrackSolo(index, solo);
+    updateMixerStrips();
+}
+
+/** Routes a track into a group bus, or back to the master (@p busTrackId -1).
+
+    A real undo step rather than an in-place edit like the faders: this is a
+    structural change to the mix, not a continuous control being dragged, and
+    it is the kind of thing you want to be able to take back. */
+void MainComponent::setTrackOutputBus(int index, int busTrackId)
+{
+    if (index < 0 || index >= trackCount())
+        return;
+
+    if (history_.current().tracks[(size_t) index].outputBusId == busTrackId)
+        return; // repopulating the picker must not manufacture an undo step
+
+    history_.edit("Route track", [index, busTrackId](model::Song& s)
+    {
+        if (index >= 0 && index < (int) s.tracks.size())
+            s.tracks[(size_t) index].outputBusId = busTrackId;
+    });
+
+    syncEngineTracks();
     updateMixerStrips();
 }
 
@@ -7763,6 +7849,7 @@ void MainComponent::timerCallback()
     addTrackButton.setEnabled(trackCount() < engine_.maxTracks());
     addDrumTrackButton_.setEnabled(trackCount() < engine_.maxTracks());
     addGuitarTrackButton_.setEnabled(trackCount() < engine_.maxTracks());
+    addBusTrackButton_.setEnabled(trackCount() < engine_.maxTracks());
     addClipButton_.setEnabled(selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount());
     // Audio tracks have no MIDI pattern to generate into.
     generateLoopButton_.setEnabled(selectedTrackIndex_ >= 0 && selectedTrackIndex_ < trackCount()
@@ -8345,6 +8432,8 @@ void MainComponent::layoutMixerView()
     addDrumTrackButton_.setBounds(toolbar.removeFromLeft(100));
     toolbar.removeFromLeft(6);
     addGuitarTrackButton_.setBounds(toolbar.removeFromLeft(100));
+    toolbar.removeFromLeft(6);
+    addBusTrackButton_.setBounds(toolbar.removeFromLeft(100));
     area.removeFromTop(8);
 
     // ---- per-track channel strips, filling the remaining width ----

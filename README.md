@@ -354,6 +354,18 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > renders bit-identically (`rmsDry=0.149266` unchanged); and because `processBlock` is
 > shared by playback and export, bounces duck exactly as playback does. See
 > [`docs/PLAN.md`](docs/PLAN.md) §30.
+>
+> **Group buses** close the routing gap sidechaining left open — a drum bus you can
+> compress as a unit, one fader for a whole group. **Add Bus** in the mixer creates one;
+> each track strip gains an **Out** picker to route into it. The design decision that
+> made it small: a bus *is* a track (`TrackType::Bus`) that receives other tracks'
+> output instead of generating any — so the mixer strip, Track FX pane, selection, undo,
+> automation, metering and serialization all work unchanged, and putting a compressor on
+> the drum bus needed no new UI at all. A bus is never silenced by another track's solo
+> (soloing a kick has to keep playing *through* the drum bus), though its own mute mutes
+> the whole group; routing is stored as a track id so deleting or reordering can't
+> silently re-route audio; and a routing left pointing at something that is no longer a
+> bus falls back to the master. See [`docs/PLAN.md`](docs/PLAN.md) §31.
 
 ## Tech stack
 

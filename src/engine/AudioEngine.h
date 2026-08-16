@@ -148,6 +148,14 @@ public:
     */
     void setTrackSidechainSource(int index, int sourceTrackIndex);
 
+    /** Marks a track as a group bus: it generates nothing and instead receives
+        whatever other tracks route into it. Message thread. */
+    void setTrackIsBus(int index, bool isBus);
+
+    /** Routes @p index's output into the bus track at @p busTrackIndex, or -1
+        for straight to the master. Message thread. */
+    void setTrackOutputBus(int index, int busTrackIndex);
+
     /** Chooses which instrument a track's notes drive. Explicit rather than
         inferred: unlike audio clips, every note-driven instrument produces
         sound for any note it receives, so the routing has to be stated.
@@ -743,6 +751,10 @@ private:
 
     // Decoded-audio cache, keyed by absolute path (message thread only) — see
     // decodeOrGetCached.
+    /** Per-track output bus index, or -1 for the master. Message thread
+        writes, audio thread reads. */
+    std::array<std::atomic<int>, kMaxTracks> outputBus_;
+
     /** Per-track sidechain source index, or -1. Message thread writes, audio
         thread reads — hence atomic, like every other per-track control. */
     std::array<std::atomic<int>, kMaxTracks> sidechainSource_;

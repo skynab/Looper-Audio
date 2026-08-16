@@ -1580,6 +1580,99 @@ int main(int argc, char** argv)
         driveCabinetWorks = worstDifference(withCab, noCab) > 1.0e-3f;
     }
 
+    // Group bus: a track that receives instead of generating (TrackType::Bus).
+    // The risky part of that change is InstrumentTrack::render — a bus must
+    // *not* clear the buffer its members already summed into, must still apply
+    // its own gain and inserts, and must still be silenced by its own mute.
+    // All four are checked here, because getting any of them wrong is silence
+    // or a doubled signal rather than a subtle difference.
+    bool groupBusWorks = false;
+    {
+        auto renderThroughBus = [&](float busGainDb, bool busMuted, bool routeIntoBus)
+        {
+            const int totalSamples = (int) (sampleRate * 1.0);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            InstrumentTrack member;
+            member.prepare(sampleRate, 512);
+            member.active.store(true);
+
+            InstrumentTrack busTrack;
+            busTrack.prepare(sampleRate, 512);
+            busTrack.active.store(true);
+            busTrack.isBus.store(true);
+            busTrack.gainDb.store(busGainDb);
+            busTrack.muted.store(busMuted);
+
+            ClipSlot slot;
+            slot.pattern     = arp;
+            slot.startBeats  = 0.0;
+            slot.lengthBeats = 1.0e9;
+            member.sequencer.submitClips(new std::vector<ClipSlot> { slot });
+
+            juce::AudioBuffer<float> sendBus(2, 512);
+            juce::MidiBuffer         noLiveMidi;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate                   = sampleRate;
+                context.numSamples                   = n;
+                context.transport.playing            = true;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
+                context.transport.timeSigNumerator   = 4;
+                context.transport.timeSigDenominator = 4;
+
+                sendBus.setSize(2, n, false, false, true);
+                sendBus.clear();
+
+                juce::AudioBuffer<float> blockMix(2, n);
+                blockMix.clear();
+
+                // Exactly the order AudioEngine::processBlock uses: clear the
+                // bus's input, render members into it, then render the bus.
+                busTrack.prepareBusInput(n);
+
+                if (routeIntoBus)
+                    member.render(busTrack.busInput(), sendBus, noLiveMidi, context, false, false);
+                else
+                    member.render(blockMix, sendBus, noLiveMidi, context, false, false);
+
+                busTrack.render(blockMix, sendBus, noLiveMidi, context, false, false);
+
+                for (int ch = 0; ch < 2; ++ch)
+                    mix.copyFrom(ch, pos, blockMix, ch, 0, n);
+            }
+
+            return mix;
+        };
+
+        const auto direct   = renderThroughBus(0.0f,  false, false); // member straight to the mix
+        const auto throughBus = renderThroughBus(0.0f, false, true); // member via the bus
+        const auto quietBus = renderThroughBus(-6.0f, false, true);
+        const auto mutedBus = renderThroughBus(0.0f,  true,  true);
+
+        const float rmsDirect  = direct.getRMSLevel(0, 0, direct.getNumSamples());
+        const float rmsThrough = throughBus.getRMSLevel(0, 0, throughBus.getNumSamples());
+        const float rmsQuietBus = quietBus.getRMSLevel(0, 0, quietBus.getNumSamples());
+        const float rmsMuted   = mutedBus.getRMSLevel(0, 0, mutedBus.getNumSamples());
+
+        const float busGainRatio = rmsThrough > 0.0f ? rmsQuietBus / rmsThrough : 0.0f;
+
+        groupBusWorks = rmsDirect > 0.01f
+                      // Routed through a unity bus, the group arrives intact:
+                      // not silent (the bus cleared what it was given) and not
+                      // doubled (it summed and then generated as well).
+                      && std::abs(rmsThrough - rmsDirect) < rmsDirect * 0.02f
+                      // The bus's own fader moves the whole group.
+                      && busGainRatio > 0.47f && busGainRatio < 0.53f
+                      // And muting the bus mutes the group, not just itself.
+                      && rmsMuted < 1.0e-5f;
+    }
+
     // Sidechain ducking: a steady tone compressed by a *separate* pulsing
     // signal, which is the whole feature — the bass has to dip where the kick
     // hits, not where the bass itself is loud.
@@ -3035,6 +3128,7 @@ int main(int argc, char** argv)
               << "  unisonChangesSound=" << (unisonChangesSound ? 1 : 0)
               << "  compressorSquashes=" << (compressorSquashes ? 1 : 0)
               << "  sidechainDucks=" << (sidechainDucks ? 1 : 0)
+              << "  groupBusWorks=" << (groupBusWorks ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  gateClosesQuiet=" << (gateClosesQuiet ? 1 : 0)
               << "  metalToneHasBody=" << (metalToneHasBody ? 1 : 0)
@@ -3076,7 +3170,7 @@ int main(int argc, char** argv)
                  && perTrackAutomationWorks
                  && soloMatchesArpOnly && stemsSumToMix && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
-                 && midiRecordingWorks && warpFitsTheGrid && sidechainDucks
+                 && midiRecordingWorks && warpFitsTheGrid && sidechainDucks && groupBusWorks
                  && generativeLoopWorks
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks

@@ -18,7 +18,21 @@ enum class TrackType
     Instrument, // MIDI clips driving a synth
     Audio,      // audio-file clips
     Drum,       // MIDI clips driving a per-pad drum kit (see DrumKit)
-    Guitar      // MIDI clips driving six plucked strings (see engine::GuitarNode)
+    Guitar,     // MIDI clips driving six plucked strings (see engine::GuitarNode)
+
+    /**
+        A group bus: a track that *receives* other tracks' output instead of
+        generating any of its own.
+
+        Deliberately a track type rather than a separate Bus entity alongside
+        Song::tracks. A bus needs a fader, pan, mute, a meter, an insert chain,
+        automation and a mixer strip — every one of which a Track already has
+        and every one of which would otherwise have to be built again, along
+        with a second selection model for the panes to understand. What makes a
+        bus different is only where its audio comes from, and that is one field
+        (Track::outputBusId on its members) rather than a parallel hierarchy.
+    */
+    Bus
 };
 
 /** Which of a track's parameters an automation lane drives (see
@@ -65,6 +79,15 @@ struct Track
     // as an index into the palette so extending or reordering that palette
     // can't silently recolour existing projects.
     unsigned int      colour     = 0;
+    /** The id of the Bus track this one feeds, or -1 for the master.
+
+        An id rather than an index, for the same reason a sidechain source is
+        one: indices move when a track is deleted or reordered, and a track
+        silently re-routing itself into a different group would be a bug nobody
+        would think to look for. -1 by default, so every existing track goes
+        straight to the master exactly as it always has. */
+    int               outputBusId = -1;
+
     std::vector<Clip> clips;
 
     // The session grid's column for this track, indexed by scene. Kept the
