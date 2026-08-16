@@ -86,6 +86,12 @@ public:
     */
     void setCoupling(float value) { couplingAmount_.store(value, std::memory_order_relaxed); }
 
+    /** String stiffness — see GuitarString::setStiffness. Applied *scaled by
+        string*: a wound low E is far stiffer than a plain high E, and giving
+        all six the same value makes the top strings sound detuned rather than
+        stiff. */
+    void setStiffness(float value) { stiffness_.store(value, std::memory_order_relaxed); }
+
     /** How far the strings are spread across the stereo field, 0..1. Mono at
         0, and mono-compatible at any setting: the strings are distinct
         signals, not delayed copies, so folding down cannot comb-filter. */
@@ -385,8 +391,16 @@ private:
         pickupRight_.setQ(pickupQ_.load(std::memory_order_relaxed));
 
         const float velocitySensitivity = velocitySensitivity_.load(std::memory_order_relaxed);
-        for (auto& string : strings_)
-            string.setVelocitySensitivity(velocitySensitivity);
+        const float stiffness           = stiffness_.load(std::memory_order_relaxed);
+
+        for (int i = 0; i < kNumGuitarStrings; ++i)
+        {
+            strings_[(size_t) i].setVelocitySensitivity(velocitySensitivity);
+
+            // Thickest string gets the full amount, thinnest a third of it.
+            const float thickness = 1.0f - 0.67f * (float) i / (float) (kNumGuitarStrings - 1);
+            strings_[(size_t) i].setStiffness(stiffness * thickness);
+        }
 
         // Resolved once per block into plain audio-thread floats: the render
         // loop reads them per sample, and re-loading an atomic six times a
@@ -507,6 +521,7 @@ private:
     std::atomic<float> pickupQ_           { 1.4f };
     std::atomic<float> velocitySensitivity_ { 0.0f };
     std::atomic<float> couplingAmount_       { 0.0f };
+    std::atomic<float> stiffness_            { 0.0f };
     std::atomic<float> widthAmount_          { 0.0f };
 
     // Resolved from the atomics above once per block; audio thread only.

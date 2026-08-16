@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <array>
+#include <vector>
 
+#include "engine/CabinetIr.h"
 #include "engine/ShelfPeakFilter.h"
 #include "engine/StateVariableFilter.h"
 
@@ -259,7 +261,22 @@ public:
                      kDefaultNotchHz, kDefaultTopHz);
         setLowCut(kDefaultLowCutHz);
         reset();
+
+        buildImpulseResponse();
     }
+
+    /**
+        Convolve a synthesised impulse response instead of running the filter
+        chain — see engine/CabinetIr.h for what that buys and why it is direct
+        rather than partitioned.
+
+        The response is built *from this cabinet's own filters*, so the
+        voicing is identical by construction and the only difference is the
+        time-domain structure the filters cannot express. Off by default, so
+        nothing that has not asked for it changes.
+    */
+    void setUseImpulseResponse(bool use) noexcept { useImpulseResponse_ = use; }
+    bool usesImpulseResponse() const noexcept { return useImpulseResponse_; }
 
     void reset() noexcept
     {
@@ -269,6 +286,7 @@ public:
         for (auto& stage : topEnd_)
             stage.reset();
         highPassState_ = 0.0f;
+        convolver_.reset();
     }
 
     /** The four frequencies that decide which speaker this is. Defaults are a
@@ -311,6 +329,16 @@ public:
 
     float processSample(float input) noexcept
     {
+        return (useImpulseResponse_ && convolver_.isReady())
+                   ? convolver_.processSample(input)
+                   : filterSample(input);
+    }
+
+    /** The filter chain itself, without the impulse-response branch — the path
+        the response is *built from*, so it has to stay reachable regardless of
+        which mode is selected. */
+    float filterSample(float input) noexcept
+    {
         // Highpass first, by subtracting a lowpassed copy, so the resonance
         // below is shaping a signal that has already lost its subsonic
         // content rather than resonating on mud.
@@ -333,6 +361,45 @@ public:
     }
 
 private:
+    /**
+        Synthesises this cabinet's response: the reflection train and breakup
+        tail, run through the very filters this class would otherwise use.
+
+        Running the *filters themselves* rather than restating their response
+        is what guarantees the two modes are voiced identically — anything else
+        would be a second description of the cabinet, free to drift from the
+        first. Everything is reset afterwards, so building the response leaves
+        no state behind for the audio that follows.
+    */
+    void buildImpulseResponse()
+    {
+        // ~10ms: long enough for every reflection plus the breakup tail, short
+        // enough that direct convolution stays cheap — see CabinetIr.h.
+        const int length = std::max(64, (int) std::lround(0.010 * sampleRate_));
+
+        // The energy the filter chain's own response carries, measured rather
+        // than assumed, so switching modes cannot change the level.
+        reset();
+        std::vector<float> filtered((size_t) length, 0.0f);
+        for (int i = 0; i < length; ++i)
+            filtered[(size_t) i] = filterSample(i == 0 ? 1.0f : 0.0f);
+
+        const double targetEnergy = cabinetImpulseEnergy(filtered);
+
+        reset();
+        auto impulse = buildCabinetImpulseTrain(sampleRate_, length);
+        for (auto& tap : impulse)
+            tap = filterSample(tap);
+
+        normaliseCabinetImpulse(impulse, targetEnergy);
+        convolver_.setImpulseResponse(std::move(impulse));
+
+        reset();
+    }
+
+    CabinetConvolver convolver_;
+    bool             useImpulseResponse_ = false;
+
     static constexpr float kDefaultLowCutHz       = 80.0f;
     static constexpr float kDefaultLowResonanceHz = 105.0f;
     static constexpr float kDefaultPresenceHz     = 2000.0f;

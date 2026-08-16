@@ -108,16 +108,31 @@ inline GuitarTonePreset presetForGuitarTone(engine::GuitarTone tone)
             amp.kind           = EffectKind::Drive;
             amp.enabled        = true;
             amp.drive.enabled  = true;
-            amp.drive.drive    = 75.0f;
+            amp.drive.drive    = 22.0f;
             // Was 0.26, pulled down to satisfy the old `growl` figure. The
             // cabinet now has a real 36dB/octave cliff above 5kHz and the
             // boost is a genuine bandpass, so the fizz that tone knob was
             // hiding is no longer generated - and turning it back up buys
             // presence instead of hiss.
             amp.drive.tone     = 0.42f;
-            amp.drive.level    = 2.0f; // ceiling - make-up gain falls as 1/sqrt(drive)
+            // Pulled down from 2.0 when the amp became a three-stage
+            // cascade: make-up gain falls as 1/sqrt(drive), so lowering the
+            // drive to suit the cascade *raised* the output and the preset
+            // started clipping (the bounce tool caught it as wetPeak > 1).
+            amp.drive.level    = 1.05f;
             amp.drive.hardClip = false;
             amp.drive.cabinet  = true;
+            // Three gain stages rather than one clipper — the amp half of the
+            // chain is where an amp's compression and density should come
+            // from, and the interstage bass rolloff is what keeps a drop-tuned
+            // low string tight instead of turning the chord to mush. The boost
+            // in front stays a single stage, because a boost pedal *is* one.
+            amp.drive.stages   = 3;
+            // ...and a convolved cabinet rather than a filtered one: the
+            // reflections and cone breakup are what make a mic'd 4x12 sound
+            // like a box with a microphone in front of it rather than a
+            // filter, and this is the tone that most depends on it.
+            amp.drive.cabinetIr = true;
             amp.drive.asymmetry  = 0.15f; // less than the boost: this stage is already deep in clip
             amp.drive.oversample = true;
 

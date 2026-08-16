@@ -36,13 +36,45 @@ namespace looper::engine
 class DriveEffect
 {
 public:
+    /**
+        How many gain stages the signal passes through, 1..kMaxStages.
+
+        One is a pedal: a single clipper, and exactly what this did before the
+        parameter existed. Two or three is an amp, and the difference is not
+        "more distortion" — it is a different *kind*.
+
+        Three things change when stages cascade:
+
+          - Each stage clips gently and the next one clips *that*, so the
+            composite curve has a far softer knee and much more compression
+            than one hard push ever produces.
+          - Every stage adds its own harmonics to a signal that already has
+            harmonics, which multiplies them out into a dense spectrum rather
+            than the fixed harmonic set a single shaper gives at any drive.
+          - Between stages the bass is rolled off *before* the next clipper
+            sees it. That is what makes a high-gain amp tight instead of
+            muddy: low strings otherwise intermodulate with everything above
+            them, and no amount of EQ afterwards separates them again.
+
+        Defaults to 1, so every existing project and preset is untouched; the
+        amp-like tones opt in.
+    */
+    void setStages(int stages) { stages_.store(stages, std::memory_order_relaxed); }
+
+    /** Convolve a synthesised cabinet response rather than filtering — see
+        engine::CabinetSim::setUseImpulseResponse. */
+    void setCabinetIr(bool use) { cabinetIr_.store(use, std::memory_order_relaxed); }
+
     void prepare(double sampleRate, int /*blockSize*/)
     {
         sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
 
         for (auto& channel : channels_)
         {
-            channel.shaper.reset();
+            for (auto& shaper : channel.shapers)
+                shaper.reset();
+            for (auto& stage : channel.inter)
+                stage = {};
             channel.oversampler.reset();
             channel.cab.prepare(sampleRate_);
             channel.preState     = 0.0f;
@@ -57,6 +89,22 @@ public:
         // actual bandpass. See the comment in process().
         preTopCoeff_ = onePoleCoeff(2500.0f);
         tiltCoeff_   = onePoleCoeff(900.0f);
+
+        // Interstage coupling. ~180Hz is high for a coupling capacitor and
+        // deliberately so: it is the bass cut that keeps the *next* clipper
+        // from being handed a low string's full energy, which is the whole
+        // point of cascading rather than turning one stage up. The lowpass is
+        // a triode's Miller capacitance — it stops each stage handing the next
+        // one fizz to multiply.
+        interHighpassCoeff_   = onePoleCoeff(120.0f);
+        interLowpassCoeff_    = onePoleCoeff(6500.0f);
+
+        // The cascade runs *inside* the oversampler, so when oversampling is
+        // on these filters see 4x the rate and need coefficients for it.
+        // Running base-rate coefficients at 4x would put the corners two
+        // octaves too low and quietly change the whole voicing.
+        interHighpassCoeffOs_ = onePoleCoeffAt(120.0f,  sampleRate_ * 4.0);
+        interLowpassCoeffOs_  = onePoleCoeffAt(6500.0f, sampleRate_ * 4.0);
     }
 
     void setEnabled(bool enabled) { enabled_.store(enabled, std::memory_order_relaxed); }
@@ -94,9 +142,35 @@ public:
             auto& state  = channels_[(size_t) channelIndex];
             auto* samples = buffer.getWritePointer(channelIndex);
 
-            state.shaper.setKind(hard ? Waveshaper::Kind::Hard : Waveshaper::Kind::Soft);
-            state.shaper.setDrive(drive);
-            state.shaper.setAsymmetry(asym);
+            const int stages = juce::jlimit(1, kMaxStages, stages_.load(std::memory_order_relaxed));
+            state.cab.setUseImpulseResponse(cabinetIr_.load(std::memory_order_relaxed));
+
+            // Every stage gets the full drive, which is what a real cascaded
+            // preamp does — its stages are not one stage's worth of gain
+            // shared out, they each have their own.
+            //
+            // Sharing it out as the n-th root was the first attempt and it was
+            // measurably wrong: three stages at 12^(1/3) barely clip at all,
+            // and the "cascade" came out with a tenth of the high-order
+            // content of the single stage it was supposed to enrich. A
+            // cascade is not a gentler way to reach the same distortion; it is
+            // more distortion, of a different shape.
+            //
+            // What stops that from being merely a louder fuzz is the
+            // interstage filtering below: clipping is close to idempotent, so
+            // a second clipper handed the first one's output would do almost
+            // nothing. Reshaping the wave between stages is what gives the
+            // next one something to work on, and it is where the character
+            // actually comes from.
+            const float perStageDrive = drive;
+
+            for (int stage = 0; stage < stages; ++stage)
+            {
+                auto& shaper = state.shapers[(size_t) stage];
+                shaper.setKind(hard ? Waveshaper::Kind::Hard : Waveshaper::Kind::Soft);
+                shaper.setDrive(perStageDrive);
+                shaper.setAsymmetry(asym);
+            }
 
             for (int n = 0; n < buffer.getNumSamples(); ++n)
             {
@@ -120,13 +194,45 @@ public:
                 state.preTopState += preTopCoeff_ * (x - state.preTopState);
                 x = state.preTopState;
 
-                // Only the shaper runs at 4x. The pre-emphasis and the
-                // cabinet are linear, so oversampling them would cost the
+                // Only the nonlinear part runs at 4x. The pre-emphasis and
+                // the cabinet are linear, so oversampling them would cost the
                 // same and change nothing: aliasing is generated by the
                 // nonlinearity and nowhere else.
-                x = overs ? state.oversampler.process(x, [&state](float v)
-                                                      { return state.shaper.processSample(v); })
-                          : state.shaper.processSample(x);
+                //
+                // The *whole cascade* goes inside one oversampler call rather
+                // than each stage separately: the interstage filters are part
+                // of the nonlinear network, and converting up and down between
+                // every stage would trip through the conversion filters three
+                // times for no benefit.
+                const float highpassCoeff = overs ? interHighpassCoeffOs_ : interHighpassCoeff_;
+                const float lowpassCoeff  = overs ? interLowpassCoeffOs_  : interLowpassCoeff_;
+
+                const auto cascade = [&state, stages, highpassCoeff, lowpassCoeff](float v)
+                {
+                    for (int stage = 0; stage < stages; ++stage)
+                    {
+                        if (stage > 0)
+                        {
+                            auto& inter = state.inter[(size_t) (stage - 1)];
+
+                            // Bass out before the next clipper sees it: the
+                            // reason a cascade is tight rather than muddy.
+                            inter.highpass += highpassCoeff * (v - inter.highpass);
+                            v -= inter.highpass;
+
+                            // ...and treble out, so each stage isn't handed
+                            // the previous one's fizz to multiply.
+                            inter.lowpass += lowpassCoeff * (v - inter.lowpass);
+                            v = inter.lowpass;
+                        }
+
+                        v = state.shapers[(size_t) stage].processSample(v);
+                    }
+
+                    return v;
+                };
+
+                x = overs ? state.oversampler.process(x, cascade) : cascade(x);
 
                 if (cabinet)
                     x = state.cab.processSample(x);
@@ -145,9 +251,27 @@ public:
 private:
     static constexpr size_t kMaxChannels = 2;
 
+public:
+    /** Three is where a real high-gain preamp sits, and past it the stages
+        stop adding character and only add noise-floor. */
+    static constexpr int kMaxStages = 3;
+
+private:
+
     struct ChannelState
     {
-        Waveshaper    shaper;
+        /** One shaper per stage rather than one reused: the anti-aliasing is
+            an antiderivative method and therefore *stateful* — it needs each
+            stage's previous input. Sharing one would mix three stages'
+            histories together and the aliasing suppression would be wrong in
+            a way that only shows as a faint hiss on fast material. */
+        std::array<Waveshaper, kMaxStages> shapers;
+
+        /** Interstage coupling: a highpass and a lowpass between each pair of
+            stages, i.e. one fewer than there are stages. */
+        struct Interstage { float highpass = 0.0f; float lowpass = 0.0f; };
+        std::array<Interstage, kMaxStages - 1> inter;
+
         Oversampler4x oversampler;
         CabinetSim    cab;
         float      preState    = 0.0f;
@@ -155,9 +279,11 @@ private:
         float      tiltState   = 0.0f;
     };
 
-    float onePoleCoeff(float hz) const
+    float onePoleCoeff(float hz) const { return onePoleCoeffAt(hz, sampleRate_); }
+
+    static float onePoleCoeffAt(float hz, double rate)
     {
-        const float x = (float) (6.2831853 * (double) hz / sampleRate_);
+        const float x = (float) (6.2831853 * (double) hz / (rate > 0.0 ? rate : 48000.0));
         return juce::jlimit(0.0f, 1.0f, x / (1.0f + x));
     }
 
@@ -165,6 +291,10 @@ private:
     float  preCoeff_    = 0.1f;
     float  preTopCoeff_ = 0.5f;
     float  tiltCoeff_   = 0.1f;
+    float  interHighpassCoeff_   = 0.1f;
+    float  interLowpassCoeff_    = 0.5f;
+    float  interHighpassCoeffOs_ = 0.03f;
+    float  interLowpassCoeffOs_  = 0.3f;
 
     std::array<ChannelState, kMaxChannels> channels_;
 
@@ -175,6 +305,8 @@ private:
     std::atomic<bool>  hard_    { false };
     std::atomic<bool>  cabinet_ { true };
     std::atomic<float> asymmetry_  { 0.0f };
+    std::atomic<int>   stages_     { 1 };
+    std::atomic<bool>  cabinetIr_  { false };
     std::atomic<bool>  oversample_ { false };
 };
 

@@ -89,8 +89,15 @@ namespace looper::model
           sensitivity, string coupling and stereo width. Appended, like v30's,
           because the line is positional - and seeded from the defaults on the
           way in, so an older file gets the improved instrument rather than a
-          silent, mono, uncoupled one. */
-inline constexpr int kFormatVersion = 37;
+          silent, mono, uncoupled one.
+      38  GUITAR gains string stiffness, appended for the same reason and
+          seeded from the default the same way.
+      39  FXSLOT gains the drive's gain-stage count, appended at the end of
+          its positional line like v30's and v35's. 1 in older files, which is
+          the single-clipper behaviour they already had.
+      40  + the drive's cabinet-IR flag, appended the same way; 0 in older
+          files, which is the filter-chain cabinet they already had. */
+inline constexpr int kFormatVersion = 40;
 namespace detail
 {
     inline std::string num(double v)
@@ -269,7 +276,8 @@ inline std::string serialize(const Song& song)
             // file read its values into the wrong slots.
             << " " << detail::num((double) guitar.velocitySensitivity)
             << " " << detail::num((double) guitar.stringCoupling)
-            << " " << detail::num((double) guitar.stereoWidth) << "\n";
+            << " " << detail::num((double) guitar.stereoWidth)
+            << " " << detail::num((double) guitar.stiffness) << "\n";
 
         // The effect chain, in order. A slot carries every built-in's settings
         // regardless of its kind, so switching kind doesn't lose the others.
@@ -326,7 +334,9 @@ inline std::string serialize(const Song& song)
                 // Appended for the same reason v30's fields were: the line is
                 // positional, so anything inserted mid-line would make every
                 // older file read its values into the wrong slots.
-                << slot.compressor.sidechainTrackId << "\n";
+                << slot.compressor.sidechainTrackId
+                << " " << slot.drive.stages
+                << " " << (slot.drive.cabinetIr ? 1 : 0) << "\n";
 
             if (slot.kind == EffectKind::Plugin)
             {
@@ -839,10 +849,13 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             double velocitySense = (double) fallback.velocitySensitivity;
             double coupling      = (double) fallback.stringCoupling;
             double width         = (double) fallback.stereoWidth;
+            double stiffness     = (double) fallback.stiffness;
 
             gs >> decay >> brightness >> position >> hardness >> mute
                >> resonanceHz >> pickupQ >> palmDecay >> palmBright
-               >> velocitySense >> coupling >> width;
+               >> velocitySense >> coupling >> width >> stiffness;
+
+            track.guitarSettings.stiffness = (float) stiffness;
 
             track.guitarSettings.velocitySensitivity = (float) velocitySense;
             track.guitarSettings.stringCoupling      = (float) coupling;
@@ -932,6 +945,8 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 double eqMidHz = 800.0, eqMidDb = 0.0, eqMidQ = 1.0;
                 double eqHighHz = 4000.0, eqHighDb = 0.0;
                 int    compSidechainTrackId = -1; // absent before v35: no sidechain
+                int    driveStages          = 1;  // absent before v39: one clipper
+                int    driveCabinetIr       = 0;  // absent before v40: filtered cabinet
 
                 ss >> kind >> enabled >> filterMode >> cutoff >> resonance
                    >> delayTime >> delayFeedback >> delayMix >> room >> damping >> reverbMix
@@ -943,7 +958,7 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                    >> gateThreshold >> gateRange >> gateAttack >> gateHold >> gateRelease
                    >> driveAsymmetry >> driveOversample
                    >> eqLowHz >> eqLowDb >> eqMidHz >> eqMidDb >> eqMidQ >> eqHighHz >> eqHighDb
-                   >> compSidechainTrackId;
+                   >> compSidechainTrackId >> driveStages >> driveCabinetIr;
 
                 EffectSlot slot;
                 slot.kind              = (EffectKind) kind;
@@ -968,6 +983,8 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
                 slot.drive.cabinet     = driveCab != 0;
                 slot.drive.asymmetry   = (float) driveAsymmetry;
                 slot.drive.oversample  = driveOversample != 0;
+                slot.drive.stages      = driveStages > 0 ? driveStages : 1;
+                slot.drive.cabinetIr   = driveCabinetIr != 0;
                 slot.compressor.enabled     = slot.enabled && slot.kind == EffectKind::Compressor;
                 slot.compressor.thresholdDb = (float) compThreshold;
                 slot.compressor.ratio       = (float) compRatio;

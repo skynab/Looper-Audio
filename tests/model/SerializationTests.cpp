@@ -1064,13 +1064,29 @@ TEST_CASE("A file written before sidechains reads as unrouted", "[model][io]")
     ducker.compressor.sidechainTrackId = 7;
     findTrack(s, trackId)->effectChain.push_back(ducker);
 
-    // Drop the trailing field the way an older writer never would have emitted.
+    // Truncate the line where a pre-v35 writer would have stopped: before the
+    // sidechain field and everything appended after it.
+    //
+    // Written as "drop the last N fields" rather than "drop the last field",
+    // because it *was* the latter and silently stopped testing anything the
+    // moment v39 and v40 appended two more — it then stripped the cabinet-IR
+    // flag and asserted a sidechain that was still present. Any future
+    // appended field has to be counted here too.
+    constexpr int kFieldsAfterV34 = 3; // sidechain id, drive stages, cabinet IR
+
     std::string text  = serialize(s);
     const auto  start = text.find("FXSLOT");
     REQUIRE(start != std::string::npos);
-    const auto lineEnd = text.find('\n', start);
-    const auto lastSpace = text.rfind(' ', lineEnd);
-    text.erase(lastSpace, lineEnd - lastSpace);
+
+    auto lineEnd = text.find('\n', start);
+    for (int i = 0; i < kFieldsAfterV34; ++i)
+    {
+        const auto lastSpace = text.rfind(' ', lineEnd);
+        REQUIRE(lastSpace != std::string::npos);
+        REQUIRE(lastSpace > start);
+        text.erase(lastSpace, lineEnd - lastSpace);
+        lineEnd = text.find('\n', start);
+    }
 
     Song restored;
     REQUIRE(deserialize(text, restored));

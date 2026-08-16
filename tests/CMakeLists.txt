@@ -31,6 +31,7 @@ add_executable(looper_tests
   engine/TimeStretchTests.cpp
   engine/SpectrumTests.cpp
   engine/TempoDetectTests.cpp
+  engine/CabinetIrTests.cpp
   engine/DelayLineTests.cpp
   engine/DitherTests.cpp
   engine/EqPedalTests.cpp

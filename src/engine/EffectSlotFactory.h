@@ -64,6 +64,8 @@ inline EffectSlotParams toSlotParams(const model::EffectSlot& slot)
     params.driveCabinet    = slot.drive.cabinet;
     params.driveAsymmetry  = slot.drive.asymmetry;
     params.driveOversample = slot.drive.oversample;
+    params.driveStages     = slot.drive.stages;
+    params.driveCabinetIr  = slot.drive.cabinetIr;
     params.eqLowShelfHz    = slot.eqPedal.lowShelfHz;
     params.eqLowShelfDb    = slot.eqPedal.lowShelfDb;
     params.eqMidHz         = slot.eqPedal.midHz;

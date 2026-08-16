@@ -53,6 +53,12 @@ struct GuitarSettings
         instrument had, and 0 restores exactly the old behaviour. */
     float velocitySensitivity = 0.5f;
 
+    /** String stiffness, 0..1 — how far the partials stretch sharp (see
+        engine::GuitarString::setStiffness). Real on any string and strongest
+        on thick wound ones, which is why GuitarNode scales it down as the
+        strings get thinner. */
+    float stiffness = 0.4f;
+
     /** Energy crossing between strings at the bridge, 0..1 — sympathetic
         ringing, and most of what makes a chord bloom. */
     float stringCoupling = 0.35f;

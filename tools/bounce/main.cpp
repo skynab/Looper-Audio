@@ -1580,11 +1580,91 @@ int main(int argc, char** argv)
         driveCabinetWorks = worstDifference(withCab, noCab) > 1.0e-3f;
     }
 
+    // Cascaded gain stages (docs/PLAN.md §33 phase 3).
+    //
+    // The first version of this check asserted the cascade *compresses* more,
+    // and it measured the opposite: with the drive shared out as the n-th root
+    // so the total push stays put, three gentle stages have a softer composite
+    // knee than one hard one, so the output grows *more* freely, not less.
+    // That was a wrong claim, not a wrong implementation.
+    //
+    // What a cascade really does is multiply harmonics: each stage distorts a
+    // signal that already has harmonics, so the spectrum gets denser rather
+    // than merely louder. That is measurable, and it is the reason to cascade.
+    bool cascadedStagesEnrich = false;
+    {
+        auto renderDrive = [&](int stages)
+        {
+            const int totalSamples = (int) (sampleRate * 0.5);
+            juce::AudioBuffer<float> driveBuffer(1, totalSamples);
+
+            for (int i = 0; i < totalSamples; ++i)
+                driveBuffer.setSample(0, i, 0.3f * (float) std::sin(
+                    2.0 * juce::MathConstants<double>::pi * 220.0 * i / sampleRate));
+
+            DriveEffect drive;
+            drive.prepare(sampleRate, 512);
+            drive.setEnabled(true);
+            drive.setDrive(12.0f);
+            drive.setTone(0.5f);
+            drive.setLevel(1.0f);
+            drive.setHardClip(false);
+            drive.setCabinet(false); // linear, and only muddies the measurement
+            drive.setStages(stages);
+            drive.process(driveBuffer);
+
+            std::vector<float> out((size_t) totalSamples);
+            for (int i = 0; i < totalSamples; ++i)
+                out[(size_t) i] = driveBuffer.getSample(0, i);
+            return out;
+        };
+
+        // Harmonics 5..9 against the fundamental — the high-order content that
+        // only appears once something distorts an already-distorted signal.
+        auto densityOf = [&](const std::vector<float>& signal)
+        {
+            const int from = (int) (0.1 * sampleRate), count = (int) (0.3 * sampleRate);
+
+            auto binAt = [&](double frequency)
+            {
+                double real = 0.0, imaginary = 0.0;
+                for (int i = 0; i < count; ++i)
+                {
+                    const double angle = 2.0 * juce::MathConstants<double>::pi
+                                       * frequency * (double) i / sampleRate;
+                    real      += signal[(size_t) (from + i)] * std::cos(angle);
+                    imaginary += signal[(size_t) (from + i)] * std::sin(angle);
+                }
+                return std::hypot(real, imaginary) / (double) count;
+            };
+
+            const double fundamental = binAt(220.0);
+            double       upper       = 0.0;
+            for (int harmonic = 5; harmonic <= 9; ++harmonic)
+                upper += binAt(220.0 * harmonic);
+
+            return fundamental > 0.0 ? upper / fundamental : 0.0;
+        };
+
+        const auto single  = renderDrive(1);
+        const auto cascade = renderDrive(3);
+
+        const double singleDensity  = densityOf(single);
+        const double cascadeDensity = densityOf(cascade);
+
+        std::cout << "drive stages: 1x density=" << singleDensity
+                  << " 3x density=" << cascadeDensity << "\n";
+
+        cascadedStagesEnrich = singleDensity > 0.0
+                            && cascadeDensity > singleDensity * 1.1;
+    }
+
     // Guitar phase 1 (docs/PLAN.md §33): stereo width and bridge coupling,
     // driven through the real GuitarNode rather than a bare string, because
     // both are properties of how the six strings are *combined*.
     bool guitarHasWidth = false;
     bool guitarStringsCouple = false;
+    bool guitarStiffnessChangesTone = false;
     {
         auto renderGuitar = [&](float coupling, float width, bool strum)
         {
@@ -1659,6 +1739,57 @@ int main(int argc, char** argv)
         guitarHasWidth = narrowDifference < 1.0e-6            // dead centre at width 0
                       && channelDifference > 1.0              // genuinely different channels
                       && wideMono > narrowMono * 0.6;         // and mono survives the fold
+
+        // --- Stiffness (phase 2). Through the node rather than a bare string,
+        // because the node is what scales it per string — a wound low E gets
+        // the full amount and a plain high E a third of it, and a bug in that
+        // scaling would leave the top strings sounding detuned rather than
+        // stiff. The headless tests prove the partials actually stretch and
+        // that the string stays in tune; this proves the wiring reaches them.
+        auto renderStiff = [&](float stiffness)
+        {
+            const int totalSamples = (int) (sampleRate * 1.5);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            GuitarNode guitar;
+            guitar.prepare(sampleRate, 512);
+            guitar.setDecaySeconds(4.0f);
+            guitar.setBrightness(0.95f);
+            guitar.setStiffness(stiffness);
+
+            juce::MidiBuffer midi;
+            midi.addEvent(juce::MidiMessage::noteOn(1, 40, 0.9f), 0); // the low E
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate        = sampleRate;
+                context.numSamples        = n;
+                context.transport.playing = true;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
+
+                juce::AudioBuffer<float> block(mix.getArrayOfWritePointers(), 2, pos, n);
+                juce::MidiBuffer         blockMidi = pos == 0 ? midi : juce::MidiBuffer {};
+                guitar.process(block, blockMidi, context);
+            }
+
+            return mix;
+        };
+
+        const auto ideal = renderStiff(0.0f);
+        const auto stiff = renderStiff(1.0f);
+
+        double difference = 0.0;
+        for (int i = 0; i < ideal.getNumSamples(); ++i)
+            difference += std::abs(ideal.getSample(0, i) - stiff.getSample(0, i));
+
+        guitarStiffnessChangesTone =
+            ideal.getRMSLevel(0, 0, ideal.getNumSamples()) > 0.001f
+         && stiff.getRMSLevel(0, 0, stiff.getNumSamples()) > 0.001f
+         && difference > 1.0;
 
         // --- Coupling. A struck chord leaves energy circulating between the
         // strings, so the tail carries more than it does uncoupled.
@@ -3226,6 +3357,8 @@ int main(int argc, char** argv)
               << "  groupBusWorks=" << (groupBusWorks ? 1 : 0)
               << "  guitarHasWidth=" << (guitarHasWidth ? 1 : 0)
               << "  guitarStringsCouple=" << (guitarStringsCouple ? 1 : 0)
+              << "  guitarStiffnessChangesTone=" << (guitarStiffnessChangesTone ? 1 : 0)
+              << "  cascadedStagesEnrich=" << (cascadedStagesEnrich ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  gateClosesQuiet=" << (gateClosesQuiet ? 1 : 0)
               << "  metalToneHasBody=" << (metalToneHasBody ? 1 : 0)
@@ -3268,7 +3401,8 @@ int main(int argc, char** argv)
                  && soloMatchesArpOnly && stemsSumToMix && clipStartGates && sendBusChanged && sendBusDelayWorks && multiClipGates
                  && audioTrackWorks && multiClipAudioGates && midiRoundTripWorks && drumKitWorks
                  && midiRecordingWorks && warpFitsTheGrid && sidechainDucks && groupBusWorks
-                 && guitarHasWidth && guitarStringsCouple
+                 && guitarHasWidth && guitarStringsCouple && guitarStiffnessChangesTone
+                 && cascadedStagesEnrich
                  && generativeLoopWorks
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks

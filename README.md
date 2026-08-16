@@ -380,6 +380,34 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > sharing a coordinate space with clip dragging is how a click that meant "add a
 > breakpoint" ends up moving a clip. Nine new GUI tests drive the real component through
 > real mouse events. See [`docs/PLAN.md`](docs/PLAN.md) §32.
+>
+> **The guitar sounds better — phases 1 and 2 of [§33](docs/PLAN.md).** Four things the
+> instrument never had: **velocity now shapes timbre** (picking harder is brighter, not
+> just louder — every note used to have an identical spectrum, which is most of why a
+> programmed part sounded machine-gunned); **the strings couple at the bridge**, so
+> struck strings drive the others and chords bloom instead of stacking as six
+> independent notes; **stereo width** by panning the strings, mono-compatible by
+> construction since they are distinct signals rather than delayed copies; and **string
+> stiffness**, which stretches the partials progressively sharp the way a real wound
+> string does — a genuine component of drop-tuned growl. All four are sliders on the
+> fretboard pane, and setting them to zero returns the instrument to exactly what it
+> was. Four of the five bugs found along the way were caught by tests rather than by
+> ear, including bridge coupling that transferred *precisely zero* energy and a pick
+> jitter that turned out to be a tonal change rather than a variation.
+>
+> **The amp and cabinet followed.** `DriveEffect` can now be a **two- or three-stage
+> cascade** rather than one clipper, with a coupling network between stages — the bass
+> is rolled off *before the next clipper sees it*, which is what makes a high-gain amp
+> tight instead of muddy. And `CabinetSim` can **convolve a synthesised impulse
+> response** instead of filtering: nothing is shipped (it is built at prepare time from
+> the cabinet's own filters), and it is short enough to convolve directly, so there is
+> no partitioning and **no latency** — which on a guitar someone is playing is the one
+> cost you cannot pay. What it buys is the thing a filter cannot express: the same sound
+> arriving twice, off the baffle edge and the back of the box, combing with itself. Both
+> are opt-in (`stages`, `cabinetIr`), and the Modern Metal preset takes both. Two more
+> wrong ideas died to measurement here — a cascade that was supposed to compress more
+> and turned out to be ten times *cleaner*, and an IR level-matched on DC gain that
+> pushed the preset into clipping.
 
 ## Tech stack
 

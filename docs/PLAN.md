@@ -46,7 +46,7 @@ This is a living document. As sections mature they should graduate into their ow
 30. [Sidechain compression](#30-sidechain-compression-implemented)
 31. [Group buses](#31-group-buses-implemented)
 32. [Automation you can see and draw](#32-automation-you-can-see-and-draw-implemented)
-33. [Making the guitar sound better](#33-making-the-guitar-sound-better-phase-1-implemented)
+33. [Making the guitar sound better](#33-making-the-guitar-sound-better-implemented)
 
 ---
 
@@ -2546,7 +2546,7 @@ it"), and the pane's parameter picker is where they would appear.
 
 ---
 
-## 33. Making the guitar sound better (phase 1 implemented)
+## 33. Making the guitar sound better (implemented)
 
 The guitar is already well past a naive Karplus-Strong: a fractional-delay waveguide
 with pitch-compensated decay (§21), a pickup RLC resonance, a cabinet with a
@@ -2692,3 +2692,185 @@ zero returns the instrument to exactly what it was before.
 
 Phases 2 and 3 (inharmonicity; then cascaded amp stages and a synthesised cabinet IR)
 remain as described above.
+
+### Phase 2 as built: string stiffness
+
+An ideal string is perfectly harmonic — partial *n* at exactly *n* times the
+fundamental, which is what a plain waveguide gives and part of why one sounds
+synthetic. A real string resists bending, which makes it **dispersive**: high
+frequencies travel faster, arrive early, and end up progressively sharp. It is
+strongest on thick wound strings, and it is a genuine component of a drop-tuned
+guitar's growl — the partials of a stiff low string beat against each other instead of
+locking into a clean stack.
+
+Modelled the standard way: a cascade of first-order allpasses inside the loop, with a
+**negative** coefficient so the delay falls with frequency. A positive one flattens the
+partials instead, which sounds like a detuned string rather than a stiff one, and is the
+easiest sign error available here. `GuitarNode` scales it per string — the thickest gets
+the full amount, the thinnest a third — because giving all six the same value makes the
+top strings sound out of tune rather than stiff. Exposed as **Stiffness**
+(`model::GuitarSettings::stiffness`, format v38).
+
+### What measurement forced, again
+
+**The first attempt did essentially nothing: 0.06 cents of stretch at the 8th partial.**
+A first-order allpass's phase delay is nearly flat until well up towards Nyquist, so
+with a modest coefficient the entire guitar range sits in the constant part of its
+response. Getting the dispersion to act *in the audible band* meant both a much stronger
+coefficient (a pole near 0.9, whose time constant is a handful of samples) and eight
+sections rather than four. This is the sort of thing that reads as "add an allpass" in a
+paper and is a measurement problem in practice.
+
+**Then high notes went out of tune.** Each section's delay is a fixed number of
+*samples*, but a note's period is not: at 440 Hz the string is only ~109 samples long,
+and eight sections wanted ~125. The delay line went negative, the clamp took over, and
+the pitch was whatever fell out. The cascade is now **budgeted against the note's own
+period** — a quarter of it — so only as many sections run as actually fit. High notes get
+less stiffness, which is the graceful failure rather than a wrong one: they have fewer
+audible partials to stretch anyway. That budget is what makes the 2-cent tuning
+guarantee hold at every stiffness setting, which is now itself a test across four
+stiffness values, six strings and four frets.
+
+### Verification
+
+638 headless tests (4 new): partials stretch sharp and *progressively* so (the 8th
+further than the 4th); at stiffness 0 the string stays harmonic within 2 cents, so this
+is opt-in rather than a retune; the fundamental stays within 2 cents at every stiffness,
+string and fret — the compensation check; and a maximally stiff string still decays,
+since the allpasses sit inside a feedback loop and "unity gain in theory" is worth
+measuring once.
+
+One new bounce check, `guitarStiffnessChangesTone`, drives the real `GuitarNode` so the
+per-string scaling is covered too. All existing checks pass unchanged, `rmsDry` and the
+palm-mute sentinel included.
+
+**Not verified: whether it sounds like a stiffer string or merely a different one.**
+Play a low drop-tuned chug with **Stiffness** at 0 and at 100% and listen for growl
+rather than detuning — if it reads as out of tune, the coefficient is too high for
+taste, not wrong in kind.
+
+Phase 3 (cascaded amp stages, then a synthesised cabinet IR now that `engine/Fft.h`
+exists) remains.
+
+### Phase 3a as built: cascaded gain stages
+
+`DriveEffect` was one clipper. A real amp is two or three gain stages with a coupling
+network between them, and the difference is not "more distortion" — it is a different
+kind. `DriveSettings::stages` (1..3, format v39) selects it; 1 is exactly the previous
+behaviour, so every existing project and preset is untouched and the amp-like tones opt
+in. The Modern Metal preset's amp half is now a three-stage cascade.
+
+Between stages sit a highpass (~120 Hz) and a lowpass (~6.5 kHz). The highpass is the
+important one: it takes the bass out *before the next clipper sees it*, which is what
+makes a high-gain amp tight rather than muddy, because low strings otherwise
+intermodulate with everything above them and no EQ afterwards separates them again. The
+whole cascade runs inside a single oversampler call rather than one per stage, and the
+interstage coefficients therefore exist in two versions — running base-rate coefficients
+at 4x would put both corners two octaves low and quietly revoice the amp.
+
+### Two wrong claims, both caught by measuring
+
+**"A cascade compresses more."** The first version shared the drive out as the n-th root
+so the total push stayed constant, and asserted the output would grow less when the
+input doubled. It measured the opposite (1.64 vs 1.46): three gentle stages have a
+*softer* composite knee than one hard one, so the output grows more freely. The claim
+was wrong, not the code.
+
+**"...so it must at least be denser."** Rewriting the check to measure high-order
+harmonic content showed the cascade with **a tenth** of the single stage's — 0.0039
+against 0.0369. Three stages at 12^(1/3) barely clip at all. The n-th root idea was the
+real error: **a cascade is not a gentler route to the same distortion, it is more
+distortion of a different shape**, and each stage in a real preamp has its own full
+gain. With every stage driven fully the same measurement gives **0.487 against 0.037** —
+thirteen times denser — and that is now the check.
+
+What stops that being merely a louder fuzz is the interstage filtering. Clipping is
+close to idempotent: a second clipper handed the first one's output would do almost
+nothing. Reshaping the wave in between is what gives the next stage something to work
+on, and it is where the character comes from.
+
+**Then the preset clipped.** Giving the Modern Metal amp three stages meant dropping its
+drive from 75 to 22 — which *raised* its output, because make-up gain falls as
+1/sqrt(drive), and the tone started peaking above full scale. The bounce tool caught it
+as `wetPeak > 1`; the preset's level came down from 2.0 to 1.05. The retuned tone
+measures louder and with more cut than before (wetRms 0.28 → 0.36, presence 0.39 →
+0.43) and less low-mid weight (body 0.28 → 0.15, against a 0.02 floor) — tighter, which
+is what the interstage highpass is for, but it is the number to watch if it now sounds
+thin.
+
+### Verification
+
+`cascadedStagesEnrich` measures harmonics 5-9 against the fundamental for a single stage
+and for three, and requires the cascade to be at least 10% denser; it is 13x. All 634
+headless tests, 173 GUI tests and every existing bounce check pass, `rmsDry` included —
+`stages` defaults to 1, so nothing that did not opt in can have moved.
+
+**Not verified: whether the retuned Modern Metal preset is better.** It is measurably
+denser, louder and tighter; whether that is an improvement is a listening question, and
+the halved `body` figure is the specific thing to listen for.
+
+**Phase 3b — the synthesised cabinet IR — remains.**
+
+### Phase 3b as built: a synthesised cabinet impulse response
+
+`CabinetSim` said of itself that it was "still not an impulse response: a convolution
+would be more faithful and would need an IR to ship, a partitioned convolver and a
+latency story." All three objections are answered rather than accepted:
+
+- **Nothing is shipped.** The response is *synthesised* at prepare time, so there is no
+  asset and no licence.
+- **No partitioning and no latency.** It is ~10ms and convolved directly in the time
+  domain. Partitioned FFT convolution only earns its complexity on responses long enough
+  to make direct convolution expensive, and it pays for that with a block of latency —
+  which on a guitar someone is playing is the one cost you cannot accept. Ten
+  milliseconds is where a close-mic'd cabinet keeps essentially all its character; what
+  follows is the room, which a close mic barely hears.
+
+**What it adds that a filter cannot.** An IIR filter has one path from input to output:
+it shapes magnitude, but it cannot represent the same sound arriving *twice*. A real
+cabinet does exactly that — straight off the cone, again off the baffle edge (inverted,
+as a diffraction is), again off the back of the box — and those arrivals comb with one
+another and smear the cone breakup in time. That is what the ear reads as a speaker in a
+box with a microphone in front of it.
+
+**The response is built by running the impulse train through the cabinet's own
+filters**, so the two modes are voiced identically by construction. Restating the
+response instead would have been a second description of the cabinet, free to drift from
+the first.
+
+### The level-matching mistake
+
+Switching modes must change the sound and not the volume, or every comparison anyone
+makes — by ear or by measurement — measures the level difference instead. The first
+version matched **DC gain**, and the preset immediately clipped (`wetPeak` 1.02, caught
+by the bounce tool). The reflections partly *cancel* at DC — they sum to about 0.79
+there — so holding DC constant scaled every other frequency up by a quarter. Matching
+**energy** is what level-matching an IR actually means, and with it the preset came back
+to 0.76 peak.
+
+### Verification
+
+12 new headless tests: the direct arrival is at tap zero (the zero-latency property that
+makes this usable while playing); each reflection lands where its geometry says; the
+baffle reflection really is inverted, since a train with every arrival positive is just
+a brighter cabinet rather than a combed one; the response is deterministic, because a
+cabinet that differed per launch would be a baffling bug; the convolver is an identity
+for a unit response and computes a hand-checkable convolution for a delayed one;
+normalising matches energy; the two modes are within ±40% on broadband noise; they are
+audibly *different*; and the cabinet defaults to its filter chain, so nothing that has
+not opted in changes.
+
+646 headless tests, 173 GUI tests, and every bounce check pass, `rmsDry` included.
+
+**One existing test had quietly stopped testing anything.** "A file written before
+sidechains reads as unrouted" simulated an older file by stripping the *last* field from
+the positional `FXSLOT` line — so the moment v39 and v40 appended two more, it was
+stripping the cabinet-IR flag and asserting a sidechain that was still there. It now
+drops a named count of fields, with a comment that any future appended field has to be
+counted too. Worth recording as a hazard of positional formats: a compatibility test
+written against "the last field" decays silently every time the format grows.
+
+**Not verified: whether any of it sounds better.** That is the whole question and no
+test here answers it. The Modern Metal preset now runs a three-stage cascade into a
+convolved cabinet; play it, and compare against Stiffness/Coupling/Width at zero and
+`stages` back at 1, which is exactly the instrument as it was.

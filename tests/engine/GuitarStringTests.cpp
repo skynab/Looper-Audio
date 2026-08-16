@@ -455,3 +455,95 @@ TEST_CASE("A coupled pair cannot grow without bound", "[engine][guitar]")
     REQUIRE(std::isfinite(peakLate));
     REQUIRE(peakLate < peakEarly);
 }
+
+// --- Phase 2: string stiffness (see docs/PLAN.md §33) ---------------------
+
+namespace
+{
+    std::vector<float> pluckWithStiffness(double frequency, float stiffness)
+    {
+        GuitarString string;
+        string.prepare(kSampleRate);
+        string.setFrequency(frequency);
+        string.setDecaySeconds(4.0);
+        string.setBrightness(0.95f); // keep the upper partials alive to measure
+        string.setStiffness(stiffness);
+        string.pluck(1.0f);
+        return render(string, 1.0);
+    }
+
+    /** How sharp partial @p n is, in cents, relative to where an ideal string
+        would put it. */
+    double partialStretchCents(const std::vector<float>& signal, double fundamental, int n)
+    {
+        const double ideal    = fundamental * n;
+        const double measured = measurePitch(signal, ideal);
+        return centsBetween(measured, ideal);
+    }
+}
+
+TEST_CASE("A stiff string stretches its partials sharp", "[engine][guitar]")
+{
+    // The defining property of stiffness, and what a plain waveguide cannot
+    // produce: partial n sits above n times the fundamental, further out the
+    // higher it is.
+    const auto stiff = pluckWithStiffness(110.0, 0.8f);
+
+    const double fourth = partialStretchCents(stiff, 110.0, 4);
+    const double eighth = partialStretchCents(stiff, 110.0, 8);
+
+    INFO("4th " << fourth << " cents, 8th " << eighth << " cents");
+    REQUIRE(eighth > 2.0);        // genuinely sharp, not rounding
+    REQUIRE(eighth > fourth);     // and progressively so
+}
+
+TEST_CASE("An ideal string keeps its partials harmonic", "[engine][guitar]")
+{
+    // The control: at stiffness 0 the waveguide is exactly as harmonic as it
+    // has always been, so this feature is opt-in rather than a retune.
+    const auto ideal = pluckWithStiffness(110.0, 0.0f);
+
+    REQUIRE(std::abs(partialStretchCents(ideal, 110.0, 4)) < 2.0);
+    REQUIRE(std::abs(partialStretchCents(ideal, 110.0, 8)) < 2.0);
+}
+
+TEST_CASE("Stiffness does not detune the string", "[engine][guitar]")
+{
+    // The allpass cascade delays the fundamental as well, and without taking
+    // that back out of the delay line the whole string plays flat — badly, at
+    // four sections. This is the check that the compensation is right, and it
+    // holds to the same 2 cents every other tuning claim here does.
+    for (float stiffness : { 0.0f, 0.25f, 0.5f, 1.0f })
+    {
+        for (double openHz : kOpenStrings)
+        {
+            for (int fret : { 0, 7, 12, 19 })
+            {
+                const double target = fretted(openHz, fret);
+                const auto   signal = pluckWithStiffness(target, stiffness);
+
+                INFO("stiffness " << stiffness << " at " << target << " Hz");
+                REQUIRE(std::abs(centsBetween(measurePitch(signal, target), target)) < 2.0);
+            }
+        }
+    }
+}
+
+TEST_CASE("A stiff string still decays", "[engine][guitar]")
+{
+    // An allpass is unity-gain, so it cannot add energy — but it is inside the
+    // feedback loop, and "cannot in theory" is exactly the kind of claim worth
+    // measuring once.
+    const auto stiff = pluckWithStiffness(82.4069, 1.0f);
+
+    const int window = (int) (0.1 * kSampleRate);
+    double early = 0.0, late = 0.0;
+    for (int i = 0; i < window; ++i)
+    {
+        early = std::max(early, (double) std::abs(stiff[(size_t) i]));
+        late  = std::max(late,  (double) std::abs(stiff[stiff.size() - 1 - (size_t) i]));
+    }
+
+    REQUIRE(std::isfinite(late));
+    REQUIRE(late < early);
+}

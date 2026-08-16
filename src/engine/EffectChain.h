@@ -80,6 +80,8 @@ struct EffectSlotParams
     bool  driveCabinet  = true;
     float driveAsymmetry = 0.0f;
     bool  driveOversample = false;
+    int   driveStages     = 1;
+    bool  driveCabinetIr  = false;
 
     float compThresholdDb = -18.0f;
     float compRatio       = 4.0f;
@@ -321,6 +323,8 @@ inline void applyParams(EffectProcessor& node, const EffectSlotParams& params)
             drive->effect.setCabinet(params.driveCabinet);
             drive->effect.setAsymmetry(params.driveAsymmetry);
             drive->effect.setOversample(params.driveOversample);
+            drive->effect.setStages(params.driveStages);
+            drive->effect.setCabinetIr(params.driveCabinetIr);
         }
         else if (auto* eq = dynamic_cast<EqNode*>(&node))
         {

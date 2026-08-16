@@ -130,6 +130,7 @@ public:
         setupSlider(pickHardness_, 0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
         setupSlider(velocitySense_, 0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
         setupSlider(coupling_,      0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
+        setupSlider(stiffness_,     0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
         setupSlider(width_,         0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
         setupSlider(muteOnRelease_, 0.0, 100.0, 1.0, " %", [this] { pushSettings(); });
         setupSlider(pickupHz_, 500.0, 8000.0, 10.0, " Hz", [this] { pushSettings(); });
@@ -145,6 +146,7 @@ public:
         setupLabel(pickHardnessLabel_, "Pick");
         setupLabel(velocitySenseLabel_, "Dynamics");
         setupLabel(couplingLabel_, "Coupling");
+        setupLabel(stiffnessLabel_, "Stiffness");
         setupLabel(widthLabel_, "Width");
         setupLabel(muteOnReleaseLabel_, "Damp off");
         setupLabel(pickupHzLabel_, "Pickup");
@@ -190,6 +192,7 @@ public:
         pickHardness_.setValue(settings.pickHardness * 100.0, juce::dontSendNotification);
         velocitySense_.setValue(settings.velocitySensitivity * 100.0, juce::dontSendNotification);
         coupling_.setValue(settings.stringCoupling * 100.0, juce::dontSendNotification);
+        stiffness_.setValue(settings.stiffness * 100.0, juce::dontSendNotification);
         width_.setValue(settings.stereoWidth * 100.0, juce::dontSendNotification);
         muteOnRelease_.setValue(settings.muteOnNoteOff * 100.0, juce::dontSendNotification);
         pickupHz_.setValue(settings.pickupResonanceHz, juce::dontSendNotification);
@@ -425,6 +428,7 @@ public:
         row(pickHardnessLabel_, pickHardness_);
         row(velocitySenseLabel_, velocitySense_);
         row(couplingLabel_, coupling_);
+        row(stiffnessLabel_, stiffness_);
         row(widthLabel_, width_);
         row(muteOnReleaseLabel_, muteOnRelease_);
         row(pickupHzLabel_, pickupHz_);
@@ -541,6 +545,7 @@ private:
         settings_.pickHardness  = (float) (pickHardness_.getValue() / 100.0);
         settings_.velocitySensitivity = (float) (velocitySense_.getValue() / 100.0);
         settings_.stringCoupling      = (float) (coupling_.getValue() / 100.0);
+        settings_.stiffness           = (float) (stiffness_.getValue() / 100.0);
         settings_.stereoWidth         = (float) (width_.getValue() / 100.0);
         settings_.muteOnNoteOff = (float) (muteOnRelease_.getValue() / 100.0);
         settings_.pickupResonanceHz = (float) pickupHz_.getValue();
@@ -560,7 +565,8 @@ private:
             &decayLabel_, &decay_, &brightnessLabel_, &brightness_,
             &pickPositionLabel_, &pickPosition_, &pickHardnessLabel_,
             &pickHardness_, &velocitySenseLabel_, &velocitySense_,
-            &couplingLabel_, &coupling_, &widthLabel_, &width_,
+            &couplingLabel_, &coupling_, &stiffnessLabel_, &stiffness_,
+            &widthLabel_, &width_,
             &muteOnReleaseLabel_, &muteOnRelease_,
             &pickupHzLabel_, &pickupHz_, &pickupQLabel_, &pickupQ_,
             &palmDecayLabel_, &palmDecay_, &palmBrightLabel_, &palmBright_,
@@ -608,8 +614,8 @@ private:
     // Phase 1 of the guitar work (docs/PLAN.md §33): how much velocity
     // brightens a note, how much energy crosses at the bridge, and how far the
     // strings are spread.
-    juce::Label     velocitySenseLabel_, couplingLabel_, widthLabel_;
-    juce::Slider    velocitySense_, coupling_, width_;
+    juce::Label     velocitySenseLabel_, couplingLabel_, widthLabel_, stiffnessLabel_;
+    juce::Slider    velocitySense_, coupling_, width_, stiffness_;
     juce::Label     pickupHzLabel_, pickupQLabel_, palmDecayLabel_, palmBrightLabel_;
     juce::Slider    pickupHz_, pickupQ_, palmDecay_, palmBright_;
     juce::OwnedArray<juce::TextButton> toneButtons_;

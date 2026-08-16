@@ -218,6 +218,18 @@ struct DriveSettings
     // symmetric curve this had before; a real tube stage is never symmetric.
     float asymmetry = 0.0f;
 
+    /** How many gain stages the signal passes through, 1..3 — see
+        engine::DriveEffect::setStages. 1 is a pedal (one clipper) and is what
+        this did before the field existed; 2-3 is an amp, and the difference is
+        a different kind of distortion rather than more of it. */
+    int stages = 1;
+
+    /** Convolve a synthesised cabinet impulse response instead of running the
+        cabinet's filter chain — see engine/CabinetIr.h. Voiced identically by
+        construction; what it adds is the time-domain structure a filter cannot
+        express. Off by default, so nothing that has not asked for it changes. */
+    bool cabinetIr = false;
+
     // Runs the shaper at 4x - see engine::Oversampler4x. Off by default,
     // because it costs real CPU and the ADAA shaper alone is enough for a
     // single moderate stage. The high-gain presets turn it on, since they

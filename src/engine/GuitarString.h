@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -59,6 +60,8 @@ public:
         allpassLastOut_  = 0.0f;
         energy_          = 0.0f;
         pendingCoupling_ = 0.0f;
+        dispersionX_.fill(0.0f);
+        dispersionY_.fill(0.0f);
     }
 
     /** Sets the pitch. Changing this *without* plucking is exactly a hammer-on
@@ -128,6 +131,36 @@ public:
     /** The velocity at which velocity-to-timbre does nothing — engine::Note's
         default, and what every generated pattern uses. */
     static constexpr float kReferenceVelocity = 0.8f;
+
+    /**
+        String stiffness, 0..1 — how far the partials stretch sharp.
+
+        An ideal string is perfectly harmonic: partial *n* sits at exactly *n*
+        times the fundamental, which is what a plain waveguide produces and
+        part of why one sounds synthetic. A real string resists bending, and
+        that stiffness makes it *dispersive* — high frequencies travel along it
+        faster than low ones, so the upper partials arrive early and end up
+        progressively sharp. It is most audible on thick, low strings, and it
+        is a real component of what a drop-tuned guitar's "growl" is: the
+        partials of a stiff low string beat against each other instead of
+        locking into a clean harmonic stack.
+
+        Modelled the standard way, as a cascade of first-order allpasses in the
+        loop: an allpass passes every frequency at full level but delays them
+        by different amounts, which is exactly what dispersion is. The
+        coefficient is negative so the delay *falls* with frequency — a
+        positive one would flatten the partials instead, which is the easiest
+        sign error to make here and sounds like a detuned string rather than a
+        stiff one.
+
+        0 is the ideal string, i.e. the behaviour that predates this.
+    */
+    void setStiffness(float stiffness) noexcept
+    {
+        stiffness_       = std::clamp(stiffness, 0.0f, 1.0f);
+        dispersionCoeff_ = -kMaxDispersion * stiffness_;
+        updateLoopLength(); // the allpasses' delay is part of the loop
+    }
 
     /** Excites the string. Replaces whatever was ringing, which is what a
         second pluck on the same string does in life. */
@@ -277,10 +310,28 @@ public:
         allpassLastIn_  = delayed;
         allpassLastOut_ = interpolated;
 
+        // Stiffness: an allpass cascade, so each frequency is delayed by a
+        // different amount and the partials stretch. Same first-order form as
+        // the interpolator above, run several times over.
+        float dispersed = interpolated;
+        if (dispersionCoeff_ != 0.0f)
+        {
+            for (int i = 0; i < activeDispersionSections_; ++i)
+            {
+                const float input  = dispersed;
+                const float output = dispersionCoeff_ * (input - dispersionY_[(size_t) i])
+                                   + dispersionX_[(size_t) i];
+
+                dispersionX_[(size_t) i] = input;
+                dispersionY_[(size_t) i] = output;
+                dispersed = output;
+            }
+        }
+
         // One-zero lowpass, unity gain at DC, so the decay rate is set by
         // loopGain_ alone and the filter only shapes the tail's brightness.
-        const float filtered = loopGain_ * ((1.0f - damping_) * interpolated + damping_ * lastFilterIn_);
-        lastFilterIn_ = interpolated;
+        const float filtered = loopGain_ * ((1.0f - damping_) * dispersed + damping_ * lastFilterIn_);
+        lastFilterIn_ = dispersed;
 
         // Whatever arrived through the bridge since the last sample joins the
         // loop's input here, the same place the string's own feedback enters.
@@ -290,7 +341,11 @@ public:
 
         // Cheap envelope follower, only so isRinging() can retire the voice.
         energy_ += 0.001f * (std::abs(filtered) - energy_);
-        return interpolated;
+
+        // The dispersed signal is the string's actual motion at the pickup —
+        // returning the pre-dispersion value would leave the stiffness audible
+        // only through the feedback path and not in the note itself.
+        return dispersed;
     }
 
 private:
@@ -320,7 +375,37 @@ private:
         const double imag  = -b * std::sin(omega);
         const double filterDelay = omega > 1.0e-9 ? -std::atan2(imag, real) / omega : b;
 
-        double lineDelay = totalPeriod - filterDelay;
+        // The dispersion allpasses delay the fundamental too, and unless that
+        // is taken out of the line the whole string plays flat — by a lot, at
+        // eight sections. Derived at the fundamental for the same reason the
+        // loop filter's is, rather than approximated by the coefficient.
+        //
+        // How many of them actually run is decided here, against the note's
+        // own period. A section's delay is a fixed number of *samples*, while
+        // a high note's whole period is only a hundred or so — so a full
+        // cascade can easily ask for more delay than the string has, which
+        // leaves no delay line at all and the note plays at whatever pitch the
+        // clamp allows. Budgeting a quarter of the period keeps the string in
+        // tune everywhere and simply gives high notes less stiffness, which is
+        // the graceful failure: they have fewer audible partials to stretch in
+        // the first place.
+        double dispersionDelay = 0.0;
+        activeDispersionSections_ = 0;
+
+        if (dispersionCoeff_ != 0.0f)
+        {
+            const double perSection = allpassPhaseDelay((double) dispersionCoeff_, omega);
+
+            if (perSection > 1.0e-9)
+            {
+                const double budget = 0.25 * totalPeriod;
+                activeDispersionSections_ = std::clamp((int) std::floor(budget / perSection),
+                                                       0, kDispersionSections);
+                dispersionDelay = activeDispersionSections_ * perSection;
+            }
+        }
+
+        double lineDelay = totalPeriod - filterDelay - dispersionDelay;
 
         // The allpass is well behaved for fractions around 0.5 and misbehaves
         // near zero, so borrow a whole sample from the integer part.
@@ -350,6 +435,22 @@ private:
     /** Deterministic noise: a plucked string wants a burst, and a fixed
         sequence makes the tests repeatable. */
     /** Pick-position variation, on its own stream — see pluck(). */
+    /** Phase delay, in samples, of one first-order allpass
+        (a + z^-1)/(1 + a z^-1) at @p omega radians/sample. */
+    static double allpassPhaseDelay(double a, double omega) noexcept
+    {
+        if (omega < 1.0e-9)
+            return (1.0 - a) / (1.0 + a); // the DC limit, where the ratio below is 0/0
+
+        const double sine   = std::sin(omega);
+        const double cosine = std::cos(omega);
+
+        const double numerator   = std::atan2(-sine, a + cosine);
+        const double denominator = std::atan2(-a * sine, 1.0 + a * cosine);
+
+        return -(numerator - denominator) / omega;
+    }
+
     float nextJitter() noexcept
     {
         jitterState_ = jitterState_ * 1664525u + 1013904223u;
@@ -384,6 +485,18 @@ private:
     float velocitySensitivity_ = 0.0f; // 0 = the behaviour that predates this
     uint32_t jitterState_ = 0x9e3779b9u; // seeded away from the noise stream
     float    pendingCoupling_ = 0.0f;    // bridge energy awaiting the next sample
+
+    /** How many allpass sections the stiffness cascade uses. More sections
+        spread the partials further for the same coefficient; four is enough
+        for a guitar, where the stretch is subtle compared to a piano's. */
+    static constexpr int   kDispersionSections = 8;
+    static constexpr float kMaxDispersion      = 0.88f;
+
+    float stiffness_       = 0.0f;
+    int   activeDispersionSections_ = 0; // how many fit in this note's period
+    float dispersionCoeff_ = 0.0f; // negative: see setStiffness
+    std::array<float, kDispersionSections> dispersionX_ {};
+    std::array<float, kDispersionSections> dispersionY_ {};
     float energy_       = 0.0f;
 
     uint32_t noiseState_ = 22222u;
