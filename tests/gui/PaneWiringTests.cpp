@@ -94,13 +94,20 @@ TEST_CASE("A mixer strip reports every move the user makes", "[gui][wiring]")
 
     float gain = 0.0f,  send = -1.0f, pan = -99.0f;
     bool  muted = false, soloed = false;
-    int   gains = 0, sends = 0, pans = 0, mutes = 0, solos = 0;
+    int   gains = 0, sends = 0, pans = 0, mutes = 0, solos = 0, routes = 0;
+    int   routedTo = -99;
 
     strip.onGainChange = [&](float v) { gain = v;   ++gains; };
     strip.onSendChange = [&](float v) { send = v;   ++sends; };
     strip.onPanChange  = [&](float v) { pan  = v;   ++pans;  };
     strip.onMuteChange = [&](bool  v) { muted = v;  ++mutes; };
     strip.onSoloChange = [&](bool  v) { soloed = v; ++solos; };
+    strip.onOutputBusChange = [&](int busId) { routedTo = busId; ++routes; };
+
+    // The output picker only appears once there is a bus to pick, so it has to
+    // be given one here — otherwise this test would silently stop covering it.
+    strip.setOutputOptions({ { 7, "Drum Bus" } }, -1);
+    strip.resized();
 
     std::vector<juce::Component*> controls;
     paneaudit::collectControls(strip, controls);
@@ -110,35 +117,41 @@ TEST_CASE("A mixer strip reports every move the user makes", "[gui][wiring]")
     int reportsBefore = 0;
     for (auto* control : controls)
     {
-        reportsBefore = gains + sends + pans + mutes + solos;
+        reportsBefore = gains + sends + pans + mutes + solos + routes;
 
         if (auto* slider = dynamic_cast<juce::Slider*>(control))
             slider->setValue(slider->getMinimum()
                              + (slider->getMaximum() - slider->getMinimum()) * 0.25);
         else if (auto* button = dynamic_cast<juce::Button*>(control))
             button->triggerClick();
+        else if (auto* box = dynamic_cast<juce::ComboBox*>(control))
+            box->setSelectedItemIndex(box->getSelectedItemIndex() == 0 ? 1 : 0);
 
         pump();
 
         INFO("control " << (control->getName().isEmpty() ? juce::String("(unnamed)")
                                                          : control->getName())
              << " reported nothing");
-        REQUIRE(gains + sends + pans + mutes + solos > reportsBefore);
+        REQUIRE(gains + sends + pans + mutes + solos + routes > reportsBefore);
     }
 
     INFO("gain " << gains << " send " << sends << " pan " << pans
-         << " mute " << mutes << " solo " << solos);
+         << " mute " << mutes << " solo " << solos << " route " << routes);
     REQUIRE(gains > 0);
     REQUIRE(sends > 0);
     REQUIRE(pans > 0);
     REQUIRE(mutes > 0);
     REQUIRE(solos > 0);
+    REQUIRE(routes > 0);
 
     // The values reported are the ones the controls were set to, not defaults.
     REQUIRE(muted);
     REQUIRE(soloed);
     REQUIRE(pan != -99.0f);
     REQUIRE(send >= 0.0f);
+    // The bus's id, not its position in the list — the encoding the picker
+    // uses is exactly where a routing silently points at the wrong track.
+    REQUIRE(routedTo == 7);
 }
 
 TEST_CASE("The effect panel reports a parameter change for every kind", "[gui][wiring]")

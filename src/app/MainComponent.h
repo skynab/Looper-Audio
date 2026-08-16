@@ -33,6 +33,7 @@
 #include "EffectChainPanel.h"
 #include "EqCurveView.h"
 #include "AnalyserPane.h"
+#include "AutomationPane.h"
 #include "ApplyEffectsDialog.h"
 #include "AudioEditorPane.h"
 #include "MasteringPane.h"
@@ -187,6 +188,10 @@ private:
     double                 warpFactorFor(const model::Clip& clip) const;
     engine::TempoEstimate  detectTempoForClip(const model::Clip& clip);
     void                   addBusTrack();
+    void                   refreshAutomationPaneForSelected();
+    /** Commits an edited lane for the selected track as one undo step. */
+    void                   applyEditedAutomationLane(model::TrackParam param,
+                                                     const model::AutomationLane& lane);
     void                   setTrackOutputBus(int index, int busTrackId);
     void                   toggleClipWarp();
     void                   detectSelectedClipTempo();
@@ -613,6 +618,7 @@ private:
     AudioEditorPane                    audioEditor_; // ditto — see refreshAudioEditorForSelected
     MasteringPane                      masteringPane_; // ditto — see updateMasteringControls
     AnalyserPane                       analyserPane_;
+    AutomationPane                     automationPane_;
     bool                               masteringDragging_ = false;
     model::MasteringSettings           masteringDragFrom_;
     // Follows the system's default output (headphones being plugged in,

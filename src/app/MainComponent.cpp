@@ -997,6 +997,15 @@ MainComponent::MainComponent()
     audioEditor_.onApplyEffectsRequested = [this] { showApplyEffectsDialog(); };
     audioEditor_.onSpeedPitchRequested   = [this] { showSpeedPitchDialog(); };
     analyserPane_.onAnalyseRequested     = [this] { analyseSelection(); };
+
+    automationPane_.onLaneEdited = [this](model::TrackParam param, const model::AutomationLane& lane)
+    {
+        applyEditedAutomationLane(param, lane);
+    };
+    // The parameter picker changing means a different lane entirely, so the
+    // pane has to be handed the new one rather than keeping the old one on
+    // screen under a new name.
+    automationPane_.onParamChanged = [this](model::TrackParam) { refreshAutomationPaneForSelected(); };
     audioEditor_.onCaptureNoisePrintRequested = [this] { captureNoisePrint(); };
     audioEditor_.onReduceNoiseRequested = [this](float amountDb, float floorDb)
     {
@@ -1061,6 +1070,7 @@ MainComponent::MainComponent()
     workspace_.registerPanel("Audio", audioEditor_);
     workspace_.registerPanel("Mastering", masteringPane_);
     workspace_.registerPanel("Analyser", analyserPane_);
+    workspace_.registerPanel("Automation", automationPane_);
     workspace_.registerPanel("Session", sessionView_);
     workspace_.registerPanel("Track FX", effectChain_);
     workspace_.registerPanel("Mixer", mixerView_);
@@ -1143,6 +1153,7 @@ MainComponent::MainComponent()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1545,6 +1556,7 @@ void MainComponent::addTrack()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1587,6 +1599,7 @@ void MainComponent::addDrumTrack()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1668,6 +1681,7 @@ bool MainComponent::commitStampedNotes(const std::vector<engine::Note>& notes,
     refreshPianoRollForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
 
     // Stamping writes notes into the clip; unless the transport happens to be
     // rolling over that bar, nothing moves and nothing sounds. Say what landed
@@ -1822,6 +1836,7 @@ void MainComponent::addBusTrack()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     updateMixerStrips();
@@ -1858,6 +1873,7 @@ void MainComponent::addGuitarTrack()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -1968,6 +1984,7 @@ void MainComponent::addClipToSelectedTrack()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2322,6 +2339,7 @@ void MainComponent::addEffectSlot(model::EffectKind kind, const model::PluginRef
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
 }
 
 void MainComponent::removeEffectSlot(int slotIndex)
@@ -2342,6 +2360,7 @@ void MainComponent::removeEffectSlot(int slotIndex)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
 }
 
 /** Moves a slot one place up or down. Order is the whole point of a chain, so
@@ -2366,6 +2385,7 @@ void MainComponent::moveEffectSlot(int slotIndex, int delta)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
 }
 
 /** Bypass. Not structural — the node stays in the chain — so this is a live
@@ -2391,6 +2411,7 @@ void MainComponent::setEffectSlotBypass(int slotIndex, bool enabled)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
 }
 
 /** A knob turn on a built-in slot: live, non-undoable per notch, same as the
@@ -2514,6 +2535,7 @@ void MainComponent::pasteNotes()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
 }
 
@@ -2567,6 +2589,7 @@ void MainComponent::pasteClip()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2621,6 +2644,7 @@ void MainComponent::deleteSelectedClip()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -2914,6 +2938,7 @@ void MainComponent::setTrackType(int trackIndex, model::TrackType newType)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     updateMixerStrips();
@@ -2944,6 +2969,7 @@ void MainComponent::applyGuitarTone(engine::GuitarTone tone)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     updateMixerStrips();
     updateEditingLabel();
 }
@@ -3069,6 +3095,7 @@ void MainComponent::moveClipToTrack(int srcTrackIndex, int clipIndex, int destTr
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -3148,6 +3175,7 @@ void MainComponent::duplicateClip()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -3201,6 +3229,7 @@ void MainComponent::quantizeNotes(double swingAmount)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
 
     // Reloading the pattern clears the selection, which would silently widen
@@ -3277,6 +3306,7 @@ void MainComponent::setPatternBars(int bars)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     updateEditingLabel();
@@ -3751,6 +3781,65 @@ const model::Clip* MainComponent::selectedAudioClip() const
 /** Shows the selected audio clip in the editor, or a placeholder if the
     selection isn't one — the same is-it-this-kind gating the Synth, Drums
     and Guitar panes use. */
+/** Hands the automation pane the selected track's lane for whichever
+    parameter it is showing. */
+void MainComponent::refreshAutomationPaneForSelected()
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+    {
+        automationPane_.setNoTrackSelected();
+        return;
+    }
+
+    const auto& track = history_.current().tracks[(size_t) selectedTrackIndex_];
+    const auto  param = automationPane_.param();
+
+    // A track with no lane for this parameter gets an empty one rather than
+    // nothing: an empty lane is a real state (no automation, sitting at the
+    // static value) and is the one you start drawing into.
+    const auto* lane = track.lane(param);
+
+    automationPane_.setLane(track.name.empty()
+                                ? ("Track " + juce::String(selectedTrackIndex_ + 1))
+                                : juce::String(track.name),
+                            track.type,
+                            lane != nullptr ? *lane : model::AutomationLane {},
+                            juce::jmax(16.0, songEndBeats()));
+}
+
+/** Commits a lane edited in the automation pane.
+
+    One undo step per gesture, not per breakpoint: the pane reports the whole
+    lane when a drag ends, which is the same "a drag is one edit" rule the
+    mixer faders follow. */
+void MainComponent::applyEditedAutomationLane(model::TrackParam param,
+                                              const model::AutomationLane& lane)
+{
+    if (selectedTrackIndex_ < 0 || selectedTrackIndex_ >= trackCount())
+        return;
+
+    const int index = selectedTrackIndex_;
+
+    history_.edit("Edit automation", [index, param, &lane](model::Song& s)
+    {
+        if (index < 0 || index >= (int) s.tracks.size())
+            return;
+
+        auto& track = s.tracks[(size_t) index];
+
+        // An emptied lane is erased rather than stored empty, so a track with
+        // no automation carries no lanes at all — the state every serialization
+        // and playback path already treats as "use the static value".
+        if (lane.empty())
+            track.automation.erase((int) param);
+        else
+            track.laneFor(param) = lane;
+    });
+
+    syncEngineTracks();
+    arrangementView_.setSong(history_.current());
+}
+
 void MainComponent::refreshAudioEditorForSelected()
 {
     const auto* clip = selectedAudioClip();
@@ -3859,6 +3948,7 @@ void MainComponent::normaliseSelectedClip()
 
     syncEngineTracks();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     showStatus("Normalized: " + juce::String(gainDb, 1) + " dB");
 }
 
@@ -4253,6 +4343,7 @@ void MainComponent::splitClipAtSelection()
 
     syncEngineTracks();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     arrangementView_.setSong(history_.current());
     showStatus("Split at " + juce::String((double) at / sampleRate, 2) + "s");
 }
@@ -4780,6 +4871,7 @@ bool MainComponent::applyDestructiveEditToAllChannels(
 
     syncEngineTracks();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     arrangementView_.setSong(history_.current());
     return true;
 }
@@ -4843,6 +4935,7 @@ void MainComponent::addDrumPad()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
 }
 
@@ -4880,6 +4973,7 @@ void MainComponent::removeDrumPad(int padIndex)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
 
     // More destructive than the row disappearing suggests: every hit that
@@ -5543,6 +5637,7 @@ void MainComponent::selectTrackAndClip(int trackIndex, int clipIndex)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     updateMixerStrips(); // refreshes the selection highlight
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -5578,6 +5673,7 @@ void MainComponent::refreshFromModel()
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -6056,6 +6152,7 @@ void MainComponent::selectTrackAndRefreshAll(int newTrackIndex)
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -6541,6 +6638,7 @@ void MainComponent::commitMidiTake(int targetTrack, int64_t startSample, int64_t
     refreshEffectChainForSelected();
     refreshFretboardForSelected();
     refreshAudioEditorForSelected();
+    refreshAutomationPaneForSelected();
     refreshSessionView();
     arrangementView_.setSong(history_.current());
     arrangementView_.setSelectedClip(selectedTrackIndex_, selectedClipIndex_);
@@ -7901,6 +7999,9 @@ void MainComponent::timerCallback()
     }
 
     arrangementView_.setPlayheadBeats(uiTempoMap_.ppqFromSamples(playhead));
+    // The automation pane reads against the same playhead, so a curve can be
+    // watched doing what it does while the song runs.
+    automationPane_.setPlayheadBeat(uiTempoMap_.ppqFromSamples(playhead));
 
     // Which session cells are actually sounding comes from the engine, not the
     // document: a launch is pending until the next bar line, so the grid would
@@ -8355,6 +8456,9 @@ void MainComponent::updateKeysTimeZoomControls()
 void MainComponent::setTimelineZoom(float zoom)
 {
     arrangementView_.setZoom(zoom);
+    // Kept in step so a breakpoint sits under the bar it belongs to, rather
+    // than under whichever bar this pane happened to be scaled for.
+    automationPane_.setZoom(zoom);
     updateZoomControls();
 }
 

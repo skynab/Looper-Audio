@@ -366,6 +366,20 @@ generating music, in the spirit of FL Studio, Ableton Live, and Reason.
 > the whole group; routing is stored as a track id so deleting or reordering can't
 > silently re-route audio; and a routing left pointing at something that is no longer a
 > bus falls back to the master. See [`docs/PLAN.md`](docs/PLAN.md) §31.
+>
+> **Automation is finally visible and editable.** It has been real in the engine for a
+> long time — written by touching a fader with **Rec Auto** armed, ramped
+> sample-accurately, exported correctly — and completely invisible: `AutomationLane`
+> could only ever *gain* points, so a fader move that went slightly wrong could only be
+> fixed by clearing the lane and performing it again. A new **Automation** panel draws
+> the curve for the selected track's Volume, Pan or Send, sharing the arrangement's
+> zoom and playhead so breakpoints line up with the bars. Click empty space to add a
+> point (and keep dragging it), drag to move, right-click to remove; one undo step per
+> gesture. It is a pane rather than a row in the arrangement on purpose — that view
+> already carries three drag protocols whose separation is load-bearing, and a fourth
+> sharing a coordinate space with clip dragging is how a click that meant "add a
+> breakpoint" ends up moving a clip. Nine new GUI tests drive the real component through
+> real mouse events. See [`docs/PLAN.md`](docs/PLAN.md) §32.
 
 ## Tech stack
 

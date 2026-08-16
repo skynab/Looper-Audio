@@ -45,6 +45,7 @@ This is a living document. As sections mature they should graduate into their ow
 29. [Tempo-aware audio clips](#29-tempo-aware-audio-clips-implemented)
 30. [Sidechain compression](#30-sidechain-compression-implemented)
 31. [Group buses](#31-group-buses-implemented)
+32. [Automation you can see and draw](#32-automation-you-can-see-and-draw-implemented)
 
 ---
 
@@ -2451,3 +2452,93 @@ compressed drum bus sounds. Add a bus, route the drum tracks into it, put a comp
 on it from the Track FX pane, and listen.
 
 **Still deferred:** buses feeding other buses (one level only), and per-bus sends.
+
+---
+
+## 32. Automation you can see and draw (implemented)
+
+Automation has been real in the engine for a long time — written by touching a fader
+with **Rec Auto** armed, ramped sample-accurately across each block, exported correctly
+— and completely **invisible**. Nothing drew a curve. `AutomationLane` could only ever
+*gain* points: it had `addPoint`, `valueAt` and `clear`, and no way to find a point
+again, let alone move or delete one. The only way to fix a fader move that went slightly
+wrong was to clear the lane and perform it again.
+
+### Why a pane, not a lane in the arrangement
+
+The obvious home is a row under each track in the arrangement, and that is where this
+was originally going to go. It was moved after reading `ArrangementView`: it already
+carries **three drag protocols** — clips, files dragged from the browser, dock panels —
+whose separation is load-bearing enough that the code documents how they are told apart
+(by the dragged component's *type*, deliberately not by a string). Adding a fourth
+gesture that shares a coordinate space with clip dragging is how you get a click that
+moves a clip when it meant to add a breakpoint.
+
+An automation *pane* has its own coordinate space and its own gestures, touches none of
+that code, and the dockable workspace exists precisely so it can sit next to the
+arrangement rather than instead of it. It takes its x axis from the same
+`TimelineGeometry` the arrangement uses and follows the same zoom and playhead, so a
+breakpoint lines up with the bar above it rather than approximately with it.
+
+### What was built
+
+- **`model::AutomationLane` gained editing**: `indexNear` (find the point under the
+  cursor), `removePointAt`, and `movePoint` — which returns the point's *new* index,
+  because dragging one past its neighbour reorders the lane and a caller tracking "the
+  point I am dragging" has to be told where it went. Sorted order is not cosmetic here:
+  `valueAt` binary-searches it, so an out-of-order lane doesn't merely look wrong, it
+  reads wrong.
+- **`app::AutomationGeometry`** — JUCE-free value↔pixel mapping, per-parameter ranges,
+  and radius hit-testing, unit-tested headless like `TimelineGeometry` and
+  `PianoRollGeometry`. Gain is edited over −60…+6 dB rather than a fader's full travel:
+  a lane spending half its height between −60 and −inf dB would waste it on differences
+  nobody can hear.
+- **`app::AutomationPane`** — the curve, its breakpoints, the default-value line, bar
+  lines, and the playhead. Click empty space to add a point (and keep dragging it, so the
+  common gesture is one movement), drag to move, right-click to remove.
+
+### The decisions worth recording
+
+**One undo step per gesture, not per breakpoint.** The pane reports the whole lane when a
+drag *ends* — the same rule the mixer faders already follow. Reporting per drag event
+would put hundreds of entries in the undo history for one move.
+
+**The lane is passed whole rather than as a delta.** The edits here are add/move/remove
+on a sorted list; replaying those against the document would mean implementing the same
+sort twice, in two places that must agree.
+
+**An emptied lane is erased, not stored empty.** A track with no automation carries no
+lanes at all — the state every serialization and playback path already treats as "use
+the static value" — so clearing a lane returns the track to exactly the shape it had
+before anything was automated.
+
+**Values before the first point and after the last are drawn as held.** That hold is
+what actually plays; a curve starting at the first breakpoint would misrepresent the
+entire span before it.
+
+### Verification
+
+Nine new GUI tests drive the real component through real `juce::MouseEvent`s: a click
+adds a point, a click in the toolbar does not, a click with no track selected does
+nothing, a drag moves the point that was grabbed (and does not add a second), a
+right-click on a point removes it, a right-click on empty space adds nothing — the case
+where "remove" would otherwise silently become "add" whenever you missed — and an edit
+is reported exactly once, when the gesture ends. 624 headless tests pass (17 new across
+the lane's editing operations and the geometry).
+
+**An existing test caught a real defect in the previous pass.** `PaneWiringTests`
+asserts every control on a mixer strip reports *something* when touched; the group-bus
+**Out** picker failed it, because it was added visible-by-default with no items in it —
+a control that is on screen in every fresh project, has nothing to choose between, and
+reports nothing when clicked. It now starts hidden and appears once a bus exists, and
+both that test and the layout test were extended to cover it properly rather than
+excluded. This is the second time this session that a test written for an earlier
+feature has caught a later one.
+
+**Not verified:** how the curve reads on screen, and whether the pane's default dock
+position is sensible. Open the **Automation** panel, select a track, draw a fade, and
+play it.
+
+**Still deferred:** automation for effect and hosted-plugin parameters — `TrackParam`
+was designed for exactly that extension ("a new enumerator plus the code that applies
+it"), and the pane's parameter picker is where they would appear.

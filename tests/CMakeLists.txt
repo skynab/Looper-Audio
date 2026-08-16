@@ -61,6 +61,7 @@ add_executable(looper_tests
   app/ChordStampTests.cpp
   app/TrackSelectionTests.cpp
   app/RecordSourceChoiceTests.cpp
+  app/AutomationGeometryTests.cpp
   app/DragCommitTests.cpp
   app/ClipLengthRepairTests.cpp)
 
@@ -92,6 +93,7 @@ if (LOOPER_BUILD_APP)
   gui/AudioFileTypesTests.cpp
     gui/IconsTests.cpp
     gui/PianoRollTests.cpp
+    gui/AutomationPaneTests.cpp
     gui/ShortcutsTests.cpp
     gui/WaveformCacheTests.cpp
     gui/RowWrapLayoutTests.cpp

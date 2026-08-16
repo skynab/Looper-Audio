@@ -112,7 +112,11 @@ public:
             if (onOutputBusChange)
                 onOutputBusChange(outputBox_.getSelectedId() > 1 ? outputBox_.getSelectedId() - 2 : -1);
         };
-        addAndMakeVisible(outputBox_);
+        // Added hidden: a fresh project has no buses, so there is nothing to
+        // choose between, and an empty picker sitting on every strip is both
+        // clutter and a control that reports nothing when touched.
+        // setOutputOptions shows it once there is a bus to pick.
+        addChildComponent(outputBox_);
 
         addAndMakeVisible(meter_);
     }
