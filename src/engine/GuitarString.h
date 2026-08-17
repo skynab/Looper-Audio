@@ -39,9 +39,11 @@ public:
     {
         sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
 
-        // Sized for the lowest note anything is likely to ask for (~30Hz, well
-        // below a 7-string's low B), so setFrequency never has to allocate.
-        buffer_.assign((size_t) std::ceil(sampleRate_ / 30.0) + 4, 0.0f);
+        // Sized for the lowest note anything is likely to ask for, so
+        // setFrequency never has to allocate. 25Hz rather than 30: a piano's
+        // bottom A is 27.5Hz, and a string that cannot reach its own lowest
+        // note is not a limit anyone would think to look for.
+        buffer_.assign((size_t) std::ceil(sampleRate_ / 25.0) + 4, 0.0f);
 
         // Sized here, once, for the longest loop this string could ever hold.
         // pluck() runs on the audio thread and must not allocate, so it only
@@ -221,13 +223,98 @@ public:
             excitation_[(size_t) i] = smoothed;
         }
 
+        commitExcitation(length, combOffset, velocity);
+    }
+
+    /**
+        Strikes the string with a hammer — how a piano note starts.
+
+        A pluck sets the string's *displacement* and lets go; a hammer is a
+        felt mass in **contact** with it for a brief moment, and that
+        difference is most of why the two instruments do not sound alike.
+
+        The expressive part is that the contact time is not fixed: a harder
+        blow compresses the felt more, the hammer leaves sooner, and the string
+        is left with far more high-frequency energy. So a loud piano note is
+        not a quiet one turned up — it is a *brighter* note, and steeply so.
+        That is the instrument's entire dynamic range, and it is intrinsic
+        here rather than an optional mapping the way velocity-to-timbre is for
+        a pluck (see setVelocitySensitivity): a hammer that ignored velocity
+        would not be a hammer.
+
+        The strike position combs the excitation exactly as a pluck position
+        does, and for the same reason — the wave leaves in both directions and
+        the near reflection returns inverted. That comb is also why pianos are
+        struck between a seventh and a ninth of the way along: it puts a notch
+        on the seventh partial, which is the one that would clash. See
+        setPickPosition, which is that same geometry.
+    */
+    void strike(float velocity) noexcept
+    {
+        const int size = (int) buffer_.size();
+        if (size < 4)
+            return;
+
+        const int length     = std::clamp(integerDelay_, 2, size - 2);
+        const int combOffset = std::max(1, (int) std::lround(pickPosition_ * (float) length));
+
+        const float blow = std::clamp(velocity, 0.0f, 1.0f);
+
+        // Contact time, in samples. Harder felt and harder playing both
+        // shorten it; the range is the few milliseconds a real hammer spends
+        // on the string, longest for a soft blow on soft felt.
+        const float contactMs = kMaxContactMs
+                              - (kMaxContactMs - kMinContactMs)
+                                * std::clamp(0.5f * blow + 0.5f * hammerHardness_, 0.0f, 1.0f);
+
+        const int pulse = std::clamp((int) std::lround((double) contactMs * 0.001 * sampleRate_),
+                                     2, length);
+
+        // A raised cosine: the force rises and falls smoothly, because felt
+        // compresses rather than striking like a hammer on an anvil. A square
+        // pulse would put a step in the string and sound like a click.
+        for (int i = 0; i < length; ++i)
+        {
+            excitation_[(size_t) i] = i < pulse
+                ? (float) (0.5 * (1.0 - std::cos(2.0 * M_PI * (double) i / (double) pulse)))
+                : 0.0f;
+        }
+
+        // The comb below differences the excitation with a delayed copy of
+        // itself, which is what removes the pulse's DC. That matters more here
+        // than for a pluck: the loop filter has unity gain at DC by design, so
+        // an offset would sit in the string and decay only as slowly as the
+        // note itself — heard as a thump under every key.
+        commitExcitation(length, combOffset, blow);
+    }
+
+    /** How hard the hammer's felt is: 0 is a soft, worn hammer, 1 a bright,
+        freshly voiced one. Shortens contact time the same way a harder blow
+        does, which is why a hard hammer sounds bright even played gently. */
+    void setHammerHardness(float hardness) noexcept
+    {
+        hammerHardness_ = std::clamp(hardness, 0.0f, 1.0f);
+    }
+
+    /**
+        Writes a built excitation into the loop and restarts the string.
+
+        Shared by pluck() and strike() rather than restated: the comb, the
+        placement relative to the write pointer, and the state reset are
+        identical for both, and the only thing that differs is the shape of
+        the burst that gets written.
+    */
+    void commitExcitation(int length, int combOffset, float velocity) noexcept
+    {
+        const int size = (int) buffer_.size();
+
         std::fill(buffer_.begin(), buffer_.end(), 0.0f);
         writeIndex_ = 0;
 
-        // Pick-position comb: the string can't move at the point it's held, so
-        // the excitation cancels with a copy of itself delayed by how far along
-        // it was plucked. Written backwards from the write pointer, so the
-        // first sample read is the start of the burst.
+        // Excitation-position comb: the string cannot move at the point it is
+        // held or struck, so the excitation cancels with a copy of itself
+        // delayed by how far along that point is. Written backwards from the
+        // write pointer, so the first sample read is the start of the burst.
         for (int i = 0; i < length; ++i)
         {
             const int   earlier = i - combOffset;
@@ -492,6 +579,13 @@ private:
     static constexpr int   kDispersionSections = 8;
     static constexpr float kMaxDispersion      = 0.88f;
 
+    /** The contact time a hammer spends on the string, in milliseconds:
+        roughly the range a real one covers between a gentle blow on soft felt
+        and a hard blow on bright felt. */
+    static constexpr float kMaxContactMs = 4.0f;
+    static constexpr float kMinContactMs = 0.6f;
+
+    float hammerHardness_  = 0.5f;
     float stiffness_       = 0.0f;
     int   activeDispersionSections_ = 0; // how many fit in this note's period
     float dispersionCoeff_ = 0.0f; // negative: see setStiffness

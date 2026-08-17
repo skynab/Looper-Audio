@@ -47,6 +47,7 @@ This is a living document. As sections mature they should graduate into their ow
 31. [Group buses](#31-group-buses-implemented)
 32. [Automation you can see and draw](#32-automation-you-can-see-and-draw-implemented)
 33. [Making the guitar sound better](#33-making-the-guitar-sound-better-implemented)
+34. [A piano instrument](#34-a-piano-instrument-steps-1-2-implemented)
 
 ---
 
@@ -2874,3 +2875,239 @@ written against "the last field" decays silently every time the format grows.
 test here answers it. The Modern Metal preset now runs a three-stage cascade into a
 convolved cabinet; play it, and compare against Stiffness/Coupling/Width at zero and
 `stages` back at 1, which is exactly the instrument as it was.
+
+---
+
+## 34. A piano instrument (steps 1–2 implemented)
+
+There is no piano. `TrackInstrument` is Synth, Drum or Guitar, and a piano part today
+means a synth patch approximating one — which is the one instrument nobody accepts an
+approximation of, because everyone has heard a real one.
+
+### Modelled, not sampled
+
+This project does not ship recordings. `DrumSynth` says so in as many words — procedural
+one-shots "so the app can ship a starter kit without bundling (or licensing) anyone
+else's recordings" — and §33 synthesised a cabinet impulse response rather than shipping
+one. A convincing sampled piano is hundreds of megabytes to several gigabytes of
+multi-velocity-layer recordings, and a licence.
+
+But the stronger argument is that **most of a piano string already exists**.
+`GuitarString` is a fractional-delay waveguide with pitch-compensated decay, damping,
+bridge coupling (§33 phase 1) and, since §33 phase 2, **dispersion** — the stiffness that
+stretches partials sharp. Inharmonicity is *the* defining feature of piano tone, far
+stronger there than on a guitar; that file's own comment already notes the guitar's
+stretch is "subtle compared to a piano's". The instrument is largely a re-use of
+machinery that is already written and already tested.
+
+### What actually differs from a guitar — the real work
+
+**1. A hammer is not a pluck.** A pluck sets an initial displacement and combs it by
+where the pick was. A hammer is a felt mass in *contact* for a brief time, and the
+contact shortens as the blow gets harder — so a loud note is not merely a louder quiet
+one, it is dramatically brighter, and nonlinearly so. That is the whole expressive range
+of the instrument. The §33 velocity-to-hardness mapping is the right shape but the wrong
+model: the excitation itself has to become a force pulse whose width depends on
+velocity.
+
+The strike *position* matters too, and is not arbitrary: pianos are struck between 1/7
+and 1/9 of the string's length specifically to suppress the seventh partial, which would
+otherwise be dissonant against the rest. That is a real design fact and belongs in the
+model rather than as a tuned constant.
+
+**2. Two or three strings per note, slightly detuned.** One string in the low bass, two
+in the tenor, three in the treble. This is what produces the piano's shimmer — and, more
+importantly, its **double decay**: the strings are coupled at the bridge, exchange energy
+with one another, and the result is a fast initial decay followed by a much longer
+"aftersound". A single decaying exponential does not sound like a piano and no amount of
+EQ makes it one. The bridge-coupling mechanism from §33 phase 1 is exactly the machinery
+this needs, pointed at strings of the same nominal pitch instead of different ones.
+
+**3. Stiffness that varies across the range.** A piano's inharmonicity is not one number:
+it is high in the short thick bass strings, lowest through the middle, and rises again in
+the short treble. `GuitarNode` currently scales stiffness by *string index*; the piano
+needs it as a function of *pitch*.
+
+One known limit to measure rather than discover: §33's dispersion cascade is budgeted
+against the note's own period, so only as many allpass sections run as fit in a quarter
+of it. A bass note at A0 (27.5 Hz, ~1750 samples) has budget to spare — which is
+fortunate, since that is where the stretch is largest — but the top octave has almost
+none. Whether the treble ends up stiff enough is an open question this plan should
+answer with a measurement, not an assumption.
+
+**4. Dampers, and a sustain pedal.** A guitar string rings until replucked; a piano note
+stops when the key is released. So note-off must *damp*, which is the opposite of the
+guitar's default. Beyond that:
+
+- **The sustain pedal (CC64) lifts every damper**, letting all strings ring and resonate
+  sympathetically with whatever is played. With bridge coupling already built, this comes
+  out of the model rather than being faked with reverb — which is the single most
+  convincing thing a modelled piano can do.
+- **There is no MIDI CC handling anywhere in the engine today.** `Pattern` holds notes
+  and nothing else, so a pedal has nowhere to live in a `Clip` either. This is genuinely
+  new surface — a data-model change, a serialization change, and a playback path — and
+  it is the largest non-DSP piece of this feature.
+- The top two octaves of a real piano have no dampers at all.
+
+**5. Range, and the CPU question.** 88 notes from A0 (27.5 Hz) to C8. `GuitarString`
+sizes its buffer for ~30 Hz, so A0 does not fit and that bound has to come down.
+
+More seriously: with the pedal down, a passage can leave thirty notes ringing, each with
+up to three strings, each string running an eight-section allpass cascade. That is a
+different order of cost from six guitar strings, and it is the one design risk here that
+is not about how it sounds. It needs a voice cap, voice stealing, the existing
+skip-silent-strings trick, and — unlike most things in this codebase — an actual
+measurement of worst-case load before the design is committed to.
+
+**6. A soundboard.** The guitar's last stage is a `Pickup` (an RLC resonance). A piano's
+equivalent is a soundboard, whose response is far too complex for a few poles. §33 phase
+3b already built the machinery for exactly this problem: a synthesised impulse response,
+convolved directly, no asset and no latency. Reusing it here is the natural symmetry.
+
+### Deliberately not in v1
+
+Una corda (the soft pedal), key-release noise and the thump of the key bed, sympathetic
+resonance from *silently depressed* keys, half-pedalling, and per-note tuning curves
+(stretch tuning). Each is real and each is a refinement of something this plan builds
+first.
+
+### Build order
+
+1. **Hammer excitation** in the string model — added alongside `pluck`, not replacing it,
+   so every existing guitar test keeps passing unchanged. Verifiable immediately: a
+   harder strike must be brighter, the way the guitar's velocity test measures.
+2. **`PianoNote`** — one to three detuned strings coupled at a shared bridge. This is
+   where the double decay must appear, and where it is measured.
+3. **`PianoNode`** — the voice pool, note-on/off with dampers, and voice stealing, with
+   the worst-case CPU measurement taken here before anything is wired up.
+4. **The sustain pedal**, end to end: `Pattern` gains pedal events, serialization
+   follows, the sequencer emits them, and the node lifts its dampers.
+5. **The instrument as a track**: `TrackType::Piano`, a pane, presets, and starter
+   content.
+
+### Verification
+
+Most of this is measurable, and the guitar harness extends to it almost unchanged:
+
+- **Tuning** across all 88 notes, within the same 2 cents every other tuning claim here
+  holds to.
+- **Inharmonicity** against the textbook stretch formula, *and* that it varies correctly
+  across the range rather than being a single constant — including whether the treble
+  gets enough, per the budget limit above.
+- **Double decay**: a three-string note's envelope must show a fast initial segment and a
+  slower aftersound; a one-string note must *not*. This is the check that says the thing
+  sounds like a piano, and it is the one to write first.
+- **Hammer dynamics**: a harder strike is brighter, not merely louder.
+- **Dampers**: a note-off silences within a few tens of milliseconds; with the pedal
+  held, it does not; and a note in the top octave rings regardless.
+- **Sympathetic resonance**: with the pedal down, striking one note must put measurable
+  energy into an untouched neighbour — the same shape as §33's coupling test.
+- **Stability**: no string may grow over 30 seconds at maximum coupling, the guarantee
+  that already exists and that a shared bridge makes harder to keep.
+- **CPU**: worst-case polyphony measured, not assumed.
+- `rmsDry` and every other sentinel unchanged: this is a new instrument and must not
+  touch the existing render path.
+
+### Step 1 as built: hammer excitation
+
+`GuitarString::strike(velocity)` sits alongside `pluck`, and the pluck path is untouched
+— every existing guitar test passes unchanged, which was the point of adding rather than
+generalising.
+
+What the two share is now shared in code as well as in principle: the comb, the placement
+relative to the write pointer and the state reset were identical for both, so they moved
+into one `commitExcitation`. Only the shape of the burst differs, which is exactly the
+physical distinction — a pluck sets *displacement* and lets go, a hammer stays in
+**contact** for a moment.
+
+The expressive part is that contact time is not fixed. A harder blow compresses the felt,
+the hammer leaves sooner, and the string keeps far more high-frequency energy — so a loud
+note is a *brighter* note rather than a louder one. That is intrinsic here rather than an
+optional mapping the way `velocitySensitivity` is for a pluck: a hammer that ignored
+velocity would not be a hammer. Felt hardness (`setHammerHardness`) shortens contact the
+same way, which is why a brightly voiced piano sounds bright even played gently.
+
+Two details worth recording:
+
+- **The force pulse is a raised cosine, not a square one.** Felt compresses; it does not
+  strike like a hammer on an anvil, and a step in the string reads as a click.
+- **The strike-position comb is what removes the pulse's DC**, and that matters more for
+  a hammer than a pluck. A one-sided force pulse is full of DC, and the loop filter has
+  unity gain at DC by design — so an offset would sit in the string and decay only as
+  slowly as the note itself, heard as a thump under every key. It gets a test of its own
+  rather than being left as a property that happens to hold.
+
+The strike position reuses `setPickPosition`, because it is the same geometry: the wave
+leaves in both directions and the near reflection returns inverted. A piano is struck
+between a seventh and a ninth of the way along precisely to put that comb's notch on the
+seventh partial, and the tests strike at an eighth.
+
+### Verification
+
+Six new headless tests: a harder blow is measurably brighter (the defining property);
+harder felt is brighter at the same blow; a struck string sounds and decays; a strike
+leaves no DC offset; striking does not move the pitch, to the same 2 cents everything
+else here holds to; and a hammer does not produce the same note as a pick, which would
+make the whole distinction decorative.
+
+652 headless tests pass, every bounce check included `rmsDry` is unchanged, and nothing
+outside `GuitarString` was touched — `strike` has no caller yet, which is what step 2
+(`PianoNote`: the coupled, detuned strings and the double decay) is for.
+
+### Step 2 as built: the unison, and the double decay
+
+`engine::PianoNote` is one key: the one to three slightly detuned strings a hammer
+strikes together, joined at a shared bridge. Two pure functions go with it —
+`pianoStringCount` (single-strung through the low bass, double through the upper bass,
+triple from the tenor up) and `pianoStiffness`, which is **U-shaped** across the
+keyboard: high in the bass where the wire is short and very thick, least through the
+middle where the scaling is most ideal, climbing again in the top octaves. That shape is
+what a real instrument measures, and neither a constant nor a simple slope reproduces it.
+
+**The bridge loads the strings; it does not feed them.** Each string receives a fraction
+of the summed bridge motion *with the sign reversed*. In phase that is a strong damping
+term — the strings drive the bridge hard and genuinely lose energy through it; out of
+phase their forces cancel at the bridge, there is almost nothing to damp, and what is
+left rings on. That is the double decay, and the sign is the whole thing: feeding the sum
+back in phase would reinforce exactly the motion that is supposed to be dying, and the
+note would have an *anti*-decay rather than an aftersound.
+
+This is the same coupling §33 built for the guitar, pointed at strings of the same
+nominal pitch instead of different ones.
+
+### The control that failed, and what it taught
+
+The first test set asserted that a trichord shows a double decay and that an **uncoupled**
+trichord shows none. The second failed: an uncoupled trichord's decay was 15.7 dB/s early
+and 7.8 dB/s late — a pronounced double decay with no bridge involved at all.
+
+The reason is straightforward once measured: three *detuned* strings beat against one
+another, so the summed peak falls faster at first than any single string does. **Detuning
+alone buys part of the effect**, and the original test would have passed just as happily
+with the coupling deleted — which is the worst kind of test, since it would have reported
+success for a feature that had stopped existing.
+
+The check is now comparative: the coupled trichord must fall away faster *relative to its
+own aftersound* than the uncoupled one. That isolates what the bridge actually
+contributes, and it fails if the coupling is removed. The main test's comment was
+corrected too — it claimed the bridge as the sole cause of something both mechanisms
+produce.
+
+### Verification
+
+Ten new headless tests: a trichord decays fast then slowly; a single string decays at one
+rate (nothing to be out of phase with); the bridge deepens the double decay beyond
+detuning alone; a unison beats, with the envelope measurably *rising* again, which no
+single decaying exponential ever does; a damper stops the note within a few tens of
+milliseconds and an undamped one keeps ringing; adding strings does not shift the pitch,
+since the detuning is spread symmetrically about it; a coupled unison cannot grow over 20
+seconds at maximum coupling; the string counts match the instrument; and inharmonicity is
+U-shaped.
+
+`GuitarString`'s pitch floor also came down from 30Hz to 25Hz — a piano's bottom A is
+27.5Hz, and a string that cannot reach its own lowest note is not a limit anyone would
+think to look for.
+
+662 headless tests, 173 GUI tests and every bounce check pass, `rmsDry` unchanged.
+`PianoNote` has no caller yet — step 3 (`PianoNode`: the voice pool, dampers, stealing,
+and the worst-case CPU measurement) is next.

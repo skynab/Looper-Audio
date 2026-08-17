@@ -547,3 +547,122 @@ TEST_CASE("A stiff string still decays", "[engine][guitar]")
     REQUIRE(std::isfinite(late));
     REQUIRE(late < early);
 }
+
+// --- Piano step 1: hammer excitation (see docs/PLAN.md §34) ---------------
+
+namespace
+{
+    std::vector<float> strikeAt(float velocity, float hardness, double frequency = 220.0)
+    {
+        GuitarString string;
+        string.prepare(kSampleRate);
+        string.setFrequency(frequency);
+        string.setDecaySeconds(6.0);
+        string.setBrightness(0.9f);
+        string.setPickPosition(0.125f); // a piano's strike point: an eighth along
+        string.setHammerHardness(hardness);
+        string.strike(velocity);
+        return render(string, 0.5);
+    }
+}
+
+TEST_CASE("A harder blow is brighter, not just louder", "[engine][piano]")
+{
+    // The defining property of a hammer, and the whole dynamic range of a
+    // piano: harder playing compresses the felt, the hammer leaves sooner, and
+    // the string keeps far more high-frequency energy. Unlike a pluck, this is
+    // intrinsic — there is no sensitivity control to switch it off, because a
+    // hammer that ignored velocity would not be a hammer.
+    const double soft = brightnessRatio(strikeAt(0.2f, 0.5f), 220.0);
+    const double hard = brightnessRatio(strikeAt(1.0f, 0.5f), 220.0);
+
+    INFO("soft " << soft << " hard " << hard);
+    REQUIRE(hard > soft * 1.2);
+}
+
+TEST_CASE("Harder felt is brighter at the same blow", "[engine][piano]")
+{
+    // Which is why a brightly voiced piano sounds bright even played gently.
+    const double worn   = brightnessRatio(strikeAt(0.6f, 0.0f), 220.0);
+    const double voiced = brightnessRatio(strikeAt(0.6f, 1.0f), 220.0);
+
+    INFO("worn " << worn << " voiced " << voiced);
+    REQUIRE(voiced > worn * 1.2);
+}
+
+TEST_CASE("A struck string sounds and then decays", "[engine][piano]")
+{
+    const auto signal = strikeAt(0.8f, 0.5f);
+
+    const int window = (int) (0.05 * kSampleRate);
+    double early = 0.0, late = 0.0;
+    for (int i = 0; i < window; ++i)
+    {
+        early = std::max(early, (double) std::abs(signal[(size_t) i]));
+        late  = std::max(late,  (double) std::abs(signal[signal.size() - 1 - (size_t) i]));
+    }
+
+    REQUIRE(early > 0.01);
+    REQUIRE(late < early);
+}
+
+TEST_CASE("A strike leaves no DC thump", "[engine][piano]")
+{
+    // A hammer's force pulse is one-sided and therefore full of DC, and the
+    // loop filter has unity gain at DC by design — so an offset would sit in
+    // the string and decay only as slowly as the note itself, heard as a thump
+    // under every key. The strike-position comb differences it away; this is
+    // the check that it really does.
+    const auto signal = strikeAt(1.0f, 1.0f);
+
+    double sum = 0.0;
+    double peak = 0.0;
+    for (float sample : signal)
+    {
+        sum  += (double) sample;
+        peak  = std::max(peak, (double) std::abs(sample));
+    }
+
+    const double mean = sum / (double) signal.size();
+    REQUIRE(peak > 0.01);
+    REQUIRE(std::abs(mean) < peak * 0.02);
+}
+
+TEST_CASE("Striking does not detune the string", "[engine][piano]")
+{
+    // A different excitation must not move the pitch — the loop decides that,
+    // and this is the same 2 cents every other tuning claim here holds to.
+    for (double openHz : kOpenStrings)
+    {
+        for (int fret : { 0, 12 })
+        {
+            const double target = fretted(openHz, fret);
+            const auto   signal = strikeAt(0.8f, 0.5f, target);
+
+            INFO("struck at " << target << " Hz");
+            REQUIRE(std::abs(centsBetween(measurePitch(signal, target), target)) < 2.0);
+        }
+    }
+}
+
+TEST_CASE("A hammer does not sound like a pick", "[engine][piano]")
+{
+    // They are different excitations of the same string, so the notes must
+    // differ — otherwise the whole distinction is decorative.
+    GuitarString plucked;
+    plucked.prepare(kSampleRate);
+    plucked.setFrequency(220.0);
+    plucked.setDecaySeconds(6.0);
+    plucked.setBrightness(0.9f);
+    plucked.setPickPosition(0.125f);
+    plucked.pluck(0.8f);
+    const auto pluckedSignal = render(plucked, 0.5);
+
+    const auto struckSignal = strikeAt(0.8f, 0.5f);
+
+    double difference = 0.0;
+    for (size_t i = 0; i < struckSignal.size(); ++i)
+        difference += std::abs(struckSignal[i] - pluckedSignal[i]);
+
+    REQUIRE(difference > 1.0);
+}
