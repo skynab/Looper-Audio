@@ -15,6 +15,9 @@
 #include "engine/EffectChain.h"
 #include "engine/GenerativeLoop.h"
 #include "engine/GuitarNode.h"
+#include <chrono>
+
+#include "engine/PianoNode.h"
 #include "engine/PluginHost.h"
 #include "engine/PluginNode.h"
 #include "engine/FilterEffect.h"
@@ -1578,6 +1581,117 @@ int main(int argc, char** argv)
         // The cabinet is the difference between distortion and fizz, so it
         // has to actually be in the path rather than merely stored.
         driveCabinetWorks = worstDifference(withCab, noCab) > 1.0e-3f;
+    }
+
+    // Piano (docs/PLAN.md §34 step 3): does it sound, does a damper stop it,
+    // and — the question this instrument actually turns on — what does full
+    // polyphony cost?
+    //
+    // The CPU figure is measured here rather than assumed, because it is the
+    // one design risk in the piano that is not about how it sounds. Every
+    // voice is up to three waveguides, each running an eight-section allpass
+    // cascade for stiffness, so a full pedalled chord is a different order of
+    // cost from six guitar strings and the voice count has to be chosen
+    // against a number rather than a guess.
+    bool pianoSounds     = false;
+    bool pianoDamps      = false;
+    bool pianoTopRings   = false;
+    bool pianoAffordsPolyphony = false;
+    {
+        auto renderPiano = [&](const std::vector<int>& notes, double renderSeconds,
+                               double releaseAt, double* elapsedSecondsOut)
+        {
+            const int totalSamples = (int) (sampleRate * renderSeconds);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            PianoNode piano;
+            piano.prepare(sampleRate, 512);
+
+            const int releaseSample = releaseAt > 0.0 ? (int) (releaseAt * sampleRate) : -1;
+
+            const auto startedAt = std::chrono::steady_clock::now();
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate        = sampleRate;
+                context.numSamples        = n;
+                context.transport.playing = true;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
+
+                juce::MidiBuffer blockMidi;
+                if (pos == 0)
+                    for (int note : notes)
+                        blockMidi.addEvent(juce::MidiMessage::noteOn(1, note, 0.85f), 0);
+
+                if (releaseSample >= pos && releaseSample < pos + n)
+                    for (int note : notes)
+                        blockMidi.addEvent(juce::MidiMessage::noteOff(1, note),
+                                           releaseSample - pos);
+
+                juce::AudioBuffer<float> block(mix.getArrayOfWritePointers(), 2, pos, n);
+                piano.process(block, blockMidi, context);
+            }
+
+            if (elapsedSecondsOut != nullptr)
+                *elapsedSecondsOut = std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - startedAt).count();
+
+            return mix;
+        };
+
+        // A middle-register chord, left to ring.
+        const auto chord = renderPiano({ 48, 55, 60, 64, 67 }, 3.0, 0.0, nullptr);
+        pianoSounds = chord.getRMSLevel(0, 0, chord.getNumSamples()) > 0.005f
+                   && chord.getMagnitude(0, 0, chord.getNumSamples()) < 1.5f;
+
+        // The same chord, released after a second: the dampers must stop it.
+        const auto damped = renderPiano({ 48, 55, 60, 64, 67 }, 3.0, 1.0, nullptr);
+        const float beforeRelease = damped.getRMSLevel(0, (int) (0.7 * sampleRate),
+                                                       (int) (0.2 * sampleRate));
+        const float afterRelease  = damped.getRMSLevel(0, (int) (2.5 * sampleRate),
+                                                       (int) (0.4 * sampleRate));
+        pianoDamps = beforeRelease > 0.005f && afterRelease < beforeRelease * 0.05f;
+
+        // ...but the top of the keyboard has no dampers, so it rings anyway.
+        const auto topNote = renderPiano({ 100 }, 2.0, 0.5, nullptr);
+        const float topBefore = topNote.getRMSLevel(0, (int) (0.3 * sampleRate),
+                                                    (int) (0.15 * sampleRate));
+        const float topAfter  = topNote.getRMSLevel(0, (int) (1.5 * sampleRate),
+                                                    (int) (0.4 * sampleRate));
+        pianoTopRings = topBefore > 0.002f && topAfter > topBefore * 0.05f;
+
+        std::cout << "piano detail: chordRms=" << chord.getRMSLevel(0, 0, chord.getNumSamples())
+                  << " chordPeak=" << chord.getMagnitude(0, 0, chord.getNumSamples())
+                  << " beforeRelease=" << beforeRelease << " afterRelease=" << afterRelease
+                  << " topBefore=" << topBefore << " topAfter=" << topAfter
+                  << " topWholeRms=" << topNote.getRMSLevel(0, 0, topNote.getNumSamples())
+                  << " topPeak=" << topNote.getMagnitude(0, 0, topNote.getNumSamples()) << "\n";
+
+        // Worst case: every voice sounding, in the bass where the strings are
+        // longest and the stiffness cascade is deepest.
+        std::vector<int> everything;
+        for (int i = 0; i < PianoNode::kMaxVoices; ++i)
+            everything.push_back(28 + i);
+
+        double elapsed = 0.0;
+        const double renderedSeconds = 4.0;
+        const auto   allVoices = renderPiano(everything, renderedSeconds, 0.0, &elapsed);
+
+        const double realtimeFactor = elapsed > 0.0 ? renderedSeconds / elapsed : 0.0;
+
+        std::cout << "piano: voices=" << PianoNode::kMaxVoices
+                  << " realtime=" << realtimeFactor << "x"
+                  << " rms=" << allVoices.getRMSLevel(0, 0, full.getNumSamples()) << "\n";
+
+        // Five times realtime for the *whole* instrument at full polyphony, so
+        // a piano track leaves room for everything else in the project. Below
+        // that the voice count is too high, not the machine too slow.
+        pianoAffordsPolyphony = realtimeFactor > 5.0
+                             && allVoices.getRMSLevel(0, 0, full.getNumSamples()) > 0.005f;
     }
 
     // Cascaded gain stages (docs/PLAN.md §33 phase 3).
@@ -3359,6 +3473,10 @@ int main(int argc, char** argv)
               << "  guitarStringsCouple=" << (guitarStringsCouple ? 1 : 0)
               << "  guitarStiffnessChangesTone=" << (guitarStiffnessChangesTone ? 1 : 0)
               << "  cascadedStagesEnrich=" << (cascadedStagesEnrich ? 1 : 0)
+              << "  pianoSounds=" << (pianoSounds ? 1 : 0)
+              << "  pianoDamps=" << (pianoDamps ? 1 : 0)
+              << "  pianoTopRings=" << (pianoTopRings ? 1 : 0)
+              << "  pianoAffordsPolyphony=" << (pianoAffordsPolyphony ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  gateClosesQuiet=" << (gateClosesQuiet ? 1 : 0)
               << "  metalToneHasBody=" << (metalToneHasBody ? 1 : 0)
@@ -3403,6 +3521,7 @@ int main(int argc, char** argv)
                  && midiRecordingWorks && warpFitsTheGrid && sidechainDucks && groupBusWorks
                  && guitarHasWidth && guitarStringsCouple && guitarStiffnessChangesTone
                  && cascadedStagesEnrich
+                 && pianoSounds && pianoDamps && pianoTopRings && pianoAffordsPolyphony
                  && generativeLoopWorks
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks

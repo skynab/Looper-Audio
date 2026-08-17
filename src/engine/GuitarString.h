@@ -73,8 +73,7 @@ public:
     void setFrequency(double hz) noexcept
     {
         frequency_ = std::clamp(hz, 20.0, sampleRate_ * 0.25);
-        updateLoopLength();
-        updateLoopGain();
+        updateDamping(); // the cap below depends on the pitch
     }
 
     /** How long the note takes to fall 60dB, in seconds, measured at the
@@ -94,8 +93,8 @@ public:
         // Mapped away from both extremes: at 0.5 the filter is a two-point
         // average (maximum damping of the top), at 0 it's a pure delay and the
         // string never darkens at all.
-        damping_ = 0.5f - 0.45f * std::clamp(brightness, 0.0f, 1.0f);
-        updateLoopLength(); // the filter's own delay is part of the loop
+        requestedDamping_ = 0.5f - 0.45f * std::clamp(brightness, 0.0f, 1.0f);
+        updateDamping();
     }
 
     /** Where along the string it's plucked: 0 = at the bridge (thin, nasal),
@@ -512,11 +511,83 @@ private:
         second, so the per-pass gain that reaches -60dB in t seconds depends on
         pitch — this is the pitch compensation the plan calls for. Always < 1,
         so the loop cannot self-oscillate. */
+    /**
+        Applies the requested damping, capped so the loop filter cannot take
+        meaningful energy out of the *fundamental*.
+
+        The filter is there to darken the tail — to roll the harmonics off as
+        the note rings. Low down that is exactly what it does, because the
+        fundamental sits far below the filter's reach. High up it does not: at
+        2.6kHz the fundamental is already where the filter cuts, and since a
+        note that pitch goes round the loop thousands of times a second, a loss
+        of a fraction of a percent per pass compounds into a note that is gone
+        in a tenth of a second no matter what decay time was asked for.
+
+        That is what made a piano's top octave silent, and it was invisible on
+        a guitar whose highest note is half that pitch. The cap solves for the
+        largest damping whose gain at the fundamental stays above kMinFundamentalGain,
+        and leaves anything lower untouched — so nothing in the guitar's range
+        changes, and the top of a piano keeps the brightness a short string
+        actually has.
+    */
+    void updateDamping() noexcept
+    {
+        damping_ = requestedDamping_;
+
+        const double omega = 2.0 * M_PI * frequency_ / sampleRate_;
+        const double u     = 1.0 - std::cos(omega);
+
+        if (u > 1.0e-12)
+        {
+            // |H|^2 = 1 - 2bu + 2ub^2, solved for |H| = kMinFundamentalGain.
+            constexpr double g = kMinFundamentalGain;
+            const double discriminant = 1.0 - 2.0 * (1.0 - g * g) / u;
+
+            // Negative means no damping value in range loses that much here —
+            // the whole guitar range — so the request stands as asked.
+            if (discriminant >= 0.0)
+            {
+                const auto cap = (float) (0.5 * (1.0 - std::sqrt(discriminant)));
+                damping_ = std::min(damping_, cap);
+            }
+        }
+
+        updateLoopLength(); // the filter's own delay is part of the loop
+        updateLoopGain();
+    }
+
     void updateLoopGain() noexcept
     {
         const double passes = std::max(1.0, decaySeconds_ * frequency_);
-        loopGain_ = (float) std::exp(std::log(0.001) / passes) * muteFactor_;
-        loopGain_ = std::min(loopGain_, 0.99999f);
+        double perPass = std::exp(std::log(0.001) / passes);
+
+        // Divided by what the damping filter itself takes out at the
+        // fundamental, because that is part of the loop too and it is *not*
+        // small up high.
+        //
+        // Without this, setDecaySeconds does not mean what it says at the top
+        // of the range — the documented contract is a time that "holds across
+        // the range", and it did not. The filter's per-pass loss is tiny (a
+        // fraction of a percent) but a high note goes round the loop thousands
+        // of times a second, so it compounds into everything: a 2.6kHz note
+        // asked for a three-second decay and got about a tenth of one. The
+        // guitar never showed it because its top note is half that pitch;
+        // building a piano, whose top C is 4186Hz, is what exposed it.
+        const double omega = 2.0 * M_PI * frequency_ / sampleRate_;
+        const double b     = damping_;
+        const double real  = (1.0 - b) + b * std::cos(omega);
+        const double imag  = -b * std::sin(omega);
+        const double filterGain = std::hypot(real, imag);
+
+        if (filterGain > 1.0e-6)
+            perPass /= filterGain;
+
+        // Still clamped below unity: a very high note with very dark damping
+        // can ask for more compensation than a stable loop allows, and there
+        // the note simply decays faster than requested. That is a graceful
+        // limit rather than a silent one — the alternative is a loop that
+        // grows.
+        loopGain_ = std::min((float) perPass * muteFactor_, 0.99999f);
     }
 
     /** Deterministic noise: a plucked string wants a burst, and a fixed
@@ -568,6 +639,12 @@ private:
     float loopGain_     = 0.999f;
     float muteFactor_   = 1.0f;
     float pickPosition_ = 0.25f;
+    /** The least the loop filter may pass at the fundamental. Chosen so the
+        filter's contribution to the decay stays negligible next to the decay
+        actually requested. */
+    static constexpr double kMinFundamentalGain = 0.9995;
+
+    float requestedDamping_ = 0.5f - 0.45f * 0.7f; // matches the default brightness
     float pickHardness_ = 0.6f;
     float velocitySensitivity_ = 0.0f; // 0 = the behaviour that predates this
     uint32_t jitterState_ = 0x9e3779b9u; // seeded away from the noise stream

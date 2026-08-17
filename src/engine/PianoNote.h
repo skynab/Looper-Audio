@@ -94,8 +94,16 @@ public:
 
     void prepare(double sampleRate)
     {
+        sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+
         for (auto& string : strings_)
-            string.prepare(sampleRate);
+            string.prepare(sampleRate_);
+
+        // ~320Hz. Low enough that the bridge is genuinely mass-controlled
+        // above it, which is both the physics and what keeps a short, lightly
+        // damped treble loop stable.
+        const auto x = (float) (2.0 * M_PI * 320.0 / sampleRate_);
+        bridgeCoeff_ = std::clamp(x / (1.0f + x), 0.0f, 1.0f);
 
         applyFrequencies();
     }
@@ -104,6 +112,7 @@ public:
     {
         for (auto& string : strings_)
             string.reset();
+        bridgeState_ = 0.0f;
     }
 
     // ---- setup ----
@@ -215,11 +224,25 @@ public:
 
         if (coupling_ > 0.0f && stringCount_ > 1)
         {
+            // The bridge is mass-controlled: it is heavy, it moves with the
+            // low modes and barely responds to the high ones. Lowpassing what
+            // it passes back is therefore the physical description, not a
+            // safety measure — but it is also what makes this stable.
+            //
+            // Without it, the load is broadband feedback around the string's
+            // own loop, and a delay turns negative feedback positive at every
+            // frequency where it lands half a period out. Low down that never
+            // mattered, because the loop's own damping swamped it. Once the
+            // damping cap (see GuitarString::updateDamping) left the top
+            // octave's loop nearly lossless, a treble note fed back louder
+            // each pass and ran away to NaN within a second.
+            bridgeState_ += bridgeCoeff_ * (bridge - bridgeState_);
+
             // Negative: the bridge is a *load*, not a source. Feeding the sum
             // back in phase would reinforce the very motion that is supposed
             // to be dying quickly, and the note would have no double decay at
             // all — it would have an anti-decay.
-            const float load = -coupling_ * bridge;
+            const float load = -coupling_ * bridgeState_;
             for (int i = 0; i < stringCount_; ++i)
                 strings_[(size_t) i].couple(load);
         }
@@ -253,6 +276,9 @@ private:
 
     std::array<GuitarString, kMaxStrings> strings_;
 
+    double sampleRate_   = 48000.0;
+    float  bridgeCoeff_  = 0.04f;
+    float  bridgeState_  = 0.0f;
     double frequency_    = 440.0;
     int    stringCount_  = kMaxStrings;
     float  detuneCents_  = kDefaultDetuneCents;

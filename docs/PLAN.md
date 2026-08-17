@@ -47,7 +47,7 @@ This is a living document. As sections mature they should graduate into their ow
 31. [Group buses](#31-group-buses-implemented)
 32. [Automation you can see and draw](#32-automation-you-can-see-and-draw-implemented)
 33. [Making the guitar sound better](#33-making-the-guitar-sound-better-implemented)
-34. [A piano instrument](#34-a-piano-instrument-steps-1-2-implemented)
+34. [A piano instrument](#34-a-piano-instrument-steps-1-3-implemented)
 
 ---
 
@@ -2878,7 +2878,7 @@ convolved cabinet; play it, and compare against Stiffness/Coupling/Width at zero
 
 ---
 
-## 34. A piano instrument (steps 1–2 implemented)
+## 34. A piano instrument (steps 1–3 implemented)
 
 There is no piano. `TrackInstrument` is Synth, Drum or Guitar, and a piano part today
 means a synth patch approximating one — which is the one instrument nobody accepts an
@@ -3111,3 +3111,65 @@ think to look for.
 662 headless tests, 173 GUI tests and every bounce check pass, `rmsDry` unchanged.
 `PianoNote` has no caller yet — step 3 (`PianoNode`: the voice pool, dampers, stealing,
 and the worst-case CPU measurement) is next.
+
+### Step 3 as built: the voice pool, and what the measurement changed
+
+`engine::PianoNode` is a pool of `PianoNote`s built like `GuitarNode` — atomics read once
+per block, MIDI rendered in spans so a note lands on the sample it was scheduled for —
+with the differences the instrument dictates: **note-off damps** (the normal end of a
+piano note, where a guitar ignores note-offs on purpose), a voice is a *key* rather than a
+string, decay time falls steeply with pitch (a low A sustains for the best part of a
+minute, a top C for a second), the keyboard is panned low-left to high-right, and the top
+octave has **no dampers at all** — those notes ring on past the key release, which is a
+small thing and audible.
+
+**The CPU question the plan flagged is answered, and the answer was "not a problem".**
+24 voices of bass — the longest strings and deepest stiffness cascades — rendered at 32x
+realtime. On that evidence the pool was raised to **48**, because that is what the sustain
+pedal needs and the measurement says it is affordable; 48 voices measures 13.7x realtime.
+This is the one number in the piano that was never going to be settled by listening.
+
+### Three bugs, and two of them were older than the piano
+
+**A five-note chord peaked at 2.9.** A piano is played in chords far more than a guitar
+is, so its headroom has to assume them; `kOutputScale` does the same job GuitarNode's 0.4
+does for six strings.
+
+**Decay time did not mean what it said at the top of the range.** `updateLoopGain` solved
+for the requested T60 assuming the rest of the loop was lossless, but the damping filter
+is in the loop too. Its per-pass loss is a fraction of a percent — negligible for a
+guitar — but a 2.6kHz note goes round thousands of times a second, so it compounded into
+a note that asked for three seconds and got a tenth of one. `setDecaySeconds` documents a
+time that "holds across the range", and it did not. It now divides out the filter's gain
+at the fundamental.
+
+**And that was not enough, because the filter was damping the fundamental itself.** Up
+there the fundamental sits where the filter cuts, so the compensation above asked for a
+loop gain over unity and got clamped — the note still died. The damping is now *capped*
+so the filter's gain at the fundamental stays above 0.9995, solved in closed form. Below
+about 1kHz the cap never binds, so nothing in the guitar's range changes; above it, the
+top of a piano keeps the brightness a short string actually has.
+
+Both of those were latent in `GuitarString` from the beginning. Neither was reachable
+from a guitar, whose highest note is half a piano's top C — building an instrument that
+goes higher is what exposed them.
+
+**Then the treble blew up to NaN.** Making the loop nearly lossless is what surfaced the
+third: the bridge coupling injected the *broadband* string sum as feedback, and a delay
+turns negative feedback positive at every frequency landing half a period out. The loop's
+own damping had been swamping that, and once it stopped, a treble note grew each pass. The
+bridge now **lowpasses what it passes back at ~320Hz** — which is the physics rather than
+a patch, since a real bridge is mass-controlled and barely responds above a few hundred
+Hz. It is also why the top octave couples weakly, rings on, and needs no dampers.
+
+### Verification
+
+Four new bounce checks: the piano sounds and stays in range; a released chord is stopped
+by its dampers; a note in the top octave rings on past its release; and full polyphony
+holds above 5x realtime, so a piano track leaves room for the rest of a project. 662
+headless tests, 173 GUI tests and every existing check pass, `rmsDry` and the guitar's
+sentinels included — the string changes were measured to leave the guitar's range
+untouched rather than assumed to.
+
+`PianoNode` still has no caller: step 4 is the sustain pedal (the new MIDI-CC surface,
+and the largest non-DSP piece), then step 5 wires it up as a track type.
