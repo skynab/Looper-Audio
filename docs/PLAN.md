@@ -47,7 +47,7 @@ This is a living document. As sections mature they should graduate into their ow
 31. [Group buses](#31-group-buses-implemented)
 32. [Automation you can see and draw](#32-automation-you-can-see-and-draw-implemented)
 33. [Making the guitar sound better](#33-making-the-guitar-sound-better-implemented)
-34. [A piano instrument](#34-a-piano-instrument-steps-1-3-implemented)
+34. [A piano instrument](#34-a-piano-instrument-steps-1-4-implemented)
 
 ---
 
@@ -2878,7 +2878,7 @@ convolved cabinet; play it, and compare against Stiffness/Coupling/Width at zero
 
 ---
 
-## 34. A piano instrument (steps 1–3 implemented)
+## 34. A piano instrument (steps 1–4 implemented)
 
 There is no piano. `TrackInstrument` is Synth, Drum or Guitar, and a piano part today
 means a synth patch approximating one — which is the one instrument nobody accepts an
@@ -3173,3 +3173,67 @@ untouched rather than assumed to.
 
 `PianoNode` still has no caller: step 4 is the sustain pedal (the new MIDI-CC surface,
 and the largest non-DSP piece), then step 5 wires it up as a track type.
+
+### Step 4 as built: the sustain pedal, and the soundboard
+
+The largest non-DSP piece, as expected: `Pattern` had notes and nothing else, so a pedal
+had nowhere to live. It now carries `PedalEvent`s (beat, down) — the first performance
+data in this engine that is not a note — which `PatternPlayback` emits as ordinary
+**CC64**, so anything that understands MIDI understands them, including a hosted plugin
+that would otherwise need a private channel. Serialization follows (`PEDALS`/`PEDAL`,
+format v41), and `flush` lifts the pedal **unconditionally**: sending it when it was
+never pressed costs one ignored message, while a stuck pedal would leave every later note
+ringing forever with no visible cause.
+
+`PianoNode` holds a damper state per voice — `heldByKey` — separate from whether the
+voice is claimed. With the pedal down a release marks the key up but the damper never
+reaches the string; lifting the pedal damps everything no longer held, including notes
+released minutes earlier. That is exactly what a pianist hears on the lift, and it is why
+a pedal cannot be modelled as a longer decay.
+
+**And the soundboard.** With the dampers up, every ringing string is driven by what the
+board is doing, so a struck chord makes the rest of the instrument answer. This falls out
+of the model rather than being faked with reverb, and it is the most convincing thing a
+modelled piano does.
+
+### Two runaways and a worthless test
+
+**The soundboard exploded.** Summing every voice's bridge motion made the feedback gain
+proportional to how many keys were down: ten voices ringing meant ten times the loop gain
+a single note implied, and a pedalled chord grew to a peak of **1327** before collapsing.
+It now uses the board's *average* motion, which makes the loop gain independent of
+polyphony — the only form of it that can be reasoned about at all. The same chord now
+peaks at 0.22.
+
+**And the stability check passed anyway.** It asserted only that the late peak was below
+the early one, which a signal that explodes and then collapses satisfies perfectly. The
+check is now on the absolute level, so a runaway fails it.
+
+**The resonance check was measuring the wrong thing entirely.** It compared a *released*
+note pedalled against unpedalled — which measures the pedal holding the note, something
+`pianoPedalSustains` already covers, and it would have passed with the soundboard gain set
+to zero. It now holds both keys down for the whole render, so the notes ring either way
+and sustain cannot account for any difference; what is left is the soundboard. The
+measured difference is 26% of the note's own level.
+
+That is three tests in this feature that passed for reasons unrelated to what they were
+named after. The pattern is consistent enough to be worth stating: a check that compares
+"feature on" against "feature off" measures whatever *else* differs between those two
+renders, and on this instrument something else usually does.
+
+### A limit worth recording
+
+The sympathetic path only drives strings that are **already ringing**, because silent
+voices are skipped for cost. A real pedal-down piano also resonates strings that were
+never struck, and doing that would mean keeping every undamped voice running. That is a
+real difference, it is deferred rather than overlooked, and the test above measures what
+was actually built rather than what the feature is named after.
+
+### Verification
+
+Four new bounce checks — the pedal sustains a released chord (tail ten times the
+unpedalled one), lifting it damps everything, the soundboard measurably couples held
+notes, and a big pedalled chord stays bounded for twelve seconds — plus two serialization
+round-trips. 664 headless tests, 173 GUI tests, every existing check unchanged.
+
+Step 5 remains: wiring it up as a track type, with a pane, presets and starter content.

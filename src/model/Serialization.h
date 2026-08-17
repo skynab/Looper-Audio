@@ -96,8 +96,11 @@ namespace looper::model
           its positional line like v30's and v35's. 1 in older files, which is
           the single-clipper behaviour they already had.
       40  + the drive's cabinet-IR flag, appended the same way; 0 in older
-          files, which is the filter-chain cabinet they already had. */
-inline constexpr int kFormatVersion = 40;
+          files, which is the filter-chain cabinet they already had.
+      41  + PEDALS/PEDAL after a clip's notes: sustain-pedal movements, the
+          first performance data here that is not a note. Absent in older
+          files, which had no way to express one. */
+inline constexpr int kFormatVersion = 41;
 namespace detail
 {
     inline std::string num(double v)
@@ -122,6 +125,10 @@ namespace detail
         // cursor alone when the tag isn't there, and the default stands.
         out << "CLIPGAIN " << num((double) clip.gainDb) << "\n";
         out << "CLIPWARP " << (clip.warpEnabled ? 1 : 0) << " " << num(clip.sourceBpm) << "\n";
+        out << "PEDALS " << clip.pattern.pedals.size() << "\n";
+        for (const auto& pedal : clip.pattern.pedals)
+            out << "PEDAL " << num(pedal.beat) << " " << (pedal.down ? 1 : 0) << "\n";
+
         out << "NOTES " << clip.pattern.notes.size() << "\n";
 
         for (const auto& note : clip.pattern.notes)
@@ -446,6 +453,24 @@ inline bool deserialize(const std::string& text, Song& out, std::string* errorOu
             int warp = 0;
             ws >> warp >> clip.sourceBpm;
             clip.warpEnabled = warp != 0;
+        }
+
+        // Optional: absent before v41, where a clip had no way to hold one.
+        if (readTagged("PEDALS", rest))
+        {
+            const int pedalCount = std::atoi(rest.c_str());
+            for (int i = 0; i < pedalCount; ++i)
+            {
+                if (! readTagged("PEDAL", rest))
+                    return false;
+
+                std::istringstream ps(rest);
+                engine::PedalEvent pedal;
+                int down = 0;
+                ps >> pedal.beat >> down;
+                pedal.down = down != 0;
+                clip.pattern.pedals.push_back(pedal);
+            }
         }
 
         if (! readTagged("NOTES", rest))

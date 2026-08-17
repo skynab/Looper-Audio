@@ -80,7 +80,26 @@ struct PatternPlayback
                 activeNotes[(size_t) noteNumber] = false;
             }
         }
+
+        // Pedal movements, emitted as ordinary CC64 so anything that
+        // understands MIDI understands them — including an external synth on a
+        // hosted plugin, which would otherwise need a private channel.
+        for (const auto& pedal : pattern.pedals)
+        {
+            if (pedal.beat < 0.0 || pedal.beat >= length)
+                continue;
+
+            int offset = 0;
+            if (edgeInBlockBeats(pedal.beat, blockStart, length, blockLengthBeats, numSamples, offset))
+                midi.addEvent(juce::MidiMessage::controllerEvent(1, kSustainPedalCc,
+                                                                 pedal.down ? 127 : 0),
+                              offset);
+        }
     }
+
+    /** The controller number a sustain pedal sends on: the MIDI standard's,
+        so a real pedal plugged into the machine works without mapping. */
+    static constexpr int kSustainPedalCc = 64;
 
     /** Which MIDI channel a note is sent on.
 
@@ -116,6 +135,15 @@ struct PatternPlayback
                 activeNotes[(size_t) n] = false;
             }
         }
+
+        // And lift the pedal, unconditionally.
+        //
+        // Sent even when it was never pressed, because it costs one ignored
+        // message and the alternative is tracking a second piece of state in
+        // two callers purely to avoid it. A stuck pedal is a far worse failure
+        // than a redundant message: every note played after it would ring
+        // forever with no visible cause.
+        midi.addEvent(juce::MidiMessage::controllerEvent(1, kSustainPedalCc, 0), 0);
     }
 };
 

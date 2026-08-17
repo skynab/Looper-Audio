@@ -102,7 +102,8 @@ public:
             for (auto& voice : voices_)
             {
                 voice.note.damp(1.0f);
-                voice.midiNote = -1;
+                voice.midiNote  = -1;
+                voice.heldByKey = false;
             }
 
         wasPlaying_ = context.transport.playing;
@@ -122,6 +123,10 @@ public:
                 strikeNote(message.getNoteNumber(), message.getFloatVelocity());
             else if (message.isNoteOff())
                 releaseNote(message.getNoteNumber());
+            else if (message.isSustainPedalOn())
+                setSustain(true);
+            else if (message.isSustainPedalOff())
+                setSustain(false);
         }
 
         renderSpan(buffer, position, numSamples - position);
@@ -142,8 +147,9 @@ private:
     struct Voice
     {
         PianoNote note;
-        int       midiNote = -1;  // -1 when released; the note still rings on
-        uint64_t  struckAt = 0;   // for stealing the oldest
+        int       midiNote  = -1; // -1 when released; the note still rings on
+        bool      heldByKey = false;
+        uint64_t  struckAt  = 0;  // for stealing the oldest
         float     gainLeft  = 1.0f;
         float     gainRight = 1.0f;
     };
@@ -152,8 +158,9 @@ private:
     {
         auto& voice = voiceFor(midiNote);
 
-        voice.midiNote = midiNote;
-        voice.struckAt = ++strikeCounter_;
+        voice.midiNote  = midiNote;
+        voice.heldByKey = true;
+        voice.struckAt  = ++strikeCounter_;
 
         // Everything that depends on which key this is, set at strike time
         // rather than per block: a voice's pitch, string count and stiffness
@@ -176,6 +183,29 @@ private:
         voice.note.strike(velocity);
     }
 
+    /**
+        Raises or lowers every damper at once.
+
+        Down, the dampers come off: notes already released keep ringing, and
+        everything struck afterwards rings until the pedal comes up. Up, every
+        key that is no longer held is damped — including the ones released
+        minutes ago, which is exactly what a pianist hears when they lift.
+    */
+    void setSustain(bool down)
+    {
+        sustain_ = down;
+
+        if (down)
+            return;
+
+        for (auto& voice : voices_)
+            if (! voice.heldByKey)
+            {
+                voice.note.damp(damperStrengthValue_);
+                voice.midiNote = -1;
+            }
+    }
+
     void releaseNote(int midiNote)
     {
         // The top of a real piano has no dampers at all — the strings are so
@@ -188,6 +218,15 @@ private:
         for (auto& voice : voices_)
             if (voice.midiNote == midiNote)
             {
+                voice.heldByKey = false;
+
+                // With the pedal down the damper never reaches the string, so
+                // the note rings on and the voice stays claimed until the
+                // pedal lifts. That is the whole behaviour of a sustain pedal
+                // and the reason it cannot be modelled as a longer decay.
+                if (sustain_)
+                    continue;
+
                 voice.note.damp(damperStrengthValue_);
                 voice.midiNote = -1; // released; it may still be decaying
             }
@@ -234,24 +273,70 @@ private:
 
         const int channels = buffer.getNumChannels();
 
-        for (auto& voice : voices_)
+        // Sample-at-a-time across all voices rather than voice-at-a-time,
+        // because with the pedal down they are no longer independent: every
+        // string feeds the soundboard and the soundboard drives every other
+        // string, so they all have to advance together.
+        for (int i = 0; i < count; ++i)
         {
-            if (! voice.note.isRinging())
-                continue;
+            float left  = 0.0f;
+            float right = 0.0f;
+            float board = 0.0f;
+            int   ringing = 0;
 
-            for (int i = 0; i < count; ++i)
+            for (auto& voice : voices_)
             {
+                if (! voice.note.isRinging())
+                    continue;
+
                 const float value = voice.note.process() * kOutputScale;
 
-                if (channels >= 2)
-                {
-                    buffer.addSample(0, start + i, value * voice.gainLeft);
-                    buffer.addSample(1, start + i, value * voice.gainRight);
-                }
-                else if (channels == 1)
-                {
-                    buffer.addSample(0, start + i, value);
-                }
+                left  += value * voice.gainLeft;
+                right += value * voice.gainRight;
+                board += voice.note.bridgeMotion();
+                ++ringing;
+            }
+
+            // The soundboard's *average* motion, not the sum.
+            //
+            // Summing was the first version and it ran away: this is positive
+            // feedback from every string into every other one, so with ten
+            // voices ringing the loop gain was ten times what a single note
+            // implied, and a pedalled chord grew to a peak of 1327 before
+            // collapsing. Averaging makes the loop gain independent of how
+            // many keys are down, which is the only form of it that can be
+            // reasoned about at all.
+            if (ringing > 1)
+                board /= (float) ringing;
+
+            // Sympathetic resonance: with the dampers up, every string is free
+            // to be driven by what the soundboard is doing, so a struck chord
+            // makes the whole instrument answer. This is the single most
+            // convincing thing a modelled piano can do, and it falls out of
+            // the model rather than being faked with reverb — but only with
+            // the pedal down, because a damped string cannot resonate.
+            //
+            // Fed from the *already-lowpassed* bridge motion of each note (see
+            // PianoNote), for the same reason the unison's own coupling is:
+            // broadband feedback around a lightly damped loop goes positive
+            // wherever a delay lands half a period out, and this is a feedback
+            // path across every voice at once.
+            if (sustain_ && board != 0.0f)
+            {
+                const float drive = kSympatheticGain * board;
+                for (auto& voice : voices_)
+                    if (voice.note.isRinging())
+                        voice.note.exciteSympathetically(drive);
+            }
+
+            if (channels >= 2)
+            {
+                buffer.addSample(0, start + i, left);
+                buffer.addSample(1, start + i, right);
+            }
+            else if (channels == 1)
+            {
+                buffer.addSample(0, start + i, 0.5f * (left + right));
             }
         }
     }
@@ -278,9 +363,15 @@ private:
         chords far more than a guitar is, so the headroom has to assume them. */
     static constexpr float kOutputScale = 0.3f;
 
+    /** How hard the soundboard drives the undamped strings. Very small: this
+        is positive feedback across up to 48 voices at once, and the point is a
+        halo behind the note rather than a second instrument. */
+    static constexpr float kSympatheticGain = 0.004f;
+
     std::array<Voice, kMaxVoices> voices_;
     uint64_t                      strikeCounter_ = 0;
     bool                          wasPlaying_    = false;
+    bool                          sustain_       = false;
 
     std::atomic<float> decaySeconds_   { 20.0f }; // the bottom of the keyboard; scaled up the range
     std::atomic<float> brightness_     { 0.72f };

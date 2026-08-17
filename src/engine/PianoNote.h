@@ -206,6 +206,27 @@ public:
             strings_[(size_t) i].mute(damping_);
     }
 
+    /**
+        Energy arriving from the *other keys*, through the soundboard.
+
+        Distinct from the unison's own bridge coupling above, which loads these
+        strings against each other. This is the path that makes an undamped
+        piano resonate: strike a chord with the pedal down and the whole
+        instrument answers, because every other string is free to move.
+    */
+    void exciteSympathetically(float signal) noexcept
+    {
+        if (signal == 0.0f)
+            return;
+
+        for (int i = 0; i < stringCount_; ++i)
+            strings_[(size_t) i].couple(signal);
+    }
+
+    /** This block's bridge motion — what the soundboard is driven by. Valid
+        after process(). */
+    float bridgeMotion() const noexcept { return bridgeState_; }
+
     bool isRinging() const noexcept
     {
         for (int i = 0; i < stringCount_; ++i)

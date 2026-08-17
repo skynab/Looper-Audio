@@ -1694,6 +1694,137 @@ int main(int argc, char** argv)
                              && allVoices.getRMSLevel(0, 0, full.getNumSamples()) > 0.005f;
     }
 
+    // The sustain pedal (docs/PLAN.md §34 step 4), through the real node and
+    // as real CC64 — so this covers the message plumbing as well as the
+    // dampers.
+    bool pianoPedalSustains   = false;
+    bool pianoPedalLifts      = false;
+    bool pianoResonates       = false;
+    bool pianoPedalStaysStable = false;
+    {
+        auto renderPedalled = [&](bool pedal, double liftAt, const std::vector<int>& notes,
+                                  double lengthSeconds, bool holdKeys = false)
+        {
+            const int totalSamples = (int) (sampleRate * lengthSeconds);
+            juce::AudioBuffer<float> mix(2, totalSamples);
+            mix.clear();
+
+            PianoNode piano;
+            piano.prepare(sampleRate, 512);
+
+            const int releaseSample = holdKeys ? -1 : (int) (0.3 * sampleRate);
+            const int liftSample    = liftAt > 0.0 ? (int) (liftAt * sampleRate) : -1;
+
+            for (int pos = 0; pos < totalSamples; pos += 512)
+            {
+                const int n = std::min(512, totalSamples - pos);
+
+                ProcessContext context;
+                context.sampleRate        = sampleRate;
+                context.numSamples        = n;
+                context.transport.playing = true;
+                OfflineRenderer::fillTransport(context, pos, n, bpm, sampleRate);
+
+                juce::MidiBuffer blockMidi;
+
+                if (pos == 0)
+                {
+                    if (pedal)
+                        blockMidi.addEvent(juce::MidiMessage::controllerEvent(1, 64, 127), 0);
+                    for (int note : notes)
+                        blockMidi.addEvent(juce::MidiMessage::noteOn(1, note, 0.9f), 0);
+                }
+
+                // Keys up early: with the pedal down the notes must ring on
+                // regardless, which is the entire behaviour under test.
+                if (releaseSample >= pos && releaseSample < pos + n)
+                    for (int note : notes)
+                        blockMidi.addEvent(juce::MidiMessage::noteOff(1, note),
+                                           releaseSample - pos);
+
+                if (liftSample >= pos && liftSample < pos + n)
+                    blockMidi.addEvent(juce::MidiMessage::controllerEvent(1, 64, 0),
+                                       liftSample - pos);
+
+                juce::AudioBuffer<float> block(mix.getArrayOfWritePointers(), 2, pos, n);
+                piano.process(block, blockMidi, context);
+            }
+
+            return mix;
+        };
+
+        const std::vector<int> chord { 48, 55, 60, 64 };
+
+        // Keys released at 0.3s. Without the pedal the dampers stop it; with
+        // the pedal held they cannot reach the strings.
+        const auto dry     = renderPedalled(false, 0.0, chord, 2.5);
+        const auto held    = renderPedalled(true,  0.0, chord, 2.5);
+
+        const int  tailFrom  = (int) (1.5 * sampleRate);
+        const int  tailCount = (int) (0.5 * sampleRate);
+        const float dryTail  = dry.getRMSLevel(0, tailFrom, tailCount);
+        const float heldTail = held.getRMSLevel(0, tailFrom, tailCount);
+
+        pianoPedalSustains = heldTail > 0.002f && heldTail > dryTail * 10.0f;
+
+        // ...and lifting it at 1.0s damps everything already released.
+        const auto lifted = renderPedalled(true, 1.0, chord, 2.5);
+        const float liftedBefore = lifted.getRMSLevel(0, (int) (0.8 * sampleRate),
+                                                      (int) (0.15 * sampleRate));
+        const float liftedAfter  = lifted.getRMSLevel(0, tailFrom, tailCount);
+
+        pianoPedalLifts = liftedBefore > 0.002f && liftedAfter < liftedBefore * 0.05f;
+
+        // Sympathetic resonance, isolated from sustain.
+        //
+        // The first version of this compared a released note pedalled against
+        // unpedalled, and that measures the *pedal holding the note*, which
+        // pianoPedalSustains already covers — it passed just as happily with
+        // the soundboard coupling set to zero, which makes it worthless as a
+        // check of the thing it is named after.
+        //
+        // Here both keys are **held down** for the whole render, so the notes
+        // ring either way and sustain cannot account for any difference. What
+        // is left is the soundboard path: with the pedal down the two notes
+        // drive each other, and with it up they do not.
+        const auto twoDry = renderPedalled(false, 0.0, { 40, 47 }, 2.0, /*holdKeys=*/true);
+        const auto twoPed = renderPedalled(true,  0.0, { 40, 47 }, 2.0, /*holdKeys=*/true);
+
+        double difference = 0.0;
+        double reference  = 0.0;
+        for (int i = 0; i < twoDry.getNumSamples(); ++i)
+        {
+            difference += std::abs(twoPed.getSample(0, i) - twoDry.getSample(0, i));
+            reference  += std::abs(twoDry.getSample(0, i));
+        }
+
+        // Relative to the note itself, so this cannot pass on level alone.
+        pianoResonates = reference > 1.0 && difference > reference * 0.01;
+
+        // Stability: positive feedback across every ringing voice at once, so
+        // a big pedalled chord left for a long time must not grow.
+        const std::vector<int> bigChord { 36, 40, 43, 48, 52, 55, 60, 64, 67, 72 };
+        const auto sustained = renderPedalled(true, 0.0, bigChord, 12.0);
+
+        const float earlyPeak = sustained.getMagnitude(0, (int) (0.5 * sampleRate),
+                                                       (int) (0.5 * sampleRate));
+        const float latePeak  = sustained.getMagnitude(0, (int) (11.0 * sampleRate),
+                                                       (int) (0.5 * sampleRate));
+
+        std::cout << "piano pedal: dryTail=" << dryTail << " heldTail=" << heldTail
+                  << " liftedAfter=" << liftedAfter << " resonanceDelta=" << difference << " resonanceRef=" << reference
+                  << " earlyPeak=" << earlyPeak << " latePeak=" << latePeak << "\n";
+
+        // Bounded, not merely falling. The first version asserted only that
+        // the late peak was below the early one — which a signal that explodes
+        // to 1327 and then collapses satisfies perfectly, and which is exactly
+        // what the sympathetic feedback did before it was averaged. A runaway
+        // has to fail this check, so the check is on the absolute level.
+        pianoPedalStaysStable = std::isfinite(latePeak) && earlyPeak > 0.001f
+                             && earlyPeak < 2.0f
+                             && latePeak < earlyPeak;
+    }
+
     // Cascaded gain stages (docs/PLAN.md §33 phase 3).
     //
     // The first version of this check asserted the cascade *compresses* more,
@@ -3477,6 +3608,10 @@ int main(int argc, char** argv)
               << "  pianoDamps=" << (pianoDamps ? 1 : 0)
               << "  pianoTopRings=" << (pianoTopRings ? 1 : 0)
               << "  pianoAffordsPolyphony=" << (pianoAffordsPolyphony ? 1 : 0)
+              << "  pianoPedalSustains=" << (pianoPedalSustains ? 1 : 0)
+              << "  pianoPedalLifts=" << (pianoPedalLifts ? 1 : 0)
+              << "  pianoResonates=" << (pianoResonates ? 1 : 0)
+              << "  pianoPedalStaysStable=" << (pianoPedalStaysStable ? 1 : 0)
               << "  tremoloModulates=" << (tremoloModulates ? 1 : 0)
               << "  gateClosesQuiet=" << (gateClosesQuiet ? 1 : 0)
               << "  metalToneHasBody=" << (metalToneHasBody ? 1 : 0)
@@ -3522,6 +3657,8 @@ int main(int argc, char** argv)
                  && guitarHasWidth && guitarStringsCouple && guitarStiffnessChangesTone
                  && cascadedStagesEnrich
                  && pianoSounds && pianoDamps && pianoTopRings && pianoAffordsPolyphony
+                 && pianoPedalSustains && pianoPedalLifts && pianoResonates
+                 && pianoPedalStaysStable
                  && generativeLoopWorks
                  && drumPadMixWorks && drumPadPitchWorks
                  && pluginHostWorks

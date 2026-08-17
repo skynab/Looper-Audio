@@ -1129,3 +1129,53 @@ TEST_CASE("A file written before group buses reads as feeding the master", "[mod
     REQUIRE(deserialize(text, restored));
     REQUIRE(findTrack(restored, trackId)->outputBusId == -1);
 }
+
+TEST_CASE("Sustain-pedal movements round-trip", "[model][io]")
+{
+    Song s;
+    const int trackId = addTrack(s, TrackType::Instrument, "Piano").id;
+
+    Clip clip;
+    clip.type = ClipType::Instrument;
+    clip.pattern.lengthBeats = 8.0;
+    clip.pattern.notes.push_back({ 0.0, 1.0, 60, 0.8f });
+    clip.pattern.pedals.push_back({ 0.0, true });
+    clip.pattern.pedals.push_back({ 3.5, false });
+    clip.pattern.pedals.push_back({ 4.0, true });
+    addClip(s, trackId, clip);
+
+    Song restored;
+    REQUIRE(deserialize(serialize(s), restored));
+
+    const auto& pedals = findTrack(restored, trackId)->clips[0].pattern.pedals;
+    REQUIRE(pedals.size() == 3);
+    REQUIRE(pedals[0].beat == 0.0);
+    REQUIRE(pedals[0].down);
+    REQUIRE(pedals[1].beat == 3.5);
+    REQUIRE_FALSE(pedals[1].down);
+    REQUIRE(pedals[2].down);
+
+    // The notes either side of the new record have to survive it.
+    REQUIRE(findTrack(restored, trackId)->clips[0].pattern.notes.size() == 1);
+}
+
+TEST_CASE("A file written before pedals reads without them", "[model][io]")
+{
+    Song s;
+    const int trackId = addTrack(s, TrackType::Instrument, "Piano").id;
+
+    Clip clip;
+    clip.type = ClipType::Instrument;
+    clip.pattern.notes.push_back({ 0.0, 1.0, 60, 0.8f });
+    addClip(s, trackId, clip);
+
+    std::string text  = serialize(s);
+    const auto  start = text.find("PEDALS");
+    REQUIRE(start != std::string::npos);
+    text.erase(start, text.find('\n', start) - start + 1);
+
+    Song restored;
+    REQUIRE(deserialize(text, restored));
+    REQUIRE(findTrack(restored, trackId)->clips[0].pattern.pedals.empty());
+    REQUIRE(findTrack(restored, trackId)->clips[0].pattern.notes.size() == 1);
+}
